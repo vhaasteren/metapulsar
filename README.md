@@ -83,6 +83,33 @@ pytest
 pytest --cov=src/metapulsar
 ```
 
+## Release Workflow (GitHub -> PyPI)
+
+MetaPulsar uses tag-based versioning via `setuptools-scm`. The package version is
+derived from the Git tag (for example, `v0.9.6` -> `0.9.6`), and PyPI publishing
+is triggered automatically when a GitHub Release is published.
+
+### One-time setup
+
+- Ensure the repository secret `PYPI_API_TOKEN` is configured in GitHub settings.
+- Use release tags in the format `vX.Y.Z` (for example, `v0.9.6`).
+
+### Normal release process
+
+1. Merge PRs into `main`.
+2. In GitHub, create a new Release and create/select a new tag like `v0.9.6`
+   from `main`.
+3. Publish the release.
+4. GitHub Actions runs the release workflow, builds distributions from that tag,
+   and uploads them to PyPI.
+
+### Important notes
+
+- Do not manually edit a static version in `pyproject.toml`; version comes from
+  the Git tag.
+- Reusing an existing release tag/version will fail the PyPI publish step, which
+  is intentional to prevent silent no-op releases.
+
 ## Troubleshooting
 
 ### Debug Mode
