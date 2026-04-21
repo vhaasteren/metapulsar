@@ -83,3 +83,6 @@ plots/
 *.jpg
 *.jpeg
 *.gif
+
+# User-local notebooks and example data
+examples/

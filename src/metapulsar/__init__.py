@@ -41,6 +41,19 @@ from .mockpulsar import (
 )
 from .tim_file_analyzer import TimFileAnalyzer
 from .selection_utils import create_staggered_selection
+from .consistency import (
+    TensionResult,
+    FFTIntPosterior,
+    subset_metapulsar,
+    list_ptas,
+    build_fftint_posterior,
+    samples_to_mcsamples,
+    hyper_tension,
+    waveform_tension,
+    timing_tension,
+    combined_vs_single_tension,
+    summarize,
+)
 
 # Exceptions
 from .pint_helpers import PINTDiscoveryError
@@ -69,6 +82,18 @@ __all__ = [
     "TimFileAnalyzer",
     "create_staggered_selection",
     "PINTDiscoveryError",
+    # Cross-PTA consistency checks
+    "TensionResult",
+    "FFTIntPosterior",
+    "subset_metapulsar",
+    "list_ptas",
+    "build_fftint_posterior",
+    "samples_to_mcsamples",
+    "hyper_tension",
+    "waveform_tension",
+    "timing_tension",
+    "combined_vs_single_tension",
+    "summarize",
     # Convenience functions
     "discover_files",
     "discover_layout",
