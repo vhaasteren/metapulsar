@@ -115,10 +115,10 @@ is triggered automatically when a GitHub Release is published.
 ### Debug Mode
 
 ```python
-import loguru
+from loguru import logger
 import sys
-loguru.logger.remove()
-loguru.logger.add(sys.stdout, level="DEBUG")
+
+logger.add(sys.stdout, level="DEBUG")
 ```
 
 ### CI import error with `pkg_resources`

@@ -485,92 +485,87 @@ class MetaPulsarFactory:
             file_data: File data from FileDiscoveryService (per data release)
         """
         import warnings
-
-        # Suppress PINT warnings and loguru output for clean summary display
-        import sys
         from loguru import logger as loguru_logger
 
-        # Store original loguru configuration (for potential future use)
+        noisy_packages = ("metapulsar", "pint", "enterprise")
+        enabled_state_before = dict(loguru_logger._core.enabled)
 
         try:
-            # Remove all existing loguru handlers
-            loguru_logger.remove()
+            for package in noisy_packages:
+                loguru_logger.disable(package)
 
-            # Add a new handler that only shows CRITICAL messages
-            loguru_logger.add(lambda msg: None, level="CRITICAL")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with self.logger.catch():
+                    print("Quickly processing PTA files...")
 
-            # Also suppress Python warnings
-            warnings.filterwarnings("ignore")
+                    # Note: file_data contains file paths per PTA, but pulsars are not yet matched between PTAs.
+                    # The coordinate-based discovery groups files by pulsar using coordinate matching, not name matching.
+                    # 1. Ensure parfile content is loaded
+                    validated_data = self._ensure_parfile_content(file_data)
 
-            with self.logger.catch():
-                print("Quickly processing PTA files...")
-
-                # Note: file_data contains file paths per PTA, but pulsars are not yet matched between PTAs.
-                # The coordinate-based discovery groups files by pulsar using coordinate matching, not name matching.
-                # 1. Ensure parfile content is loaded
-                validated_data = self._ensure_parfile_content(file_data)
-
-                # 2. Group files by pulsar with reference PTA ordering
-                pulsar_groups = self._group_files_by_pulsar_with_ordering(
-                    validated_data
-                )
-
-                if not pulsar_groups:
-                    print("No valid pulsar files found in file_data")
-                    return
-
-                print(f"Found {len(pulsar_groups)} pulsars:")
-                print()
-
-                for pulsar_name, pulsar_file_data in pulsar_groups.items():
-                    # Get display name using B-name preference logic
-                    display_name = self._get_display_name_for_pulsar(
-                        pulsar_name, pulsar_file_data
+                    # 2. Group files by pulsar with reference PTA ordering
+                    pulsar_groups = self._group_files_by_pulsar_with_ordering(
+                        validated_data
                     )
-                    print(display_name)
 
-                    # Calculate timespans and TOA counts for each PTA
-                    pta_timespans = []
-                    for pta_name, files in pulsar_file_data.items():
-                        if not files:
-                            continue
+                    if not pulsar_groups:
+                        print("No valid pulsar files found in file_data")
+                        return
 
-                        # Get timespan and TOA count for this PTA's files for this pulsar
-                        timespan_days = max(f.get("timespan_days", 0) for f in files)
-                        timespan_years = timespan_days / 365.25
-                        toa_count = sum(f.get("toa_count", 0) for f in files)
-                        pta_timespans.append(
-                            (pta_name, timespan_days, timespan_years, toa_count)
-                        )
-
-                    # Sort by timespan (longest first)
-                    pta_timespans.sort(key=lambda x: x[1], reverse=True)
-
-                    # Display PTAs with reference indicator
-                    reference_pta = list(pulsar_file_data.keys())[
-                        0
-                    ]  # First in original ordering
-
-                    for (
-                        pta_name,
-                        timespan_days,
-                        timespan_years,
-                        toa_count,
-                    ) in pta_timespans:
-                        reference_indicator = (
-                            " -- Reference PTA" if pta_name == reference_pta else ""
-                        )
-                        print(
-                            f"- {pta_name}: {timespan_days:.0f} days ({timespan_years:.1f} years, {toa_count} TOAs){reference_indicator}"
-                        )
-
+                    print(f"Found {len(pulsar_groups)} pulsars:")
                     print()
 
+                    for pulsar_name, pulsar_file_data in pulsar_groups.items():
+                        # Get display name using B-name preference logic
+                        display_name = self._get_display_name_for_pulsar(
+                            pulsar_name, pulsar_file_data
+                        )
+                        print(display_name)
+
+                        # Calculate timespans and TOA counts for each PTA
+                        pta_timespans = []
+                        for pta_name, files in pulsar_file_data.items():
+                            if not files:
+                                continue
+
+                            # Get timespan and TOA count for this PTA's files for this pulsar
+                            timespan_days = max(
+                                f.get("timespan_days", 0) for f in files
+                            )
+                            timespan_years = timespan_days / 365.25
+                            toa_count = sum(f.get("toa_count", 0) for f in files)
+                            pta_timespans.append(
+                                (pta_name, timespan_days, timespan_years, toa_count)
+                            )
+
+                        # Sort by timespan (longest first)
+                        pta_timespans.sort(key=lambda x: x[1], reverse=True)
+
+                        # Display PTAs with reference indicator
+                        reference_pta = list(pulsar_file_data.keys())[
+                            0
+                        ]  # First in original ordering
+
+                        for (
+                            pta_name,
+                            timespan_days,
+                            timespan_years,
+                            toa_count,
+                        ) in pta_timespans:
+                            reference_indicator = (
+                                " -- Reference PTA" if pta_name == reference_pta else ""
+                            )
+                            print(
+                                f"- {pta_name}: {timespan_days:.0f} days ({timespan_years:.1f} years, {toa_count} TOAs){reference_indicator}"
+                            )
+
+                        print()
         finally:
-            # Restore original loguru configuration
-            loguru_logger.remove()
-            # Re-add default handler
-            loguru_logger.add(sys.stderr, level="DEBUG")
+            # Restore logger enabled/disabled state exactly as it was before summary.
+            with loguru_logger._core.lock:
+                loguru_logger._core.enabled.clear()
+                loguru_logger._core.enabled.update(enabled_state_before)
 
     def _create_pulsar_objects(
         self,

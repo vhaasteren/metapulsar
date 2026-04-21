@@ -1,8 +1,10 @@
 """Tests for Meta-Pulsar Factory."""
 
 import pytest
+import warnings
 from pathlib import Path
 from unittest.mock import Mock, patch
+from loguru import logger as loguru_logger
 from metapulsar.metapulsar_factory import MetaPulsarFactory
 from metapulsar.file_discovery_service import FileDiscoveryService
 
@@ -110,6 +112,168 @@ class TestMetaPulsarFactory:
         factory = MetaPulsarFactory()
         assert factory.logger is not None
         assert not hasattr(factory, "parfile_manager")
+
+    def _assert_global_logging_state_unchanged(self, action):
+        """Assert action does not mutate global loguru/warnings state."""
+        handlers_before = dict(loguru_logger._core.handlers)
+        enabled_before = dict(loguru_logger._core.enabled)
+        filters_before = list(warnings.filters)
+        try:
+            action()
+        finally:
+            assert dict(loguru_logger._core.handlers) == handlers_before
+            assert dict(loguru_logger._core.enabled) == enabled_before
+            assert list(warnings.filters) == filters_before
+
+    def test_pta_summary_preserves_loguru_handlers_and_warning_filters(self):
+        """pta_summary must not mutate global handlers or warnings filters."""
+        file_data = {"epta_dr2": [{"par_content": "PSR J1857+0943\n"}]}
+        grouped = {
+            "J1857+0943": {
+                "epta_dr2": [{"timespan_days": 1000.0, "toa_count": 100}],
+            }
+        }
+
+        handlers_before = dict(loguru_logger._core.handlers)
+        filters_before = list(warnings.filters)
+
+        with patch.object(
+            self.factory, "_ensure_parfile_content", return_value=file_data
+        ):
+            with patch.object(
+                self.factory,
+                "_group_files_by_pulsar_with_ordering",
+                return_value=grouped,
+            ):
+                with patch.object(
+                    self.factory,
+                    "_get_display_name_for_pulsar",
+                    return_value="J1857+0943",
+                ):
+                    self.factory.pta_summary(file_data)
+
+        assert dict(loguru_logger._core.handlers) == handlers_before
+        assert list(warnings.filters) == filters_before
+
+    def test_pta_summary_restores_loguru_enabled_state(self):
+        """pta_summary should restore the pre-existing enabled/disabled map."""
+        file_data = {"epta_dr2": [{"par_content": "PSR J1857+0943\n"}]}
+        grouped = {
+            "J1857+0943": {
+                "epta_dr2": [{"timespan_days": 1000.0, "toa_count": 100}],
+            }
+        }
+
+        with loguru_logger._core.lock:
+            enabled_before = dict(loguru_logger._core.enabled)
+            loguru_logger._core.enabled["external.package"] = False
+
+        try:
+            with patch.object(
+                self.factory, "_ensure_parfile_content", return_value=file_data
+            ):
+                with patch.object(
+                    self.factory,
+                    "_group_files_by_pulsar_with_ordering",
+                    return_value=grouped,
+                ):
+                    with patch.object(
+                        self.factory,
+                        "_get_display_name_for_pulsar",
+                        return_value="J1857+0943",
+                    ):
+                        self.factory.pta_summary(file_data)
+            assert loguru_logger._core.enabled.get("external.package") is False
+        finally:
+            with loguru_logger._core.lock:
+                loguru_logger._core.enabled.clear()
+                loguru_logger._core.enabled.update(enabled_before)
+
+    def test_create_metapulsar_preserves_global_logging_and_warnings(self):
+        """create_metapulsar should not mutate global loguru/warnings state."""
+        file_data = {
+            "epta_dr2": [
+                {
+                    "par": Path("J1857+0943.par"),
+                    "tim": Path("J1857+0943.tim"),
+                    "par_content": "PSR J1857+0943\n",
+                    "timing_package": "pint",
+                    "timespan_days": 1000.0,
+                    "toa_count": 100,
+                }
+            ]
+        }
+
+        mock_pulsars = {"epta_dr2": Mock()}
+        mock_metapulsar = Mock()
+
+        def run():
+            with patch.object(
+                self.factory, "_ensure_parfile_content", return_value=file_data
+            ):
+                with patch.object(self.factory, "_validate_single_pulsar_data"):
+                    with patch(
+                        "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+                        return_value={
+                            "J1857+0943": {"epta_dr2": file_data["epta_dr2"]}
+                        },
+                    ):
+                        with patch.object(
+                            self.factory,
+                            "_create_pulsar_objects",
+                            return_value=mock_pulsars,
+                        ):
+                            with patch(
+                                "metapulsar.metapulsar_factory.MetaPulsar",
+                                return_value=mock_metapulsar,
+                            ):
+                                result = self.factory.create_metapulsar(
+                                    file_data=file_data,
+                                    combination_strategy="composite",
+                                    use_pulse_numbers=False,
+                                )
+            assert result is mock_metapulsar
+
+        self._assert_global_logging_state_unchanged(run)
+
+    def test_create_all_metapulsars_preserves_global_logging_and_warnings(self):
+        """create_all_metapulsars should not mutate global loguru/warnings state."""
+        file_data = {
+            "epta_dr2": [
+                {
+                    "par": Path("J1857+0943.par"),
+                    "tim": Path("J1857+0943.tim"),
+                    "par_content": "PSR J1857+0943\n",
+                    "timing_package": "pint",
+                    "timespan_days": 1000.0,
+                    "toa_count": 100,
+                }
+            ]
+        }
+        grouped_data = {"J1857+0943": {"epta_dr2": file_data["epta_dr2"]}}
+        mock_metapulsar = Mock()
+        mock_metapulsar.name = "J1857+0943"
+
+        def run():
+            with patch.object(
+                self.factory, "_ensure_parfile_content", return_value=file_data
+            ):
+                with patch.object(
+                    self.factory,
+                    "_group_files_by_pulsar_with_ordering",
+                    return_value=grouped_data,
+                ):
+                    with patch.object(
+                        self.factory, "create_metapulsar", return_value=mock_metapulsar
+                    ):
+                        result = self.factory.create_all_metapulsars(
+                            file_data=file_data,
+                            combination_strategy="composite",
+                            use_pulse_numbers=False,
+                        )
+            assert "J1857+0943" in result
+
+        self._assert_global_logging_state_unchanged(run)
 
     @patch("metapulsar.position_helpers.bj_name_from_pulsar")
     def test_create_metapulsar_success(self, mock_bj_name):
