@@ -56,7 +56,12 @@ def read_pulsar_feathers(data_dir: Path, prefix: str = "") -> list[ds.Pulsar]:
 
 
 def make_curn_maxlike(
-    psrs, array=True, broken=False, include_red_noise=True, rn_comp=30, gw_comp=7,
+    psrs,
+    array=True,
+    broken=False,
+    include_red_noise=True,
+    rn_comp=30,
+    gw_comp=7,
 ):
     """Create an HD likelihood.
 
@@ -331,7 +336,12 @@ def make_spna_array(psrs, rn_comp=30):
 
 
 def make_curn_theorist_os(
-    psrs, array=True, broken_crn=False, include_red_noise=True, rn_comp=30, gw_comp=7,
+    psrs,
+    array=True,
+    broken_crn=False,
+    include_red_noise=True,
+    rn_comp=30,
+    gw_comp=7,
 ):
     """Create a CURN likelihood.
 

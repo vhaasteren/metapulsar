@@ -19,6 +19,7 @@ from pathlib import Path
 
 import astropy.coordinates as coords
 import astropy.units as u
+
 try:
     import cyclopts  # noqa: F401
 except ImportError:  # tutorial fallback - see _shims.py
@@ -34,6 +35,7 @@ from loguru import logger
 from pta_replicator.red_noise import add_gwb, add_red_noise
 from pta_replicator.simulate import load_pulsar, make_ideal, simulate_pulsar
 from pta_replicator.white_noise import add_jitter, add_measurement_noise
+
 try:
     from schwimmbad import MPIPool, MultiPool
 except ImportError:  # tutorial fallback - see _shims.py

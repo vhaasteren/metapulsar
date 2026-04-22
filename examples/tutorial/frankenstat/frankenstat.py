@@ -115,7 +115,10 @@ def join_noise(dict1, dict2):
 
 
 def frankenize_duplicate_pulsar(
-    psrs: list[ds.Pulsar], outdir=Path.cwd(), prefix="franken", noisedict=dict(),
+    psrs: list[ds.Pulsar],
+    outdir=Path.cwd(),
+    prefix="franken",
+    noisedict=dict(),
 ) -> None:
     """Create a composite "FrankenPulsar" by combining observations from multiple PTAs.
 

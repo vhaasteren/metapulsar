@@ -110,7 +110,10 @@ def run_training_batch(svi, svi_state, rng_key, batch_size):
 
     # Use lax.scan to loop `body_fn` for `BATCH_SIZE` iterations
     (final_svi_state, final_rng_key), _ = jax.lax.scan(
-        body_fn, (svi_state, rng_key), xs=None, length=batch_size,
+        body_fn,
+        (svi_state, rng_key),
+        xs=None,
+        length=batch_size,
     )
 
     return final_svi_state, final_rng_key
