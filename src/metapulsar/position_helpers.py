@@ -408,6 +408,19 @@ def _get_pm_ecliptic_masyr_optimized(
     return _parse_float_optimized(pm_lon_val), _parse_float_optimized(pm_lat_val)
 
 
+def _get_pulsar_name_from_parfile_dict(parfile_dict: Dict[str, str]) -> str:
+    """Best-effort pulsar name from a parsed parfile, used purely for diagnostics.
+
+    Tries PSRJ first, then PSRB, then PSR, and finally returns ``"<unknown>"``
+    if none of those fields are present. Never raises.
+    """
+    for key in ("PSRJ", "PSRB", "PSR"):
+        val = parfile_dict.get(key)
+        if val:
+            return val.strip()
+    return "<unknown>"
+
+
 def _get_posepoch_mjd_optimized(parfile_dict: Dict[str, str]) -> Optional[float]:
     """Return POSEPOCH (MJD), falling back to PEPOCH when POSEPOCH is absent.
 
@@ -525,8 +538,9 @@ def _extract_equatorial_coordinates_optimized(
 
         # Issue warning if PM/POSEPOCH missing (epoch-stable naming requires them)
         if pmra is None or pmdec is None or posepoch_mjd is None:
+            psr_name = _get_pulsar_name_from_parfile_dict(parfile_dict)
             logger.warning(
-                "Missing PMRA/PMDEC or POSEPOCH/PEPOCH in parfile. "
+                f"[{psr_name}] Missing PMRA/PMDEC or POSEPOCH/PEPOCH in parfile. "
                 "Using catalogued position without proper motion propagation. "
                 "Canonical naming may be unstable across epochs."
             )
@@ -570,8 +584,9 @@ def _extract_ecliptic_coordinates_optimized(
 
         # Issue warning if PM/POSEPOCH missing (epoch-stable naming requires them)
         if pmelong is None or pmelat is None or posepoch_mjd is None:
+            psr_name = _get_pulsar_name_from_parfile_dict(parfile_dict)
             logger.warning(
-                "Missing PMELONG/PMELAT or POSEPOCH/PEPOCH in parfile. "
+                f"[{psr_name}] Missing PMELONG/PMELAT or POSEPOCH/PEPOCH in parfile. "
                 "Using catalogued position without proper motion propagation. "
                 "Canonical naming may be unstable across epochs."
             )

@@ -733,12 +733,39 @@ class TestProperMotionJ2000Normalization:
                 "POSEPOCH" in call or "proper motion" in call.lower()
                 for call in warning_calls
             ), "Warning should mention POSEPOCH or proper motion"
+            # Warning should also identify the offending pulsar.
+            assert any(
+                "[J1857+0943]" in call for call in warning_calls
+            ), "Warning should be tagged with the pulsar name from the parfile"
 
         assert coords is not None
 
         # Should still produce valid J-name (no propagation, uses catalogued position)
         j_name = bj_name_from_coordinates_optimized(coords[0], coords[1], "J")
         assert j_name == "J1857+0943"
+
+    def test_pulsar_name_helper_prefers_psrj_then_psrb_then_psr(self):
+        """Diagnostic helper must try PSRJ -> PSRB -> PSR and fall back gracefully."""
+        from metapulsar.position_helpers import _get_pulsar_name_from_parfile_dict
+
+        assert (
+            _get_pulsar_name_from_parfile_dict(
+                {"PSRJ": "J1857+0943", "PSRB": "B1855+09", "PSR": "J0000+0000"}
+            )
+            == "J1857+0943"
+        )
+        assert (
+            _get_pulsar_name_from_parfile_dict({"PSRB": "B1855+09", "PSR": "B0000+00"})
+            == "B1855+09"
+        )
+        assert _get_pulsar_name_from_parfile_dict({"PSR": "J1857+0943"}) == "J1857+0943"
+        assert _get_pulsar_name_from_parfile_dict({}) == "<unknown>"
+        # Whitespace-only PSR is treated as missing (downstream call uses .get()
+        # truthiness via the helper itself), so the next available key wins.
+        assert (
+            _get_pulsar_name_from_parfile_dict({"PSRJ": "   J1857+0943   "})
+            == "J1857+0943"
+        )
 
     def test_posepoch_falls_back_to_pepoch_no_warning(self, load_parfile_text):
         """POSEPOCH should fall back to PEPOCH and suppress the warning.
