@@ -80,7 +80,11 @@ def _skycoord_from_pint_model(model: Any) -> SkyCoord:
     2. Ecliptic (prefer LAMBDA/BETA, else ELONG/ELAT) with PMELONG/PMELAT + POSEPOCH propagation, then to ICRS.
     3. FK4 (RA/DEC B1950) as legacy fallback, then to ICRS.
     """
-    posepoch_q = _get_model_quantity(model, "POSEPOCH")
+    # POSEPOCH falls back to PEPOCH if not explicitly set, mirroring the
+    # tempo2/NANOGrav convention used for parfile-dict extraction.
+    posepoch_q = _get_model_quantity(model, "POSEPOCH") or _get_model_quantity(
+        model, "PEPOCH"
+    )
     posepoch_mjd = float(posepoch_q.value) if posepoch_q is not None else None
 
     # Equatorial path (canonical only; PINT maps aliases to canonical attributes)
@@ -164,6 +168,9 @@ def _skycoord_from_libstempo(psr: Any) -> SkyCoord:
         pmra = _val_aliases(psr, "PMRA")  # mas/yr
         pmdec = _val_aliases(psr, "PMDEC")  # mas/yr
         posepoch_mjd = _val_aliases(psr, "POSEPOCH")  # MJD
+        if posepoch_mjd is None:
+            # Tempo2/NANOGrav convention: fall back to PEPOCH
+            posepoch_mjd = _val_aliases(psr, "PEPOCH")
 
         ra_hours_j2000, dec_deg_j2000 = _propagate_equatorial_to_j2000(
             ra_hours, dec_deg, pmra, pmdec, posepoch_mjd
@@ -182,6 +189,9 @@ def _skycoord_from_libstempo(psr: Any) -> SkyCoord:
         pmelong = _val_aliases(psr, "PMELONG")  # covers PMLAMBDA
         pmelat = _val_aliases(psr, "PMELAT")  # covers PMBETA
         posepoch_mjd = _val_aliases(psr, "POSEPOCH")
+        if posepoch_mjd is None:
+            # Tempo2/NANOGrav convention: fall back to PEPOCH
+            posepoch_mjd = _val_aliases(psr, "PEPOCH")
 
         lam_deg_j2000, bet_deg_j2000 = _propagate_ecliptic_to_j2000(
             lam_deg, bet_deg, pmelong, pmelat, posepoch_mjd
@@ -398,6 +408,21 @@ def _get_pm_ecliptic_masyr_optimized(
     return _parse_float_optimized(pm_lon_val), _parse_float_optimized(pm_lat_val)
 
 
+def _get_posepoch_mjd_optimized(parfile_dict: Dict[str, str]) -> Optional[float]:
+    """Return POSEPOCH (MJD), falling back to PEPOCH when POSEPOCH is absent.
+
+    Tempo2/NANOGrav convention: when POSEPOCH is omitted from a parfile, the
+    position epoch is taken to equal PEPOCH (the spin reference epoch). PINT's
+    alias map intentionally does not link these two parameters because they
+    are physically distinct, so we emulate that convention here for the
+    coordinate-extraction / canonical-naming path only.
+    """
+    posepoch = _parse_float_optimized(parfile_dict.get("POSEPOCH"))
+    if posepoch is not None:
+        return posepoch
+    return _parse_float_optimized(parfile_dict.get("PEPOCH"))
+
+
 def _propagate_equatorial_to_j2000(
     ra_hours: float,
     dec_deg: float,
@@ -473,6 +498,10 @@ def _extract_equatorial_coordinates_optimized(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Extract RAJ/DECJ (via aliases) and propagate from POSEPOCH to J2000 if PM/POSEPOCH exist.
 
+    POSEPOCH falls back to PEPOCH when not explicitly set, matching the
+    tempo2/NANOGrav convention used by many publicly released parfiles
+    (e.g. NANOGrav 9-yr/12.5-yr ``.gls.par`` files).
+
     Returns RA (hours) and DEC (degrees) at J2000 when propagation is possible,
     otherwise returns the catalogued values. Output coordinates are suitable for
     canonical naming and cross-PTA matching.
@@ -490,14 +519,14 @@ def _extract_equatorial_coordinates_optimized(
         if ra_hours is None or dec_deg is None:
             return None, None
 
-        # Equatorial PM + POSEPOCH extraction
+        # Equatorial PM + POSEPOCH extraction (POSEPOCH falls back to PEPOCH)
         pmra, pmdec = _get_pm_equatorial_masyr_optimized(parfile_dict)
-        posepoch_mjd = _parse_float_optimized(parfile_dict.get("POSEPOCH"))
+        posepoch_mjd = _get_posepoch_mjd_optimized(parfile_dict)
 
         # Issue warning if PM/POSEPOCH missing (epoch-stable naming requires them)
         if pmra is None or pmdec is None or posepoch_mjd is None:
             logger.warning(
-                "Missing PMRA/PMDEC or POSEPOCH in parfile. "
+                "Missing PMRA/PMDEC or POSEPOCH/PEPOCH in parfile. "
                 "Using catalogued position without proper motion propagation. "
                 "Canonical naming may be unstable across epochs."
             )
@@ -517,6 +546,10 @@ def _extract_ecliptic_coordinates_optimized(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Extract ecliptic coords (via aliases), propagate to J2000 using PM if available, then convert to ICRS.
 
+    POSEPOCH falls back to PEPOCH when not explicitly set, matching the
+    tempo2/NANOGrav convention used by many publicly released parfiles
+    (e.g. NANOGrav 9-yr/12.5-yr ``.gls.par`` files).
+
     Returns RA (hours) and DEC (degrees) at J2000 when possible, otherwise None.
     """
     try:
@@ -531,14 +564,14 @@ def _extract_ecliptic_coordinates_optimized(
         if lam_deg is None or bet_deg is None:
             return None, None
 
-        # Ecliptic PM + POSEPOCH extraction
+        # Ecliptic PM + POSEPOCH extraction (POSEPOCH falls back to PEPOCH)
         pmelong, pmelat = _get_pm_ecliptic_masyr_optimized(parfile_dict)
-        posepoch_mjd = _parse_float_optimized(parfile_dict.get("POSEPOCH"))
+        posepoch_mjd = _get_posepoch_mjd_optimized(parfile_dict)
 
         # Issue warning if PM/POSEPOCH missing (epoch-stable naming requires them)
         if pmelong is None or pmelat is None or posepoch_mjd is None:
             logger.warning(
-                "Missing PMELONG/PMELAT or POSEPOCH in parfile. "
+                "Missing PMELONG/PMELAT or POSEPOCH/PEPOCH in parfile. "
                 "Using catalogued position without proper motion propagation. "
                 "Canonical naming may be unstable across epochs."
             )
