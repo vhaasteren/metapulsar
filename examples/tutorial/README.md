@@ -6,6 +6,11 @@ hands-on session at the NANOGrav Spring 2026 meeting. The room is shared by:
 - **Rutger van Haasteren** -- *MetaPulsar* (the `consistent` strategy).
 - **David Wright** -- *FrankenStat* (the `composite` strategy in `metapulsar`).
 
+One-shot git clone to get started:
+```bash
+git clone -b nanograv2026-tutorial --recurse-submodules git@github.com:vhaasteren/metapulsar.git
+```
+
 The two halves of the session use **different data sources**:
 
 - *FrankenStat* (notebook 01) runs on a small **simulated** PTA generated from
