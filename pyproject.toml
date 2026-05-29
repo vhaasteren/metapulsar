@@ -90,6 +90,7 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  | legacy
 )/
 '''
 
