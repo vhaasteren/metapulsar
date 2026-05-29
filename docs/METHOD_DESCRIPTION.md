@@ -124,6 +124,11 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Choice of consistent components.** The default choice `{astrometry, spindown, binary, dispersion}` fits most pulsars. For problematic sources one can drop a component from the consistent set; all parameters of that component then remain PTA‑specific.
 * **DM modeling.** Removing DMX in favor of {DM, DMEPOCH, DM1, DM2} makes the deterministic DM part uniform. Stochastic DM variations are handled entirely in the noise model (e.g., a DM GP) during inference.
 * **Nonlinear regimes.** If a pulsar resides in a regime where ( **M** ) varies rapidly with ( β₀ ) (high‑order binary models, poorly constrained orbital evolution), manual inspection is recommended. The factory allows a **composite** strategy (no merging model components) for such cases.
+* **Hybrid nonlinear-linear timing (new module).** For enterprise analyses that need sampled nonlinear timing corrections for a subset of parameters, use `metapulsar.nonlinear_timing_model.build_nonlinear_timing_signal(...)`. It composes:
+  * a deterministic nonlinear delay from standardized sampled parameters, and
+  * a linear timing block with sampled columns excluded using `idx_exclude`.
+  Default mode `nmat` uses `MarginalizingTimingModel`, while `basis` uses `TimingModel`.
+* **Strict missing sampled parameters.** The nonlinear signal builder defaults to strict missing-parameter checks (`strict_missing_sampled_params=True`), so sampled parameters unavailable in a PTA backend produce explicit errors rather than silent fallback.
 * **Name handling.** Pulsar identity is validated via **coordinates**. B‑ vs J‑name is a display convention only and does not enter any computation.
 * **Determinism and provenance.** Given the set of `.par`/`.tim` inputs, the chosen reference PTA, and the list of consistent components, the output is deterministic. The code can optionally write the **consistent** `.par` files it constructs for full auditability.
 
@@ -159,6 +164,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Detector‑specific timing‑model parameters remain local:** anything not in the consistent component set becomes PTA‑suffixed in `_add_pta_specific_parameter`.
 * **Phase offset exposure:** if `PHOFF` is absent MetaPulsar defines a meta‑parameter mapped to the canonical “Offset” column so that per‑dataset constant phase terms are explicit.
 * **Combined design matrix:** `MetaPulsar._build_design_matrix` (with unit corrections in `_convert_design_matrix_units`) and the zero‑information cull in `_remove_nonidentifiable_parameters`.
+* **Nonlinear timing package:** `metapulsar.nonlinear_timing_model` (`engines.py`, `transforms.py`, `partitioning.py`, `signal_builder.py`), with `metapulsar.timing_delta` retained as a compatibility shim.
 * **Identity validation and naming:** `bj_name_from_pulsar` and coordinate‑based checks in `_validate_pulsar_consistency`.
 * **No TOA edits:** `MetaPulsar._combine_timing_data` concatenates; there are no writes or transforms of TOAs.
 

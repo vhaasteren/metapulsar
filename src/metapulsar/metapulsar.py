@@ -17,6 +17,7 @@ from pint.toa import TOAs
 # Import our supporting infrastructure
 from .parameter_manager import ParameterManager
 from .position_helpers import bj_name_from_pulsar
+from .nonlinear_timing_model import build_delta_engine
 
 
 class MetaPulsar(ep.BasePulsar):
@@ -83,6 +84,8 @@ class MetaPulsar(ep.BasePulsar):
 
         # BasePulsar handles sorting automatically
         self.sort_data()
+
+        self._delta_engines = None
 
         # Calculate canonical name from pulsar data using B-name preference logic
         self.name = self._get_pulsar_name(pulsars)
@@ -516,6 +519,82 @@ class MetaPulsar(ep.BasePulsar):
             return column * factor
 
         return column
+
+    def _timing_delta_unit_factor(self, param_name, timing_package):
+        """Return native-parameter delta factor matching design-matrix units."""
+        converted_unit_column = self._convert_design_matrix_units(
+            np.ones(1), param_name, timing_package
+        )
+        return float(converted_unit_column[0])
+
+    def _ensure_delta_engines(self):
+        """Build per-PTA timing-delta engines lazily."""
+        if self._delta_engines is not None:
+            return
+        self._delta_engines = {
+            pta: build_delta_engine(pta_input)
+            for pta, pta_input in self._pulsars.items()
+        }
+
+    def timing_delta(self, delta_params, missing_param_policy="linear_fallback"):
+        """Return non-linear residual deviations for canonical parameter offsets.
+
+        The returned vector is sorted in the same order as ``self.residuals``.
+        Deviations are keyed by MetaPulsar's canonical ``fitpars`` names.
+        """
+        if missing_param_policy not in {"linear_fallback", "strict_error"}:
+            raise ValueError(
+                "missing_param_policy must be either 'linear_fallback' or 'strict_error'."
+            )
+        if not delta_params or all(
+            float(value) == 0.0 for value in delta_params.values()
+        ):
+            return np.zeros(len(self.residuals), dtype=float)
+
+        self._ensure_delta_engines()
+        pta_slices = self._get_pta_slices()
+        combined = np.zeros(len(self._toas), dtype=float)
+
+        unknown_params = set(delta_params) - set(self._fitparameters)
+        if unknown_params:
+            unknown = ", ".join(sorted(unknown_params))
+            raise KeyError(f"Unknown timing-delta parameter(s): {unknown}")
+
+        for pta, engine in self._delta_engines.items():
+            pta_params = {}
+            psr = self._epulsars[pta]
+            timing_package = self._get_timing_package(psr)
+
+            for full_param, delta in delta_params.items():
+                mapped_param = self._fitparameters[full_param].get(pta)
+                if mapped_param is None:
+                    if missing_param_policy == "strict_error":
+                        raise KeyError(
+                            f"Parameter '{full_param}' is not available for PTA '{pta}'."
+                        )
+                    continue
+                if mapped_param not in engine.param_names:
+                    if missing_param_policy == "strict_error":
+                        raise KeyError(
+                            f"Mapped parameter '{mapped_param}' for '{full_param}' "
+                            f"is unavailable in backend for PTA '{pta}'."
+                        )
+                    column_index = self.fitpars.index(full_param)
+                    combined[pta_slices[pta]] += self._designmatrix[
+                        pta_slices[pta], column_index
+                    ] * float(delta)
+                    continue
+                factor = self._timing_delta_unit_factor(full_param, timing_package)
+                pta_params[mapped_param] = float(delta) * factor
+
+            if pta in pta_slices:
+                combined[pta_slices[pta]] += engine.delta_residuals(pta_params)
+
+        return combined[self._isort]
+
+    def residuals_at(self, delta_params):
+        """Return residuals at theta0 + delta_params."""
+        return self.residuals + self.timing_delta(delta_params)
 
     def _setup_position_and_planets(self):
         """Setup position and planetary data using PositionHelpers."""

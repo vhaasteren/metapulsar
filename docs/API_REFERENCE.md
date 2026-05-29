@@ -10,6 +10,7 @@ Complete API documentation for the MetaPulsar package.
 - [Layout Discovery](#layout-discovery)
 - [Parameter Management](#parameter-management)
 - [Selection Utilities](#selection-utilities)
+- [Nonlinear Timing Model](#nonlinear-timing-model)
 - [Utilities](#utilities)
 - [Exceptions](#exceptions)
 
@@ -376,6 +377,82 @@ def create_staggered_selection(
     """
 ```
 
+## Nonlinear Timing Model
+
+MetaPulsar nonlinear timing helpers for hybrid sampled/marginalized timing analyses.
+
+### build_nonlinear_timing_signal
+
+Build an enterprise-composable nonlinear timing signal from an engine exposing canonical `fitpars` and timing deltas.
+
+```python
+def build_nonlinear_timing_signal(
+    *,
+    engine,
+    sampled_params: Sequence[str],
+    marginalized_params: Sequence[str] | None = None,
+    mode: str = "nmat",
+    standardization: Mapping[str, object] | None = None,
+    idx_from_fitpars: Mapping[str, int | Sequence[int]] | None = None,
+    name: str = "nonlinear_timing_model",
+    coefficients: bool = False,
+    strict_missing_sampled_params: bool = True,
+    parameter_priors: Mapping[str, object] | None = None,
+):
+    """Build nonlinear deterministic timing + linear timing block signals.
+
+    mode="nmat"  -> Deterministic + MarginalizingTimingModel(idx_exclude=idx_sampled)
+    mode="basis" -> Deterministic + TimingModel(idx_exclude=idx_sampled)
+    """
+```
+
+### TransformRegistry and AffineTransform
+
+Reversible standardized-parameter transforms for sampled nonlinear parameters.
+
+```python
+class AffineTransform:
+    center: float = 0.0
+    scale: float = 1.0  # must be non-zero
+
+class TransformRegistry:
+    def to_physical(self, z_params: Mapping[str, float]) -> Dict[str, float]:
+        """Convert standardized z-space values to physical deltas."""
+
+    def to_standardized(self, delta_params: Mapping[str, float]) -> Dict[str, float]:
+        """Convert physical deltas to standardized z-space values."""
+```
+
+### compute_timing_partition
+
+Partition timing-model parameters into sampled nonlinear and marginalized linear blocks.
+
+```python
+def compute_timing_partition(
+    fitpars: Sequence[str],
+    sampled_params: Sequence[str],
+    marginalized_params: Sequence[str] | None = None,
+    idx_from_fitpars: Mapping[str, int | Sequence[int]] | None = None,
+) -> TimingPartition:
+    """Return sampled/marginalized parameters and idx_sampled/idx_marginalized."""
+```
+
+### Engine adapters
+
+Nonlinear timing backend adapters live in `metapulsar.nonlinear_timing_model`:
+
+```python
+class TimingDeltaEngine(Protocol):
+    param_names: list[str]
+    def delta_residuals(self, delta_params: Dict[str, float]) -> np.ndarray: ...
+
+class PintDeltaEngine(TimingDeltaEngine): ...
+class Tempo2DeltaEngine(TimingDeltaEngine): ...
+class JugDeltaEngine(TimingDeltaEngine):  # NotImplemented placeholder
+```
+
+`metapulsar.timing_delta` remains as a compatibility import shim.
+
 ## Exceptions
 
 ### ParameterInconsistencyError
@@ -514,4 +591,24 @@ from enterprise.signals.selections import Selection
 # Create selection function
 efac_sel = create_staggered_selection("efac", {"group": None})
 selection = Selection(efac_sel)
+```
+
+### Nonlinear Timing Signal (both modes)
+
+```python
+from metapulsar.nonlinear_timing_model import build_nonlinear_timing_signal
+
+# Exclude sampled nonlinear columns from the linear timing block.
+signal_nmat = build_nonlinear_timing_signal(
+    engine=metapulsar,
+    sampled_params=["F0", "DM"],
+    mode="nmat",
+    standardization={"F0": {"center": 0.0, "scale": 1e-9}},
+)
+
+signal_basis = build_nonlinear_timing_signal(
+    engine=metapulsar,
+    sampled_params=["F0", "DM"],
+    mode="basis",
+)
 ```

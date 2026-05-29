@@ -41,6 +41,18 @@ from .mockpulsar import (
 )
 from .tim_file_analyzer import TimFileAnalyzer
 from .selection_utils import create_staggered_selection
+from .nonlinear_timing_model import (
+    AffineTransform,
+    TransformRegistry,
+    TimingPartition,
+    compute_timing_partition,
+    TimingDeltaEngine,
+    PintDeltaEngine,
+    Tempo2DeltaEngine,
+    JugDeltaEngine,
+    build_delta_engine,
+    build_nonlinear_timing_signal,
+)
 
 # Exceptions
 from .pint_helpers import PINTDiscoveryError
@@ -68,6 +80,16 @@ __all__ = [
     "validate_mock_data",
     "TimFileAnalyzer",
     "create_staggered_selection",
+    "AffineTransform",
+    "TransformRegistry",
+    "TimingPartition",
+    "compute_timing_partition",
+    "TimingDeltaEngine",
+    "PintDeltaEngine",
+    "Tempo2DeltaEngine",
+    "JugDeltaEngine",
+    "build_delta_engine",
+    "build_nonlinear_timing_signal",
     "PINTDiscoveryError",
     # Convenience functions
     "discover_files",
