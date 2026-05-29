@@ -100,7 +100,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
    git commit -m "feat: add new feature"
    ```
 
-5. **Push and Create MR**
+5. **Push and Create PR**
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -227,7 +227,7 @@ When requesting features, please include:
 
 ## 📞 Getting Help
 
-- **Issues**: [GitLab Issues](https://www.github.com/vhaasteren/metapulsar/issues)
+- **Issues**: [GitHub Issues](https://www.github.com/vhaasteren/metapulsar/issues)
 - **Email**: [rutger@vhaasteren.com](mailto:rutger@vhaasteren.com)
 
 ## 📄 License
