@@ -43,15 +43,18 @@ from .tim_file_analyzer import TimFileAnalyzer
 from .selection_utils import create_staggered_selection
 from .nonlinear_timing_model import (
     AffineTransform,
+    DiscoveryNonlinearTimingComponents,
     TransformRegistry,
     TimingPartition,
-    compute_timing_partition,
     TimingDeltaEngine,
+    build_delta_engine,
+    build_discovery_nonlinear_timing_components,
+    build_discovery_nonlinear_timing_likelihood,
     PintDeltaEngine,
     Tempo2DeltaEngine,
     JugDeltaEngine,
-    build_delta_engine,
     build_nonlinear_timing_signal,
+    compute_timing_partition,
 )
 
 # Exceptions
@@ -81,6 +84,7 @@ __all__ = [
     "TimFileAnalyzer",
     "create_staggered_selection",
     "AffineTransform",
+    "DiscoveryNonlinearTimingComponents",
     "TransformRegistry",
     "TimingPartition",
     "compute_timing_partition",
@@ -90,6 +94,8 @@ __all__ = [
     "JugDeltaEngine",
     "build_delta_engine",
     "build_nonlinear_timing_signal",
+    "build_discovery_nonlinear_timing_components",
+    "build_discovery_nonlinear_timing_likelihood",
     "PINTDiscoveryError",
     # Convenience functions
     "discover_files",

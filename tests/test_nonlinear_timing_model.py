@@ -1,5 +1,8 @@
 """Tests for the MetaPulsar nonlinear timing-model package."""
 
+import sys
+import types
+
 import numpy as np
 from enterprise.signals import gp_signals
 
@@ -8,6 +11,8 @@ from metapulsar.mockpulsar import create_mock_libstempo
 from metapulsar.nonlinear_timing_model import (
     AffineTransform,
     TransformRegistry,
+    build_discovery_nonlinear_timing_components,
+    build_discovery_nonlinear_timing_likelihood,
     build_nonlinear_timing_signal,
     compute_timing_partition,
 )
@@ -189,3 +194,157 @@ def test_empty_marginalized_set_is_deterministic_only_and_linear_limit():
     expected = mp._designmatrix[:, mp.fitpars.index(sampled_param)][mp._isort] * epsilon
 
     np.testing.assert_allclose(delay, expected, atol=1.0e-18, rtol=0.0)
+
+
+class _DiscoveryDummyPulsar:
+    def __init__(self):
+        self.name = "J0000+0000"
+        self.residuals = np.zeros(5, dtype=float)
+        self.Mmat = np.array(
+            [
+                [1.0, 0.0, 2.0],
+                [0.5, 1.0, 0.0],
+                [0.0, 2.0, -1.0],
+                [1.0, 1.0, 0.0],
+                [0.2, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+
+
+class _DiscoveryDummyEngine:
+    def __init__(self, mmat):
+        self.fitpars = ["F0", "F1", "DM"]
+        self._mmat = np.asarray(mmat, dtype=float)
+
+    def timing_delta(self, delta_params, missing_param_policy="linear_fallback"):
+        unknown = sorted(set(delta_params) - set(self.fitpars))
+        if unknown and missing_param_policy == "strict_error":
+            raise KeyError("unavailable in backend")
+        out = np.zeros(self._mmat.shape[0], dtype=float)
+        for name, value in delta_params.items():
+            if name in self.fitpars:
+                out += self._mmat[:, self.fitpars.index(name)] * float(value)
+        return out
+
+
+def _install_fake_discovery_modules(monkeypatch):
+    fake_discovery = types.ModuleType("discovery")
+    fake_signals = types.ModuleType("discovery.signals")
+    fake_likelihood = types.ModuleType("discovery.likelihood")
+
+    class _FakeTimingGP:
+        def __init__(self, psr, fmat, constant, name, variable):
+            self.psr = psr
+            self.F = np.asarray(fmat, dtype=float)
+            self.constant = constant
+            self.gpname = name
+            self.variable = variable
+
+    class _FakePulsarLikelihood:
+        def __init__(self, signals):
+            self.signals = list(signals)
+
+    def _makegp_improper(psr, fmat, constant=1.0e40, name="improperGP", variable=False):
+        return _FakeTimingGP(psr, fmat, constant, name, variable)
+
+    fake_signals.makegp_improper = _makegp_improper
+    fake_likelihood.PulsarLikelihood = _FakePulsarLikelihood
+    fake_discovery.signals = fake_signals
+    fake_discovery.likelihood = fake_likelihood
+
+    monkeypatch.setitem(sys.modules, "discovery", fake_discovery)
+    monkeypatch.setitem(sys.modules, "discovery.signals", fake_signals)
+    monkeypatch.setitem(sys.modules, "discovery.likelihood", fake_likelihood)
+
+
+def test_discovery_nmat_components_subset_and_zero_delay(monkeypatch):
+    _install_fake_discovery_modules(monkeypatch)
+    psr = _DiscoveryDummyPulsar()
+    engine = _DiscoveryDummyEngine(psr.Mmat)
+
+    components = build_discovery_nonlinear_timing_components(
+        psr=psr,
+        engine=engine,
+        sampled_params=["F0"],
+        mode="nmat",
+        name="nl_disc",
+    )
+
+    assert components.partition.idx_sampled == [0]
+    assert components.partition.idx_marginalized == [1, 2]
+    assert components.timing_gp.F.shape[1] == len(components.partition.idx_marginalized)
+
+    zero_params = {name: 0.0 for name in components.delay.params}
+    delay = components.delay(zero_params)
+    np.testing.assert_allclose(delay, np.zeros_like(delay), atol=1.0e-20, rtol=0.0)
+
+
+def test_discovery_nmat_deterministic_small_delta_limit(monkeypatch):
+    _install_fake_discovery_modules(monkeypatch)
+    psr = _DiscoveryDummyPulsar()
+    engine = _DiscoveryDummyEngine(psr.Mmat)
+
+    components = build_discovery_nonlinear_timing_components(
+        psr=psr,
+        engine=engine,
+        sampled_params=["DM"],
+        marginalized_params=[],
+        mode="nmat",
+        name="nl_disc_det",
+    )
+    assert components.timing_gp is None
+
+    param_name = components.sampled_parameter_names["DM"]
+    epsilon = 1.0e-9
+    delay = components.delay({param_name: epsilon})
+    expected = psr.Mmat[:, engine.fitpars.index("DM")] * epsilon
+    np.testing.assert_allclose(delay, expected, atol=1.0e-20, rtol=0.0)
+
+
+def test_discovery_nmat_strict_missing_propagates(monkeypatch):
+    _install_fake_discovery_modules(monkeypatch)
+
+    class _StrictMissingEngine(_DiscoveryDummyEngine):
+        def timing_delta(self, delta_params, missing_param_policy="linear_fallback"):
+            if "DM" in delta_params and missing_param_policy == "strict_error":
+                raise KeyError("unavailable in backend")
+            return super().timing_delta(delta_params, missing_param_policy)
+
+    psr = _DiscoveryDummyPulsar()
+    engine = _StrictMissingEngine(psr.Mmat)
+    components = build_discovery_nonlinear_timing_components(
+        psr=psr,
+        engine=engine,
+        sampled_params=["DM"],
+        mode="nmat",
+        strict_missing_sampled_params=True,
+    )
+
+    param_name = components.sampled_parameter_names["DM"]
+    try:
+        components.delay({param_name: 1.0e-9})
+    except KeyError as exc:
+        assert "unavailable in backend" in str(exc)
+    else:
+        raise AssertionError("Expected strict missing-parameter error.")
+
+
+def test_discovery_nmat_likelihood_helper_builds_psl(monkeypatch):
+    _install_fake_discovery_modules(monkeypatch)
+    psr = _DiscoveryDummyPulsar()
+    engine = _DiscoveryDummyEngine(psr.Mmat)
+    noise = object()
+
+    psl, components = build_discovery_nonlinear_timing_likelihood(
+        psr=psr,
+        noise=noise,
+        engine=engine,
+        sampled_params=["F0"],
+        mode="nmat",
+        return_components=True,
+    )
+
+    assert psl.signals[0] is psr.residuals
+    assert psl.signals[1] is noise
+    assert psl.signals[-1] is components.delay

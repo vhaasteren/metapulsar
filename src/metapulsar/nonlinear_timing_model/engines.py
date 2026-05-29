@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, runtime_checkable
 
 import astropy.units as u
 import numpy as np
@@ -172,21 +172,168 @@ class Tempo2DeltaEngine:
 
 
 class JugDeltaEngine:
-    """Placeholder for a future JUG backend adapter."""
+    """JUG residual-deviation engine.
 
-    param_names: list[str] = []
+    Parameters
+    ----------
+    residual_source
+        Either a JUG session-like object exposing
+        ``compute_residuals(params: dict[str, float] | None, subtract_tzr=...)``
+        or a callable with signature ``callable(overrides: dict[str, float] | None)``.
+        The return value may be:
+        - a dict containing ``residuals_us`` or ``residuals_sec``, or
+        - a 1D residual array in seconds.
+    fitpars
+        Canonical parameter names used by higher-level partitioning logic.
+        If omitted, defaults to ``param_names``.
+    param_names
+        Backend parameter names accepted by ``residual_source`` overrides.
+        If omitted, inferred from ``residual_source.params`` when available.
+    param_mapping
+        Optional canonical-to-backend mapping for overrides.
+    reference_params
+        Optional backend reference parameter values. If omitted, inferred from
+        ``residual_source.params`` when available.
+    subtract_tzr
+        Forwarded to JUG session ``compute_residuals``.
+    """
 
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError(
-            "JUG timing backend adapter is not implemented yet for nonlinear timing deltas."
+    def __init__(
+        self,
+        residual_source,
+        *,
+        fitpars: list[str] | None = None,
+        param_names: list[str] | None = None,
+        param_mapping: Mapping[str, str] | None = None,
+        reference_params: Mapping[str, float] | None = None,
+        subtract_tzr: bool = True,
+    ):
+        self._residual_source = residual_source
+        self._residual_callable = self._coerce_callable(residual_source)
+        self._subtract_tzr = bool(subtract_tzr)
+        self._param_mapping = dict(param_mapping or {})
+
+        inferred_backend_names = self._infer_backend_param_names(
+            residual_source, param_names
+        )
+        self.param_names = list(inferred_backend_names)
+
+        self.fitpars = list(fitpars) if fitpars is not None else list(self.param_names)
+
+        inferred_reference = self._infer_reference_params(
+            residual_source, reference_params
+        )
+        self._reference_params = inferred_reference
+        self._reference_residuals = self._evaluate_seconds(overrides=None)
+
+    def _coerce_callable(
+        self, residual_source
+    ) -> Callable[[dict[str, float] | None], object]:
+        if hasattr(residual_source, "compute_residuals"):
+
+            def _session_eval(overrides: dict[str, float] | None):
+                return residual_source.compute_residuals(
+                    params=overrides,
+                    subtract_tzr=self._subtract_tzr,
+                )
+
+            return _session_eval
+
+        if callable(residual_source):
+            return residual_source
+
+        raise TypeError(
+            "JugDeltaEngine requires a session-like object with 'compute_residuals' "
+            "or a callable residual evaluator."
         )
 
-    def delta_residuals(
+    @staticmethod
+    def _infer_backend_param_names(
+        residual_source, param_names: list[str] | None
+    ) -> list[str]:
+        if param_names is not None:
+            return [str(name) for name in param_names]
+        source_params = getattr(residual_source, "params", None)
+        if isinstance(source_params, Mapping):
+            return [str(name) for name in source_params.keys()]
+        return []
+
+    @staticmethod
+    def _infer_reference_params(
+        residual_source, reference_params: Mapping[str, float] | None
+    ) -> dict[str, float]:
+        if reference_params is not None:
+            return {str(name): float(value) for name, value in reference_params.items()}
+        source_params = getattr(residual_source, "params", None)
+        if isinstance(source_params, Mapping):
+            return {
+                str(name): float(value)
+                for name, value in source_params.items()
+                if isinstance(value, (int, float, np.number))
+            }
+        return {}
+
+    @staticmethod
+    def _extract_residuals_seconds(result) -> np.ndarray:
+        if isinstance(result, Mapping):
+            if "residuals_us" in result:
+                return np.asarray(result["residuals_us"], dtype=float) * 1.0e-6
+            if "residuals_sec" in result:
+                return np.asarray(result["residuals_sec"], dtype=float)
+            if "residuals" in result:
+                return np.asarray(result["residuals"], dtype=float)
+            raise KeyError(
+                "Residual result mapping must include 'residuals_us', "
+                "'residuals_sec', or 'residuals'."
+            )
+
+        return np.asarray(result, dtype=float)
+
+    def _evaluate_seconds(self, overrides: dict[str, float] | None) -> np.ndarray:
+        result = self._residual_callable(overrides)
+        residuals = self._extract_residuals_seconds(result)
+        if residuals.ndim != 1:
+            raise ValueError("Residual evaluator must return a 1D residual vector.")
+        return residuals
+
+    def _canonical_to_backend(self, param_name: str) -> str:
+        return self._param_mapping.get(param_name, param_name)
+
+    def _build_absolute_overrides(
         self, delta_params: dict[str, float]
-    ) -> np.ndarray:  # pragma: no cover
-        raise NotImplementedError(
-            "JUG timing backend adapter is not implemented yet for nonlinear timing deltas."
-        )
+    ) -> dict[str, float]:
+        overrides: dict[str, float] = {}
+        for canonical_name, delta in delta_params.items():
+            backend_name = self._canonical_to_backend(canonical_name)
+            if self.param_names and backend_name not in self.param_names:
+                raise KeyError(f"JUG backend has no parameter '{backend_name}'")
+            if backend_name not in self._reference_params:
+                raise KeyError(
+                    f"Reference value is unavailable for backend parameter "
+                    f"'{backend_name}'."
+                )
+            overrides[backend_name] = float(
+                self._reference_params[backend_name]
+            ) + float(delta)
+        return overrides
+
+    def delta_residuals(self, delta_params: dict[str, float]) -> np.ndarray:
+        if _is_zero_delta(delta_params):
+            return np.zeros_like(self._reference_residuals)
+
+        unknown = sorted(set(delta_params) - set(self.fitpars))
+        if unknown:
+            raise KeyError(
+                f"Unknown JUG timing-delta parameter(s): {', '.join(unknown)}"
+            )
+
+        overrides = self._build_absolute_overrides(delta_params)
+        perturbed_residuals = self._evaluate_seconds(overrides)
+        if perturbed_residuals.shape != self._reference_residuals.shape:
+            raise ValueError(
+                "Perturbed residual vector length does not match reference residuals."
+            )
+        return perturbed_residuals - self._reference_residuals
 
 
 def build_delta_engine(pta_input) -> TimingDeltaEngine:
@@ -194,4 +341,6 @@ def build_delta_engine(pta_input) -> TimingDeltaEngine:
     if isinstance(pta_input, tuple) and len(pta_input) == 2:
         model, toas = pta_input
         return PintDeltaEngine(model, toas)
+    if hasattr(pta_input, "compute_residuals"):
+        return JugDeltaEngine(pta_input)
     return Tempo2DeltaEngine(pta_input)

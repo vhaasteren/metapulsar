@@ -10,7 +10,11 @@ from pint.residuals import Residuals
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
-from metapulsar.nonlinear_timing_model import PintDeltaEngine, Tempo2DeltaEngine
+from metapulsar.nonlinear_timing_model import (
+    JugDeltaEngine,
+    PintDeltaEngine,
+    Tempo2DeltaEngine,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pulse_tracking"
@@ -111,3 +115,59 @@ def test_pint_delta_engine_matches_pint_residual_recompute():
     got = engine.delta_residuals(delta_params)
 
     np.testing.assert_allclose(got, expected, rtol=0.0, atol=1.0e-16)
+
+
+class _MockJugSession:
+    def __init__(self, matrix, reference_params, param_order=None):
+        self._matrix = np.asarray(matrix, dtype=float)
+        self.params = dict(reference_params)
+        self._param_order = (
+            list(param_order)
+            if param_order is not None
+            else list(reference_params.keys())
+        )
+
+    def compute_residuals(self, params=None, subtract_tzr=True):
+        assert subtract_tzr is True
+        current = dict(self.params)
+        if params:
+            current.update(params)
+        residuals_sec = np.zeros(self._matrix.shape[0], dtype=float)
+        for col_idx, param_name in enumerate(self._param_order):
+            residuals_sec += self._matrix[:, col_idx] * float(current[param_name])
+        return {"residuals_us": residuals_sec * 1.0e6}
+
+
+def test_jug_delta_engine_zero_and_linear_delta():
+    matrix = np.array(
+        [
+            [1.0, 0.0],
+            [0.5, 2.0],
+            [0.0, -1.0],
+        ],
+        dtype=float,
+    )
+    session = _MockJugSession(matrix, {"F0": 2.0, "DM": -3.0})
+    engine = JugDeltaEngine(session, fitpars=["F0", "DM"])
+
+    np.testing.assert_array_equal(engine.delta_residuals({}), np.zeros(matrix.shape[0]))
+
+    delta_params = {"F0": 1.0e-9, "DM": -2.0e-9}
+    got = engine.delta_residuals(delta_params)
+    expected = matrix[:, 0] * delta_params["F0"] + matrix[:, 1] * delta_params["DM"]
+    np.testing.assert_allclose(got, expected, rtol=0.0, atol=1.0e-15)
+
+
+def test_jug_delta_engine_supports_canonical_mapping():
+    matrix = np.array([[1.0], [2.0]], dtype=float)
+    session = _MockJugSession(matrix, {"F0": 10.0}, param_order=["F0"])
+    engine = JugDeltaEngine(
+        session,
+        fitpars=["F0_CANON"],
+        param_names=["F0"],
+        param_mapping={"F0_CANON": "F0"},
+    )
+
+    delta = 2.0e-9
+    got = engine.delta_residuals({"F0_CANON": delta})
+    np.testing.assert_allclose(got, matrix[:, 0] * delta, rtol=0.0, atol=1.0e-15)
