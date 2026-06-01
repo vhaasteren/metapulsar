@@ -2,7 +2,7 @@
 
 ### Problem statement and summary
 
-Given multiple public PTA data sets for the **same** pulsar—each consisting of a **timing model** (a `.par` file) and **times of arrival** (a `.tim` file)—MetaPulsar constructs a single “metapulsar” that can be analyzed with standard PTA likelihoods without first re‑deriving a common timing solution. The procedure **does not modify the TOAs**; it only organizes the **deterministic timing model** across PTAs, and then builds the **combined design matrix** and metadata needed by Enterprise/Discovery.
+Given multiple public PTA data sets for the **same** pulsar—each consisting of a **timing model** (a `.par` file) and **times of arrival** (a `.tim` file)—MetaPulsar constructs a single “metapulsar” that can be analyzed with standard PTA likelihoods without first manually re‑deriving a common timing solution. The procedure **does not modify the TOAs**; it only organizes the **deterministic timing model** across PTAs, and then builds the **combined design matrix** and metadata needed by Enterprise/Discovery.
 
 After analytic marginalization over timing‑model parameters, the likelihood depends on the **column space** of the design matrix ( **M** ) rather than on the specific nominal parameter values ( β₀ ). Our procedure guarantees that the relevant column space is the same as in a traditional manual combination, so it is **statistically equivalent** to a full re‑timing while being vastly simpler and deterministic.
 
@@ -32,12 +32,12 @@ MetaPulsar first ensures that all `.par` files are in the same time unit convent
 
 **No TOA samples are modified** in this step or any subsequent step of this method.
 
-#### Convention harmonization (gated, UNITS-like)
+#### Convention of consistent strategy
 
 After unit conversion and before design-matrix assembly, MetaPulsar applies a
-gated convention harmonization pass. The policy matches the same pattern as
-unit handling: discover per-PTA state, compare PTAs/engines, and only act when
-heterogeneity matters.
+gated convention regarding how to make timing models consistent. The policy
+uses the pattern: discover per-PTA state, compare PTAs/engines, and only act
+when heterogeneity matters.
 
 Layer A is always applied:
 
