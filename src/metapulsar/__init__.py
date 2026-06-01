@@ -5,6 +5,13 @@ collaborations (EPTA, PPTA, NANOGrav, MPTA, etc.) into unified "metapulsar"
 objects for gravitational wave detection.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("metapulsar")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
+
 # Core classes
 from .metapulsar import MetaPulsar
 from .metapulsar_factory import (
@@ -46,7 +53,6 @@ from .selection_utils import create_staggered_selection
 from .pint_helpers import PINTDiscoveryError
 
 
-__version__ = "0.1.0"
 __author__ = "Rutger van Haasteren, Wangwei Yu, David Wright"
 __email__ = "rutger@vhaasteren.com"
 
