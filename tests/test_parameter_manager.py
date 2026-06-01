@@ -705,6 +705,41 @@ UNITS TDB
                 parfile_dicts, reference_dict
             )
 
+    def test_apply_convention_harmonization_pint_only_elong_elat_aliases(self):
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "ELONG 244.347\n"
+                    "ELAT -10.07\n"
+                    "ECL IERS2010\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "ELONG 244.347\n"
+                    "ELAT -10.07\n"
+                    "EPHEM DE436\n"
+                    "CLK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_convention_harmonization(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
+        assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
+
     def test_apply_convention_harmonization_missing_reference_clock_raises(self):
         """Reference parfile must contain CLOCK or CLK."""
         file_data = {

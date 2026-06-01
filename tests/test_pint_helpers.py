@@ -624,3 +624,45 @@ T0 55000.0 1
             # Should still call ModelBuilder
             mock_builder.assert_called_once()
             assert result == mock_model
+
+
+class TestAstrometryStyleHelpers:
+    """Test alias-driven astrometry style detection helpers."""
+
+    def test_has_parameter_alias_accepts_pint_aliases(self):
+        from metapulsar.pint_helpers import has_parameter_alias
+
+        parfile_dict = {"LAMBDA": ["244.347"], "BETA": ["-10.07"]}
+        assert has_parameter_alias(parfile_dict, "ELONG")
+        assert has_parameter_alias(parfile_dict, "ELAT")
+        assert not has_parameter_alias(parfile_dict, "RAJ")
+
+    def test_detect_astrometry_style_equatorial_aliases(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "RA": ["18:57:36.3937"],
+            "DEC": ["+09:43:17.291"],
+        }
+        assert detect_astrometry_style(parfile_dict) == "equatorial"
+
+    def test_detect_astrometry_style_ecliptic_aliases(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "ELONG": ["244.347"],
+            "ELAT": ["-10.07"],
+        }
+        assert detect_astrometry_style(parfile_dict) == "ecliptic"
+
+    def test_detect_astrometry_style_mixed_raises(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "RAJ": ["18:57:36.3937"],
+            "DECJ": ["+09:43:17.291"],
+            "LAMBDA": ["244.347"],
+            "BETA": ["-10.07"],
+        }
+        with pytest.raises(ValueError, match="Mixed astrometry detected"):
+            detect_astrometry_style(parfile_dict)

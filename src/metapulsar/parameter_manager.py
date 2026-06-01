@@ -25,6 +25,7 @@ from .pint_helpers import (
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
     parse_parameter_using_pint,
+    detect_astrometry_style,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ class ParameterManager:
 
     _EQUATORIAL_WARNING = (
         "Equatorial astrometry detected. PINT/tempo2 parity after T2CMETHOD "
-        "harmonization is typically a few ns (about 6 ns on NG5 J1600), "
+        "modification is typically a few ns (about 6 ns on NG5 J1600), "
         "slightly larger than ecliptic pars with full convention alignment "
         "(about 1 ns on NG11 J1600). Reason: no explicit ECL obliquity "
         "convention to harmonize; residual differences from ecliptic-frame "
@@ -376,7 +377,7 @@ class ParameterManager:
         states: Dict[str, Dict[str, Optional[str]]] = {}
         for pta_name, parfile_dict in parfile_dicts.items():
             states[pta_name] = {
-                "style": self._detect_astrometry_style(parfile_dict),
+                "style": detect_astrometry_style(parfile_dict),
                 "ecl": self._parse_ecl_value(parfile_dict),
                 "t2cmethod": self._parse_t2cmethod_value(parfile_dict),
                 "package": self._normalize_timing_package(
@@ -384,26 +385,6 @@ class ParameterManager:
                 ),
             }
         return states
-
-    def _detect_astrometry_style(self, parfile_dict: Dict[str, List[str]]) -> str:
-        has_equatorial = "RAJ" in parfile_dict and "DECJ" in parfile_dict
-        has_ecliptic = ("LAMBDA" in parfile_dict or "ELONG" in parfile_dict) and (
-            "BETA" in parfile_dict or "ELAT" in parfile_dict
-        )
-
-        if has_equatorial and has_ecliptic:
-            raise ValueError(
-                "Mixed astrometry detected (equatorial and ecliptic parameters present). "
-                "Refuse to harmonize ambiguous coordinate representation."
-            )
-        if has_ecliptic:
-            return "ecliptic"
-        if has_equatorial:
-            return "equatorial"
-        raise ValueError(
-            "Could not detect astrometry style. Expected either RAJ/DECJ or "
-            "LAMBDA/BETA (or ELONG/ELAT)."
-        )
 
     def _apply_convention_harmonization(
         self,
@@ -632,7 +613,7 @@ class ParameterManager:
                     dmx_params_map,
                 )
 
-        # Harmonize conventions with gated cross/single engine rules
+        # Make conventions consistent with gated cross/single engine rules
         try:
             self._apply_convention_harmonization(parfile_dicts, reference_dict)
         except ValueError as e:
