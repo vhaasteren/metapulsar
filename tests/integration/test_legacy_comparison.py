@@ -2,6 +2,7 @@
 
 import pytest
 import numpy as np
+from pathlib import Path
 from metapulsar import (
     FileDiscoveryService,
     get_pulsar_names_from_file_data,
@@ -10,8 +11,62 @@ from metapulsar import (
 
 
 @pytest.mark.integration
+@pytest.mark.requires_legacy
 class TestLegacyComparison:
     """Test comparison between legacy and new implementations."""
+
+    def _read_par_content(self, par_content):
+        if not isinstance(par_content, str):
+            return str(par_content)
+        if "\n" in par_content:
+            return par_content
+        maybe_path = Path(par_content)
+        if maybe_path.exists():
+            return maybe_path.read_text(encoding="utf-8")
+        return par_content
+
+    def _assert_protocol_harmonized(
+        self, par_content: str, label: str, engine_mix: bool
+    ):
+        text = self._read_par_content(par_content)
+        active_lines = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                active_lines.append(line)
+
+        keys = {}
+        for line in active_lines:
+            parts = line.split()
+            if not parts:
+                continue
+            key = parts[0].upper()
+            keys[key] = parts[1:]
+
+        if engine_mix:
+            # Cross-engine harmonization should neutralize active TEMPO mode.
+            if "T2CMETHOD" in keys and keys["T2CMETHOD"]:
+                assert (
+                    keys["T2CMETHOD"][0].upper() != "TEMPO"
+                ), f"{label}: active T2CMETHOD TEMPO found after harmonization"
+
+        has_equatorial = "RAJ" in keys and "DECJ" in keys
+        has_ecliptic = ("LAMBDA" in keys or "ELONG" in keys) and (
+            "BETA" in keys or "ELAT" in keys
+        )
+        assert not (
+            has_equatorial and has_ecliptic
+        ), f"{label}: mixed astrometry detected after harmonization"
+
+        if has_ecliptic and engine_mix:
+            assert "ECL" in keys, f"{label}: expected ECL for ecliptic astrometry"
+            assert (
+                keys["ECL"][0].upper() == "IERS2003"
+            ), f"{label}: expected ECL IERS2003, found {' '.join(keys['ECL'])}"
+        elif has_equatorial and engine_mix:
+            assert (
+                "ECL" not in keys
+            ), f"{label}: equatorial astrometry should not include active ECL"
 
     def _prepare_legacy_input_files(
         self, pulsar_name, pta_data_releases, available_data_sets
@@ -680,6 +735,8 @@ class TestLegacyComparison:
                     }
                 )
 
+            engine_mix = len({entry["package"] for entry in input_files}) > 1
+
             # Create both implementations
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
@@ -709,6 +766,13 @@ class TestLegacyComparison:
             new_par_content = getattr(new_mp, "intermediate_par_content", None)
 
             if legacy_par_content and new_par_content:
+                self._assert_protocol_harmonized(
+                    legacy_par_content, "legacy", engine_mix=engine_mix
+                )
+                self._assert_protocol_harmonized(
+                    new_par_content, "new", engine_mix=engine_mix
+                )
+
                 # Parse par files and compare key parameters
                 from pint.models import get_model
 
