@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Callable, Mapping, Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 import astropy.units as u
 import numpy as np
@@ -123,12 +123,16 @@ class Tempo2DeltaEngine:
     def __init__(self, lt_psr):
         self._psr = lt_psr
         self._fit_param_names = list(lt_psr.pars())
-        self.param_names = ["Offset", *list(lt_psr.pars(which="set"))]
-        self._reference_values = {
-            name: lt_psr[name].val
-            for name in self.param_names
-            if hasattr(lt_psr[name], "val")
-        }
+        offset = ["Offset"] if "Offset" in self._fit_param_names else []
+        self.param_names = offset + list(lt_psr.pars(which="set"))
+        self._reference_values = {}
+        for name in self.param_names:
+            try:
+                par = lt_psr[name]
+            except KeyError:
+                continue
+            if hasattr(par, "val"):
+                self._reference_values[name] = par.val
         self._reference_residuals = np.asarray(lt_psr.residuals(), dtype=float)
         self._designmatrix = np.asarray(lt_psr.designmatrix(), dtype=float)
 
@@ -139,6 +143,8 @@ class Tempo2DeltaEngine:
         try:
             for name, delta in delta_params.items():
                 if name not in self._reference_values:
+                    if name == "Offset":
+                        continue
                     raise KeyError(f"libstempo pulsar has no parameter '{name}'")
                 self._psr[name].val = self._reference_values[name] + float(delta)
             self._psr.formbats()
@@ -169,6 +175,38 @@ class Tempo2DeltaEngine:
             linearized += self._designmatrix[:, col] * float(delta)
 
         return linearized
+
+
+# Canonical timing names (Enterprise/libstempo fitpars) -> JUG backend aliases.
+_CANONICAL_TO_BACKEND_ALIASES: dict[str, tuple[str, ...]] = {
+    "RAJ": ("RAJ", "RA"),
+    "DECJ": ("DECJ", "DEC"),
+    "ELONG": ("ELONG", "LAMBDA", "RAJ", "RA"),
+    "ELAT": ("ELAT", "BETA", "DECJ", "DEC"),
+    "PMRA": ("PMRA",),
+    "PMDEC": ("PMDEC",),
+    "PMELONG": ("PMELONG", "PMLAMBDA", "PMRA"),
+    "PMELAT": ("PMELAT", "PMBETA", "PMDEC"),
+    "ECC": ("ECC", "E"),
+    "TASC": ("TASC", "T0"),
+}
+
+
+def infer_jug_param_mapping(
+    canonical_names: Sequence[str],
+    backend_names: Sequence[str] | set[str],
+) -> dict[str, str]:
+    """Map canonical fit parameter names to JUG backend keys when they differ."""
+    backend = set(backend_names)
+    mapping: dict[str, str] = {}
+    for canon in canonical_names:
+        if canon in backend:
+            continue
+        for candidate in _CANONICAL_TO_BACKEND_ALIASES.get(canon, (canon,)):
+            if candidate in backend:
+                mapping[canon] = candidate
+                break
+    return mapping
 
 
 class JugDeltaEngine:

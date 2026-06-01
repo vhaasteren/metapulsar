@@ -14,6 +14,7 @@ from metapulsar.nonlinear_timing_model import (
     JugDeltaEngine,
     PintDeltaEngine,
     Tempo2DeltaEngine,
+    infer_jug_param_mapping,
 )
 
 
@@ -156,6 +157,21 @@ def test_jug_delta_engine_zero_and_linear_delta():
     got = engine.delta_residuals(delta_params)
     expected = matrix[:, 0] * delta_params["F0"] + matrix[:, 1] * delta_params["DM"]
     np.testing.assert_allclose(got, expected, rtol=0.0, atol=1.0e-15)
+
+
+def test_infer_jug_param_mapping_maps_ecliptic_aliases():
+    backend = {"LAMBDA", "BETA", "PMLAMBDA", "PMBETA", "E", "PB", "F0"}
+    mapping = infer_jug_param_mapping(
+        ["ELONG", "ELAT", "PMELONG", "PMELAT", "ECC", "PB"],
+        backend,
+    )
+    assert mapping == {
+        "ELONG": "LAMBDA",
+        "ELAT": "BETA",
+        "PMELONG": "PMLAMBDA",
+        "PMELAT": "PMBETA",
+        "ECC": "E",
+    }
 
 
 def test_jug_delta_engine_supports_canonical_mapping():

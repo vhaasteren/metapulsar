@@ -49,21 +49,94 @@ def _build_delay_callable(
     sampled_parameter_names: Mapping[str, str],
     strict_missing_sampled_params: bool,
 ):
-    def delay(params):
-        z_params = {
-            sampled_param: float(params.get(param_name, 0.0))
-            for sampled_param, param_name in sampled_parameter_names.items()
-        }
+    """Build a Discovery delay term compatible with JAX-based samplers (NumPyro NUTS)."""
+    import jax
+    import jax.numpy as jnp
+
+    ref_residuals = getattr(engine, "_reference_residuals", None)
+    if ref_residuals is None and hasattr(engine, "_mmat"):
+        ref_residuals = np.zeros(int(engine._mmat.shape[0]), dtype=float)
+    ref_residuals = np.asarray(ref_residuals, dtype=float)
+    if ref_residuals.ndim != 1:
+        raise ValueError(
+            "Engine must expose 1D '_reference_residuals' (or '_mmat') for Discovery delay."
+        )
+
+    param_order = list(partition.sampled_params)
+    param_name_order = [sampled_parameter_names[param] for param in param_order]
+    result_shape = (int(ref_residuals.shape[0]),)
+    result_dtype = jnp.float64
+
+    def _delay_host(z_flat: np.ndarray) -> np.ndarray:
+        z_flat = np.asarray(z_flat, dtype=float).reshape(-1)
+        z_params = {param: float(z_flat[idx]) for idx, param in enumerate(param_order)}
         delta_params = transform_registry.to_physical(z_params)
-        return _call_engine_timing_delta(
+        delay_sec = _call_engine_timing_delta(
             engine,
             delta_params=delta_params,
             strict_missing=strict_missing_sampled_params,
         )
+        return np.asarray(delay_sec, dtype=float)
 
-    delay.params = [
-        sampled_parameter_names[param] for param in partition.sampled_params
-    ]
+    def _delay_vjp_fwd(z_flat):
+        y = jax.pure_callback(
+            _delay_host,
+            jnp.zeros(result_shape, dtype=result_dtype),
+            z_flat,
+        )
+        return y, z_flat
+
+    def _delay_grad_host(
+        z_flat_host: np.ndarray, cotangent_host: np.ndarray
+    ) -> np.ndarray:
+        z_np = np.asarray(z_flat_host, dtype=float).reshape(-1)
+        g_np = np.asarray(cotangent_host, dtype=float).reshape(-1)
+        grad = np.zeros(z_np.shape[0], dtype=float)
+        f0 = _delay_host(z_np)
+        step = 1.0e-6
+        for idx in range(z_np.shape[0]):
+            z_plus = z_np.copy()
+            z_plus[idx] += step
+            f_plus = _delay_host(z_plus)
+            grad[idx] = float(np.dot(g_np, (f_plus - f0) / step))
+        return grad
+
+    def _delay_vjp_bwd(z_flat, cotangent):
+        grad = jax.pure_callback(
+            _delay_grad_host,
+            jnp.zeros((len(param_order),), dtype=result_dtype),
+            z_flat,
+            cotangent,
+        )
+        return (grad,)
+
+    @jax.custom_vjp
+    def _delay_jax(z_flat):
+        return _delay_vjp_fwd(z_flat)[0]
+
+    _delay_jax.defvjp(_delay_vjp_fwd, _delay_vjp_bwd)
+
+    def _delay_eager(params):
+        z_flat = np.array(
+            [float(params[name]) for name in param_name_order],
+            dtype=float,
+        )
+        return _delay_host(z_flat)
+
+    def delay(params):
+        if not any(isinstance(v, jax.core.Tracer) for v in params.values()):
+            return _delay_eager(params)
+
+        z_flat = jnp.stack(
+            [
+                jnp.asarray(params[name], dtype=result_dtype)
+                for name in param_name_order
+            ],
+            axis=0,
+        )
+        return _delay_jax(z_flat)
+
+    delay.params = param_name_order
     return delay
 
 
@@ -186,6 +259,7 @@ def build_discovery_nonlinear_timing_likelihood(
     svd: bool = False,
     scale: float = 1.0,
     strict_missing_sampled_params: bool = True,
+    red_noise_signal: Any | None = None,
     extra_signals: Sequence[Any] | None = None,
     return_components: bool = False,
 ):
@@ -208,6 +282,8 @@ def build_discovery_nonlinear_timing_likelihood(
     _, discovery_likelihood = _require_discovery()
 
     signals = [psr.residuals if residuals is None else residuals, noise]
+    if red_noise_signal is not None:
+        signals.append(red_noise_signal)
     if components.timing_gp is not None:
         signals.append(components.timing_gp)
     signals.append(components.delay)

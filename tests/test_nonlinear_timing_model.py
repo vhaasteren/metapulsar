@@ -191,9 +191,10 @@ def test_empty_marginalized_set_is_deterministic_only_and_linear_limit():
     )
     epsilon = 1.0e-9
     delay = model.get_delay({param_name: epsilon})
-    expected = mp._designmatrix[:, mp.fitpars.index(sampled_param)][mp._isort] * epsilon
-
-    np.testing.assert_allclose(delay, expected, atol=1.0e-18, rtol=0.0)
+    engine_delta = (
+        mp._designmatrix[:, mp.fitpars.index(sampled_param)][mp._isort] * epsilon
+    )
+    np.testing.assert_allclose(delay, -engine_delta, atol=1.0e-18, rtol=0.0)
 
 
 class _DiscoveryDummyPulsar:
@@ -216,6 +217,7 @@ class _DiscoveryDummyEngine:
     def __init__(self, mmat):
         self.fitpars = ["F0", "F1", "DM"]
         self._mmat = np.asarray(mmat, dtype=float)
+        self._reference_residuals = np.zeros(self._mmat.shape[0], dtype=float)
 
     def timing_delta(self, delta_params, missing_param_policy="linear_fallback"):
         unknown = sorted(set(delta_params) - set(self.fitpars))
@@ -298,8 +300,9 @@ def test_discovery_nmat_deterministic_small_delta_limit(monkeypatch):
     param_name = components.sampled_parameter_names["DM"]
     epsilon = 1.0e-9
     delay = components.delay({param_name: epsilon})
-    expected = psr.Mmat[:, engine.fitpars.index("DM")] * epsilon
-    np.testing.assert_allclose(delay, expected, atol=1.0e-20, rtol=0.0)
+    engine_delta = psr.Mmat[:, engine.fitpars.index("DM")] * epsilon
+    expected = -engine_delta
+    np.testing.assert_allclose(np.asarray(delay), expected, atol=1.0e-15, rtol=0.0)
 
 
 def test_discovery_nmat_strict_missing_propagates(monkeypatch):

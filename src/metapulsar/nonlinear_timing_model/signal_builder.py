@@ -28,26 +28,35 @@ def _make_parameter_priors(
 def _call_engine_timing_delta(
     engine, delta_params: dict[str, float], strict_missing: bool
 ) -> np.ndarray:
+    """Return a timing delay for Enterprise/Discovery residual updates.
+
+    Engines report ``r(theta0 + delta) - r(theta0)``.  Enterprise uses
+    ``detres = residuals - delay`` (see ``enterprise_extensions.tm_delay``), so the
+    delay must be ``r(theta0) - r(theta0 + delta)``, i.e. the negated engine delta.
+    """
     if hasattr(engine, "timing_delta"):
         if strict_missing:
             try:
-                return np.asarray(
+                raw = np.asarray(
                     engine.timing_delta(
                         delta_params, missing_param_policy="strict_error"
                     ),
                     dtype=float,
                 )
             except TypeError:
-                pass
-        return np.asarray(engine.timing_delta(delta_params), dtype=float)
+                raw = np.asarray(engine.timing_delta(delta_params), dtype=float)
+            else:
+                return -raw
+        raw = np.asarray(engine.timing_delta(delta_params), dtype=float)
+    elif hasattr(engine, "delta_residuals"):
+        raw = np.asarray(engine.delta_residuals(delta_params), dtype=float)
+    else:
+        raise TypeError(
+            "Engine must provide either 'timing_delta(delta_params, ...)' or "
+            "'delta_residuals(delta_params)'."
+        )
 
-    if hasattr(engine, "delta_residuals"):
-        return np.asarray(engine.delta_residuals(delta_params), dtype=float)
-
-    raise TypeError(
-        "Engine must provide either 'timing_delta(delta_params, ...)' or "
-        "'delta_residuals(delta_params)'."
-    )
+    return -raw
 
 
 def _build_nonlinear_waveform(
