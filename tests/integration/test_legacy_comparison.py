@@ -11,6 +11,7 @@ from metapulsar import (
 
 
 @pytest.mark.integration
+@pytest.mark.requires_legacy
 class TestLegacyComparison:
     """Test comparison between legacy and new implementations."""
 

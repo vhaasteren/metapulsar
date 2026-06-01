@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
-from metapulsar.legacy.metapulsar import MetaParfiles
+_legacy_metapulsar = pytest.importorskip("metapulsar.legacy.metapulsar")
+MetaParfiles = _legacy_metapulsar.MetaParfiles
+
+pytestmark = pytest.mark.requires_legacy
 
 
 def _build_input(pta: str, par_content: str, package: str = "tempo2") -> dict:
