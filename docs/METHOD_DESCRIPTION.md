@@ -32,6 +32,57 @@ MetaPulsar first ensures that all `.par` files are in the same time unit convent
 
 **No TOA samples are modified** in this step or any subsequent step of this method.
 
+#### Convention harmonization (gated, UNITS-like)
+
+After unit conversion and before design-matrix assembly, MetaPulsar applies a
+gated convention harmonization pass. The policy matches the same pattern as
+unit handling: discover per-PTA state, compare PTAs/engines, and only act when
+heterogeneity matters.
+
+Layer A is always applied:
+
+1. align `EPHEM` to the reference PTA,
+2. align `CLOCK`/`CLK` to the reference PTA.
+
+Layer B is applied only when both PINT and tempo2 PTAs are present
+(cross-engine stack):
+
+1. ecliptic astrometry: set `ECL IERS2003`,
+2. remove active `T2CMETHOD TEMPO`,
+3. equatorial astrometry: remove active `ECL` and emit a warning about the
+   known residual few-ns parity floor for equatorial inputs.
+
+Layer C is applied only for single-engine, multi-PTA stacks:
+
+- **PINT-only:** if ecliptic `ECL` values differ (including missing vs present),
+  align to the reference `ECL`; if the reference omits `ECL`, default to
+  `IERS2010`.
+- **Tempo2-only:** if ecliptic `ECL` values differ, align to `IERS2003`; if
+  `T2CMETHOD` values differ, align to the reference PTA's `T2CMETHOD` (which
+  preserves `TEMPO` when already shared in the reference).
+
+No-op cases:
+
+- single PTA (no cross-PTA convention alignment needed),
+- multi-PTA single-engine stacks that are already homogeneous for the relevant
+  conventions.
+
+`UNITS` normalization remains handled by `_convert_units_if_needed`; convention
+harmonization does not force `UNITS`.
+
+For cross-engine parity motivation and validation context, see Luo et al. 2021,
+*ApJ* 911, 45, [doi:10.3847/1538-4357/abe62f](https://doi.org/10.3847/1538-4357/abe62f).
+This method description intentionally does not reproduce the full paper
+regression narrative.
+
+| Scenario | `T2CMETHOD TEMPO` | Ecliptic `ECL` |
+|----------|-------------------|----------------|
+| Single PTA, tempo2-only | Keep | Unchanged |
+| Multi PTA, tempo2-only | Align across PTAs; keep `TEMPO` if shared in reference | Align to `IERS2003` if heterogeneous |
+| Multi PTA, PINT-only | N/A | Align to reference or `IERS2010` if heterogeneous |
+| Multi PTA, PINT + tempo2 | Remove/neutralize | Force `IERS2003` |
+| Equatorial + cross-engine | Remove + warning | Strip `ECL` |
+
 ### Step 2: Merge astrophysical timing‑model components
 
 MetaPulsar merges selected **astrophysical** components across PTAs by **copying parameter values from the reference PTA** into the other `.par` files *for those components only*. The set of components is configurable and defaults to
@@ -141,19 +192,21 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 ### Minimal algorithm (for reference)
 
-1. **Parse & normalize units** for all PTAs (`UNITS → TDB`; align `EPHEM`, `CLOCK/CLK`).
-2. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, set DM (free), set DMEPOCH (frozen), add DM1/DM2 (free, 0).
-3. **Instantiate** Enterprise pulsars (PINT or Tempo2 path). Validate same pulsar by coordinates.
-4. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).
-5. **Concatenate** per‑PTA arrays (TOAs, flags, etc.) without modification.
-6. **Assemble** the combined design matrix column‑by‑column using the mapping, with explicit unit conversions; drop zero‑information columns.
-7. **Expose** a `MetaPulsar` object fully compatible with Enterprise/Discovery.
+1. **Parse & normalize units** for all PTAs (`UNITS → TDB` only when needed).
+2. **Harmonize conventions** with gated rules: always align `EPHEM`, `CLOCK/CLK`; apply cross-engine parity rules only when both PINT and tempo2 are present; otherwise apply single-engine multi-PTA alignment only when conventions are heterogeneous.
+3. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, set DM (free), set DMEPOCH (frozen), add DM1/DM2 (free, 0).
+4. **Instantiate** Enterprise pulsars (PINT or Tempo2 path). Validate same pulsar by coordinates.
+5. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).
+6. **Concatenate** per‑PTA arrays (TOAs, flags, etc.) without modification.
+7. **Assemble** the combined design matrix column‑by‑column using the mapping, with explicit unit conversions; drop zero‑information columns.
+8. **Expose** a `MetaPulsar` object fully compatible with Enterprise/Discovery.
 
 ---
 
 #### Notes
 
-* **Unit conversions and ephemeris/clock alignment:** `ParameterManager._convert_units_if_needed`, `_convert_pint_to_tdb`, `_convert_tempo2_to_tdb`, and the EPHEM/CLOCK block in `_make_parameters_consistent`.
+* **Unit conversions and EPHEM/CLOCK alignment:** `ParameterManager._convert_units_if_needed`, `_convert_pint_to_tdb`, `_convert_tempo2_to_tdb`, and convention Layer A in `ParameterManager._apply_convention_harmonization`.
+* **Gated convention harmonization:** `ParameterManager._apply_convention_harmonization` and legacy `MetaParfiles.apply_parity_protocol`.
 * **Component discovery/aliasing:** `get_parameters_by_type_from_models`, `resolve_parameter_alias`, `check_component_available_in_model`.
 * **Dispersion handling:** `ParameterManager._handle_dm_special_cases` (remove DMX, set DM/DMEPOCH, add DM1/DM2).
 * **Detector‑specific timing‑model parameters remain local:** anything not in the consistent component set becomes PTA‑suffixed in `_add_pta_specific_parameter`.
