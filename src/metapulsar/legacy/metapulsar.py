@@ -1,6 +1,5 @@
 # metapulsar.py
-"""Class containing pulsar data from multiple data releases
-"""
+"""Class containing pulsar data from multiple data releases"""
 
 from io import StringIO
 from pathlib import Path
@@ -47,9 +46,7 @@ except ImportError:
 try:
     from ..sandbox_tempo2 import tempopulsar as sandbox_tempopulsar
 except ImportError as e:
-    logger.warning(
-        f"Sandbox tempo2 not available: {e}. Will use original libstempo."
-    )
+    logger.warning(f"Sandbox tempo2 not available: {e}. Will use original libstempo.")
     sandbox_tempopulsar = None
 
 try:
@@ -432,6 +429,7 @@ def write_stringio_to_file(string_io_object, fpobj):
 
 class MetaParfiles(object):
     """Class to manipulate multiple parfiles for combined analysis"""
+
     _EQUATORIAL_WARNING = (
         "Equatorial astrometry detected. PINT/tempo2 parity after T2CMETHOD "
         "modification is typically a few ns (about 6 ns on NG5 J1600), "
@@ -632,11 +630,10 @@ class MetaParfiles(object):
         ------
         pfd:list, the pta list {'parfile':xxxx, 'timfile':xxxx,}
         """
-        with tempfile.NamedTemporaryFile(
-            mode="w+", delete=True
-        ) as output_file, tempfile.NamedTemporaryFile(
-            mode="w+", delete=True
-        ) as input_file:
+        with (
+            tempfile.NamedTemporaryFile(mode="w+", delete=True) as output_file,
+            tempfile.NamedTemporaryFile(mode="w+", delete=True) as input_file,
+        ):
 
             write_stringio_to_file(pfd["parfile"], input_file.name)
 
@@ -739,7 +736,9 @@ class MetaParfiles(object):
         return normalized
 
     def _normalized_timing_packages(self):
-        return {self._normalize_timing_package(pfd["package"]) for pfd in self._parfiles}
+        return {
+            self._normalize_timing_package(pfd["package"]) for pfd in self._parfiles
+        }
 
     def _is_cross_engine_mix(self, normalized_packages):
         return {"pint", "tempo2"}.issubset(normalized_packages)
@@ -804,7 +803,10 @@ class MetaParfiles(object):
             for pfd in self._parfiles:
                 pd = pfd["pardict_conv"]
                 pta = pfd["pta"]
-                actions = [f"aligned EPHEM={ref_ephem[0]}", f"aligned {ref_clock_key}={ref_clock[0]}"]
+                actions = [
+                    f"aligned EPHEM={ref_ephem[0]}",
+                    f"aligned {ref_clock_key}={ref_clock[0]}",
+                ]
                 style = convention_states[pta]["style"]
 
                 if style == "ecliptic":
@@ -1171,20 +1173,30 @@ class MetaPulsar(h5p.BasePulsar):
             is_tempopulsar = False
             try:
                 # Check if it has the essential tempopulsar methods
-                has_residuals = hasattr(psritem, 'residuals') and callable(getattr(psritem, 'residuals'))
-                has_toas = hasattr(psritem, 'toas') and callable(getattr(psritem, 'toas'))
-                has_designmatrix = hasattr(psritem, 'designmatrix') and callable(getattr(psritem, 'designmatrix'))
+                has_residuals = hasattr(psritem, "residuals") and callable(
+                    getattr(psritem, "residuals")
+                )
+                has_toas = hasattr(psritem, "toas") and callable(
+                    getattr(psritem, "toas")
+                )
+                has_designmatrix = hasattr(psritem, "designmatrix") and callable(
+                    getattr(psritem, "designmatrix")
+                )
 
                 if has_residuals and has_toas and has_designmatrix:
                     is_tempopulsar = True
-                    logger.debug(f"Found tempopulsar-like object for {epname} (duck typing)")
+                    logger.debug(
+                        f"Found tempopulsar-like object for {epname} (duck typing)"
+                    )
             except Exception as e:
                 logger.debug(f"Error checking tempopulsar methods for {epname}: {e}")
 
             if is_tempopulsar:
                 lt_pulsars.update({epname: psritem})
             else:
-                logger.debug(f"Not a tempopulsar-like object for {epname}: {type(psritem)}")
+                logger.debug(
+                    f"Not a tempopulsar-like object for {epname}: {type(psritem)}"
+                )
 
         return pint_models, pint_toas, lt_pulsars
 
@@ -1620,13 +1632,18 @@ def create_metapulsar(
                             dofit=False,
                         )
                     else:
-                        raise ImportError("Neither sandbox tempo2 nor libstempo available")
+                        raise ImportError(
+                            "Neither sandbox tempo2 nor libstempo available"
+                        )
 
                 elif timing_package == "pint":
                     # Use PINT to read the par/tim file
 
                     pulsar_dict[pfd["pta"]] = get_model_and_toas(
-                        temp_parfile.name, pfd["timfile"], planets=planets, allow_T2=True
+                        temp_parfile.name,
+                        pfd["timfile"],
+                        planets=planets,
+                        allow_T2=True,
                     )
 
             if par_output_dir:
