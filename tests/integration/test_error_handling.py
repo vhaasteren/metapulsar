@@ -160,15 +160,18 @@ C 55000.0 123.456 0.001 1234.5 1234.5
             data_release["base_dir"] = str(temp_dir)
             data_release["par_pattern"] = "J0030+0451.par"
 
-            # This should raise Tempo2Error because the par file is empty and causes libstempo toas() to fail
+            # This should raise Tempo2Error when libstempo processes the consistent par/tim pair
             with pytest.raises(Tempo2Error):
                 # Create file_data format for the test (list format)
-                # Provide minimal valid parfile content with coordinates for coordinate discovery
+                # par_content must include EPHEM/CLOCK for convention harmonization; on-disk par is empty
                 minimal_parfile_content = """RAJ 00:30:27.4
 DECJ 04:51:39.7
 F0 123.456
 DM 13.299 1 0.001
 PEPOCH 55000
+EPHEM DE421
+CLOCK TT(TAI)
+UNITS TDB
 """
                 file_data = {
                     "epta_dr1_v2_2": [
@@ -214,15 +217,18 @@ C 55000.0 123.456 0.001 1234.5 1234.5
             data_release["base_dir"] = str(temp_dir)
             data_release["par_pattern"] = "J0030+0451.par"
 
-            # This should raise Tempo2Error because the par file is corrupted and causes libstempo toas() to fail
+            # This should raise Tempo2Error when libstempo processes the consistent par/tim pair
             with pytest.raises(Tempo2Error):
                 # Create file_data format for the test (list format)
-                # Provide valid parfile content for coordinate discovery, but the actual file is corrupted
+                # par_content must include EPHEM/CLOCK for convention harmonization; on-disk par is corrupted
                 valid_parfile_content = """RAJ 00:30:27.4
 DECJ 04:51:39.7
 F0 123.456
 DM 13.299 1 0.001
 PEPOCH 55000
+EPHEM DE421
+CLOCK TT(TAI)
+UNITS TDB
 """
                 file_data = {
                     "epta_dr1_v2_2": [
