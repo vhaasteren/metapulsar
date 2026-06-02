@@ -1,6 +1,7 @@
 """Unit tests for PINT helper functions."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from metapulsar.pint_helpers import (
     check_component_available_in_model,
@@ -666,3 +667,31 @@ class TestAstrometryStyleHelpers:
         }
         with pytest.raises(ValueError, match="Mixed astrometry detected"):
             detect_astrometry_style(parfile_dict)
+
+
+class TestTemporaryPnTimFromParTimTempo2:
+    """Test tempo2 subprocess pulse-number helper."""
+
+    def test_add_pulse_number_uses_nofit(self, tmp_path):
+        from metapulsar.pint_helpers import temporary_pn_tim_from_par_tim_tempo2
+
+        par_text = (
+            "PSR J0030+0451\nF0 205.5307\nF1 0\nRAJ 00:30:27.428\nDECJ +04:51:39.71\n"
+        )
+        tim_path = tmp_path / "test.tim"
+        tim_path.write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+
+        captured_cmd = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            cwd = Path(kwargs["cwd"])
+            (cwd / "withpn.tim").write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+
+        with patch("metapulsar.pint_helpers.subprocess.run", side_effect=fake_run):
+            with temporary_pn_tim_from_par_tim_tempo2(par_text, tim_path) as pn_tim:
+                assert Path(pn_tim).exists()
+
+        assert captured_cmd[0] == "tempo2"
+        assert "-nofit" in captured_cmd
+        assert captured_cmd.index("-nofit") < captured_cmd.index("-f")
