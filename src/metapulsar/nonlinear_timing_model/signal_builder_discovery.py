@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .partitioning import TimingPartition, compute_timing_partition
+from .priors import SampledTimingParameterRegistry
 from .signal_builder import _call_engine_timing_delta
 from .transforms import TransformRegistry
 
@@ -19,7 +20,8 @@ class DiscoveryNonlinearTimingComponents:
     delay: Any
     timing_gp: Any | None
     partition: TimingPartition
-    transform_registry: TransformRegistry
+    transform_registry: TransformRegistry | None
+    sampled_timing_registry: SampledTimingParameterRegistry | None
     sampled_parameter_names: dict[str, str]
 
 
@@ -45,7 +47,8 @@ def _build_delay_callable(
     *,
     engine,
     partition: TimingPartition,
-    transform_registry: TransformRegistry,
+    transform_registry: TransformRegistry | None,
+    sampled_timing_registry: SampledTimingParameterRegistry | None,
     sampled_parameter_names: Mapping[str, str],
     strict_missing_sampled_params: bool,
 ):
@@ -70,7 +73,10 @@ def _build_delay_callable(
     def _delay_host(z_flat: np.ndarray) -> np.ndarray:
         z_flat = np.asarray(z_flat, dtype=float).reshape(-1)
         z_params = {param: float(z_flat[idx]) for idx, param in enumerate(param_order)}
-        delta_params = transform_registry.to_physical(z_params)
+        if sampled_timing_registry is not None:
+            delta_params = sampled_timing_registry.delta_from_z_params(z_params)
+        else:
+            delta_params = transform_registry.to_physical(z_params)  # type: ignore[union-attr]
         delay_sec = _call_engine_timing_delta(
             engine,
             delta_params=delta_params,
@@ -191,12 +197,17 @@ def build_discovery_nonlinear_timing_components(
     svd: bool = False,
     scale: float = 1.0,
     strict_missing_sampled_params: bool = True,
+    sampled_timing_registry: SampledTimingParameterRegistry | None = None,
 ) -> DiscoveryNonlinearTimingComponents:
     """Build Discovery delay + marginalized timing-GP components."""
 
     if mode != "nmat":
         raise ValueError(
             "Discovery nonlinear timing add-on currently supports mode='nmat' only."
+        )
+    if sampled_timing_registry is not None and standardization is not None:
+        raise ValueError(
+            "Provide either sampled_timing_registry or standardization, not both."
         )
 
     fitpars = list(getattr(engine, "fitpars", []))
@@ -211,8 +222,19 @@ def build_discovery_nonlinear_timing_components(
         marginalized_params=marginalized_params,
         idx_from_fitpars=idx_from_fitpars,
     )
-    transform_registry = TransformRegistry(partition.sampled_params, standardization)
-    transform_registry.validate_roundtrip()
+    transform_registry: TransformRegistry | None = None
+    if sampled_timing_registry is None:
+        transform_registry = TransformRegistry(
+            partition.sampled_params, standardization
+        )
+        transform_registry.validate_roundtrip()
+    else:
+        registry_names = list(sampled_timing_registry.sampled_params)
+        if registry_names != list(partition.sampled_params):
+            raise ValueError(
+                "sampled_timing_registry parameter order must match sampled_params: "
+                f"{registry_names} vs {list(partition.sampled_params)}."
+            )
 
     sampled_parameter_names = {
         param: _z_parameter_name(psr, name, param) for param in partition.sampled_params
@@ -221,6 +243,7 @@ def build_discovery_nonlinear_timing_components(
         engine=engine,
         partition=partition,
         transform_registry=transform_registry,
+        sampled_timing_registry=sampled_timing_registry,
         sampled_parameter_names=sampled_parameter_names,
         strict_missing_sampled_params=strict_missing_sampled_params,
     )
@@ -239,6 +262,7 @@ def build_discovery_nonlinear_timing_components(
         timing_gp=timing_gp,
         partition=partition,
         transform_registry=transform_registry,
+        sampled_timing_registry=sampled_timing_registry,
         sampled_parameter_names=sampled_parameter_names,
     )
 
@@ -259,6 +283,7 @@ def build_discovery_nonlinear_timing_likelihood(
     svd: bool = False,
     scale: float = 1.0,
     strict_missing_sampled_params: bool = True,
+    sampled_timing_registry: SampledTimingParameterRegistry | None = None,
     red_noise_signal: Any | None = None,
     extra_signals: Sequence[Any] | None = None,
     return_components: bool = False,
@@ -278,6 +303,7 @@ def build_discovery_nonlinear_timing_likelihood(
         svd=svd,
         scale=scale,
         strict_missing_sampled_params=strict_missing_sampled_params,
+        sampled_timing_registry=sampled_timing_registry,
     )
     _, discovery_likelihood = _require_discovery()
 

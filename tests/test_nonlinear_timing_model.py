@@ -4,16 +4,22 @@ import sys
 import types
 
 import numpy as np
+import pytest
 from enterprise.signals import gp_signals
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 from metapulsar.nonlinear_timing_model import (
     AffineTransform,
+    CHEAT_PRIOR_SIGMA_MULTIPLIER,
+    PintPriorAdapter,
+    SampledTimingParameter,
+    SampledTimingParameterRegistry,
     TransformRegistry,
     build_discovery_nonlinear_timing_components,
     build_discovery_nonlinear_timing_likelihood,
     build_nonlinear_timing_signal,
+    build_sampled_timing_parameter_registry,
     compute_timing_partition,
 )
 
@@ -351,3 +357,96 @@ def test_discovery_nmat_likelihood_helper_builds_psl(monkeypatch):
     assert psl.signals[0] is psr.residuals
     assert psl.signals[1] is noise
     assert psl.signals[-1] is components.delay
+
+
+def _epta_pint_model_with_free_f0():
+    pytest.importorskip("pint")
+    from pint.models import get_model_and_toas
+
+    par = "/workspaces/metapulsar/tests/fixtures/pulse_tracking/epta_like.par"
+    tim = "/workspaces/metapulsar/tests/fixtures/pulse_tracking/epta_like.tim"
+    model, toas = get_model_and_toas(par, tim, allow_T2=True, planets=True)
+    model.F0.frozen = False
+    return model, toas
+
+
+def test_build_registry_fallback_cheat_prior_and_logpdf_z():
+    model, toas = _epta_pint_model_with_free_f0()
+    registry = build_sampled_timing_parameter_registry(
+        pint_model=model,
+        sampled_params=["F0"],
+        pint_toas=toas,
+        prior_policy="fallback",
+    )
+    param = registry.parameters[0]
+    assert param.source == "cheat_wls"
+    half = CHEAT_PRIOR_SIGMA_MULTIPLIER * param.sigma_wls
+    lo, hi = param.prior.support()
+    np.testing.assert_allclose(lo, param.theta_ref - half, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(hi, param.theta_ref + half, rtol=0.0, atol=0.0)
+    z0 = 0.0
+    expected = param.logpdf_theta(param.theta_from_z(z0)) + np.log(
+        abs(param.transform.scale)
+    )
+    assert registry.logprior_z({"F0": z0}) == pytest.approx(expected)
+
+
+def test_build_registry_override_replaces_fallback():
+    model, toas = _epta_pint_model_with_free_f0()
+    registry = build_sampled_timing_parameter_registry(
+        pint_model=model,
+        sampled_params=["F0"],
+        pint_toas=toas,
+        prior_overrides={"F0": {"kind": "uniform", "lower": 10.0, "upper": 20.0}},
+    )
+    assert registry.parameters[0].source == "user_override"
+    lo, hi = registry.parameters[0].prior.support()
+    assert lo == 10.0 and hi == 20.0
+
+
+def test_build_registry_strict_raises_on_improper_pint_prior():
+    model, toas = _epta_pint_model_with_free_f0()
+    try:
+        build_sampled_timing_parameter_registry(
+            pint_model=model,
+            sampled_params=["F0"],
+            pint_toas=toas,
+            prior_policy="strict",
+        )
+    except ValueError as exc:
+        assert "strict policy" in str(exc)
+    else:
+        raise AssertionError("Expected strict-policy error for improper PINT prior.")
+
+
+def test_discovery_delay_uses_registry_deltas(monkeypatch):
+    _install_fake_discovery_modules(monkeypatch)
+    psr = _DiscoveryDummyPulsar()
+    engine = _DiscoveryDummyEngine(psr.Mmat)
+
+    registry = SampledTimingParameterRegistry(
+        [
+            SampledTimingParameter(
+                name="F0",
+                theta_ref=0.0,
+                transform=AffineTransform(center=0.0, scale=2.0),
+                prior=PintPriorAdapter.from_uniform(-4.0, 4.0, source="cheat_wls"),
+                source="cheat_wls",
+                units="",
+                sigma_wls=1.0,
+            )
+        ]
+    )
+
+    components = build_discovery_nonlinear_timing_components(
+        psr=psr,
+        engine=engine,
+        sampled_params=["F0"],
+        mode="nmat",
+        name="nl_disc_reg",
+        sampled_timing_registry=registry,
+    )
+    param_name = components.sampled_parameter_names["F0"]
+    delay = components.delay({param_name: 1.0})
+    expected = -(psr.Mmat[:, 0] * 2.0)
+    np.testing.assert_allclose(np.asarray(delay), expected, atol=1.0e-15, rtol=0.0)

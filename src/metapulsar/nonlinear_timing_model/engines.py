@@ -29,11 +29,13 @@ def _is_zero_delta(delta_params: dict[str, float]) -> bool:
 class PintDeltaEngine:
     """PINT-backed residual-deviation engine."""
 
-    def __init__(self, model, toas):
+    def __init__(self, model, toas, *, isort: np.ndarray | None = None):
         self._model = model
         self._toas = toas
+        self._isort = None if isort is None else np.asarray(isort, dtype=int)
         self.param_names = list(getattr(model, "params", []))
         self._reference_time_residuals = self._time_residuals(model)
+        self._reference_residuals = self._reference_time_residuals
 
     def delta_residuals(self, delta_params: dict[str, float]) -> np.ndarray:
         if _is_zero_delta(delta_params):
@@ -58,7 +60,13 @@ class PintDeltaEngine:
     def _time_residuals(self, model) -> np.ndarray:
         phase_resids = self._phase_residuals(model)
         frequency = self._spin_frequency(model)
-        return (phase_resids / frequency).to(u.s).value.astype(float)
+        return (
+            (phase_resids / frequency)
+            .to(u.s)
+            .value.astype(float)[
+                self._isort if self._isort is not None else slice(None)
+            ]
+        )
 
     def _spin_frequency(self, model):
         if "Spindown" in model.components:
@@ -215,8 +223,8 @@ class JugDeltaEngine:
     Parameters
     ----------
     residual_source
-        Either a JUG session-like object exposing
-        ``compute_residuals(params: dict[str, float] | None, subtract_tzr=...)``
+        Either a JUG session-like object exposing ``compute_residuals`` and
+        optionally ``residuals_at_params`` for fast in-memory evaluation,
         or a callable with signature ``callable(overrides: dict[str, float] | None)``.
         The return value may be:
         - a dict containing ``residuals_us`` or ``residuals_sec``, or
@@ -233,7 +241,10 @@ class JugDeltaEngine:
         Optional backend reference parameter values. If omitted, inferred from
         ``residual_source.params`` when available.
     subtract_tzr
-        Forwarded to JUG session ``compute_residuals``.
+        Forwarded to JUG session residual evaluation.
+    isort
+        Optional index array that reorders residuals into Discovery feather /
+        Enterprise PINT TOA order (same convention as ``PintDeltaEngine``).
     """
 
     def __init__(
@@ -245,10 +256,17 @@ class JugDeltaEngine:
         param_mapping: Mapping[str, str] | None = None,
         reference_params: Mapping[str, float] | None = None,
         subtract_tzr: bool = True,
+        isort: np.ndarray | None = None,
     ):
         self._residual_source = residual_source
-        self._residual_callable = self._coerce_callable(residual_source)
+        self._use_fast_jug_path = hasattr(
+            residual_source, "residuals_at_params"
+        ) and hasattr(residual_source, "compute_residuals")
+        self._residual_callable = (
+            None if self._use_fast_jug_path else self._coerce_callable(residual_source)
+        )
         self._subtract_tzr = bool(subtract_tzr)
+        self._isort = None if isort is None else np.asarray(isort, dtype=int)
         self._param_mapping = dict(param_mapping or {})
 
         inferred_backend_names = self._infer_backend_param_names(
@@ -262,7 +280,8 @@ class JugDeltaEngine:
             residual_source, reference_params
         )
         self._reference_params = inferred_reference
-        self._reference_residuals = self._evaluate_seconds(overrides=None)
+        self._reference_time_residuals = self._evaluate_seconds(overrides=None)
+        self._reference_residuals = self._reference_time_residuals
 
     def _coerce_callable(
         self, residual_source
@@ -327,11 +346,35 @@ class JugDeltaEngine:
 
         return np.asarray(result, dtype=float)
 
+    def _evaluate_session(self, overrides: dict[str, float] | None):
+        session = self._residual_source
+        if overrides is None or not overrides:
+            return session.compute_residuals(
+                params=None,
+                subtract_tzr=self._subtract_tzr,
+            )
+        if self._use_fast_jug_path:
+            return session.residuals_at_params(
+                overrides,
+                subtract_tzr=self._subtract_tzr,
+            )
+        return session.compute_residuals(
+            params=overrides,
+            subtract_tzr=self._subtract_tzr,
+        )
+
     def _evaluate_seconds(self, overrides: dict[str, float] | None) -> np.ndarray:
-        result = self._residual_callable(overrides)
+        if self._use_fast_jug_path or hasattr(
+            self._residual_source, "compute_residuals"
+        ):
+            result = self._evaluate_session(overrides)
+        else:
+            result = self._residual_callable(overrides)
         residuals = self._extract_residuals_seconds(result)
         if residuals.ndim != 1:
             raise ValueError("Residual evaluator must return a 1D residual vector.")
+        if self._isort is not None:
+            return residuals[self._isort]
         return residuals
 
     def _canonical_to_backend(self, param_name: str) -> str:
@@ -342,6 +385,8 @@ class JugDeltaEngine:
     ) -> dict[str, float]:
         overrides: dict[str, float] = {}
         for canonical_name, delta in delta_params.items():
+            if float(delta) == 0.0:
+                continue
             backend_name = self._canonical_to_backend(canonical_name)
             if self.param_names and backend_name not in self.param_names:
                 raise KeyError(f"JUG backend has no parameter '{backend_name}'")

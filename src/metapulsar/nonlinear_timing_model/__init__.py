@@ -15,11 +15,29 @@ from .signal_builder_discovery import (
     build_discovery_nonlinear_timing_components,
     build_discovery_nonlinear_timing_likelihood,
 )
+from .priors import (
+    CHEAT_PRIOR_SIGMA_MULTIPLIER,
+    PriorOverrideSpec,
+    PriorPolicy,
+    PintPriorAdapter,
+    SampledTimingParameter,
+    SampledTimingParameterRegistry,
+    build_sampled_timing_parameter_registry,
+)
 from .transforms import AffineTransform, TransformRegistry
+from .wls import wls_uncertainties
 
 __all__ = [
     "AffineTransform",
     "TransformRegistry",
+    "CHEAT_PRIOR_SIGMA_MULTIPLIER",
+    "PriorOverrideSpec",
+    "PriorPolicy",
+    "PintPriorAdapter",
+    "SampledTimingParameter",
+    "SampledTimingParameterRegistry",
+    "build_sampled_timing_parameter_registry",
+    "wls_uncertainties",
     "TimingPartition",
     "compute_timing_partition",
     "TimingDeltaEngine",

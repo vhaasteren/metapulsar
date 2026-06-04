@@ -9,6 +9,7 @@ from enterprise.signals import deterministic_signals, gp_signals, parameter
 from enterprise.signals.parameter import Function
 
 from .partitioning import TimingPartition, compute_timing_partition
+from .priors import SampledTimingParameterRegistry
 from .transforms import TransformRegistry
 
 
@@ -63,16 +64,23 @@ def _build_nonlinear_waveform(
     *,
     engine,
     sampled_params: Sequence[str],
-    transform_registry: TransformRegistry,
+    transform_registry: TransformRegistry | None,
+    sampled_timing_registry: SampledTimingParameterRegistry | None,
     strict_missing_sampled_params: bool,
     parameter_priors: Mapping[str, object] | None,
 ):
-    priors = _make_parameter_priors(sampled_params, parameter_priors)
+    if sampled_timing_registry is not None:
+        priors = sampled_timing_registry.enterprise_parameter_priors()
+    else:
+        priors = _make_parameter_priors(sampled_params, parameter_priors)
     func_kwargs = dict(priors)
 
     def nonlinear_delay(toas, mask=None, psr=None, **z_params):
         del toas, psr  # supplied by enterprise but not used by this waveform
-        delta_params = transform_registry.to_physical(z_params)
+        if sampled_timing_registry is not None:
+            delta_params = sampled_timing_registry.delta_from_z_params(z_params)
+        else:
+            delta_params = transform_registry.to_physical(z_params)  # type: ignore[union-attr]
         full_delay = _call_engine_timing_delta(
             engine,
             delta_params=delta_params,
@@ -106,8 +114,14 @@ def build_nonlinear_timing_signal(
     coefficients: bool = False,
     strict_missing_sampled_params: bool = True,
     parameter_priors: Mapping[str, object] | None = None,
+    sampled_timing_registry: SampledTimingParameterRegistry | None = None,
 ):
     """Build an enterprise-composable nonlinear timing signal."""
+
+    if sampled_timing_registry is not None and standardization is not None:
+        raise ValueError(
+            "Provide either sampled_timing_registry or standardization, not both."
+        )
 
     fitpars = list(getattr(engine, "fitpars", []))
     if not fitpars:
@@ -119,13 +133,25 @@ def build_nonlinear_timing_signal(
         marginalized_params=marginalized_params,
         idx_from_fitpars=idx_from_fitpars,
     )
-    transform_registry = TransformRegistry(partition.sampled_params, standardization)
-    transform_registry.validate_roundtrip()
+    transform_registry: TransformRegistry | None = None
+    if sampled_timing_registry is None:
+        transform_registry = TransformRegistry(
+            partition.sampled_params, standardization
+        )
+        transform_registry.validate_roundtrip()
+    else:
+        registry_names = list(sampled_timing_registry.sampled_params)
+        if registry_names != list(partition.sampled_params):
+            raise ValueError(
+                "sampled_timing_registry parameter order must match sampled_params: "
+                f"{registry_names} vs {list(partition.sampled_params)}."
+            )
 
     nonlinear_waveform = _build_nonlinear_waveform(
         engine=engine,
         sampled_params=partition.sampled_params,
         transform_registry=transform_registry,
+        sampled_timing_registry=sampled_timing_registry,
         strict_missing_sampled_params=strict_missing_sampled_params,
         parameter_priors=parameter_priors,
     )

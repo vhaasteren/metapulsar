@@ -128,7 +128,7 @@ class _MockJugSession:
             else list(reference_params.keys())
         )
 
-    def compute_residuals(self, params=None, subtract_tzr=True):
+    def _residuals_for(self, params, *, subtract_tzr=True):
         assert subtract_tzr is True
         current = dict(self.params)
         if params:
@@ -137,6 +137,12 @@ class _MockJugSession:
         for col_idx, param_name in enumerate(self._param_order):
             residuals_sec += self._matrix[:, col_idx] * float(current[param_name])
         return {"residuals_us": residuals_sec * 1.0e6}
+
+    def compute_residuals(self, params=None, subtract_tzr=True):
+        return self._residuals_for(params, subtract_tzr=subtract_tzr)
+
+    def residuals_at_params(self, params, subtract_tzr=True):
+        return self._residuals_for(params, subtract_tzr=subtract_tzr)
 
 
 def test_jug_delta_engine_zero_and_linear_delta():
@@ -187,3 +193,42 @@ def test_jug_delta_engine_supports_canonical_mapping():
     delta = 2.0e-9
     got = engine.delta_residuals({"F0_CANON": delta})
     np.testing.assert_allclose(got, matrix[:, 0] * delta, rtol=0.0, atol=1.0e-15)
+
+
+def test_jug_delta_engine_applies_isort():
+    matrix = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=float)
+    session = _MockJugSession(matrix, {"F0": 1.0, "DM": 2.0}, param_order=["F0", "DM"])
+    isort = np.array([2, 0, 1])
+    engine = JugDeltaEngine(session, fitpars=["F0", "DM"], isort=isort)
+
+    delta = {"F0": 1.0e-9}
+    expected = (matrix[:, 0] * delta["F0"])[isort]
+    np.testing.assert_allclose(
+        engine.delta_residuals(delta), expected, rtol=0.0, atol=1.0e-14
+    )
+
+
+def test_jug_delta_engine_ignores_explicit_zero_deltas():
+    matrix = np.array([[1.0, 0.0], [0.5, 2.0]], dtype=float)
+    session = _MockJugSession(matrix, {"F0": 2.0, "DM": -3.0})
+    engine = JugDeltaEngine(session, fitpars=["F0", "DM"])
+
+    delta = 1.0e-9
+    single = engine.delta_residuals({"F0": delta})
+    with_zeros = engine.delta_residuals({"F0": delta, "DM": 0.0})
+    np.testing.assert_allclose(with_zeros, single, rtol=0.0, atol=0.0)
+
+
+def test_jug_delta_engine_uses_residuals_at_params_for_perturbations(monkeypatch):
+    matrix = np.array([[1.0], [2.0]], dtype=float)
+    session = _MockJugSession(matrix, {"F0": 10.0}, param_order=["F0"])
+    engine = JugDeltaEngine(session, fitpars=["F0"])
+
+    def _fail_slow(*_args, **kwargs):
+        if kwargs.get("params"):
+            raise AssertionError("slow temp-par path should not run for deltas")
+        return session.compute_residuals(params=None, subtract_tzr=True)
+
+    monkeypatch.setattr(session, "compute_residuals", _fail_slow)
+    got = engine.delta_residuals({"F0": 2.0e-9})
+    np.testing.assert_allclose(got, matrix[:, 0] * 2.0e-9, rtol=0.0, atol=1.0e-15)
