@@ -60,7 +60,7 @@ DM 13.299 1 0.001
                         ]
                     }
                     MetaPulsarFactory().create_metapulsar(
-                        file_data, use_pulse_numbers=False
+                        file_data, use_pulse_numbers="no"
                     )
 
     def test_malformed_tim_file(self, available_data_sets):
@@ -101,7 +101,7 @@ C 12345.67890 0.0001
                         ]
                     }
                     MetaPulsarFactory().create_metapulsar(
-                        file_data, use_pulse_numbers=False
+                        file_data, use_pulse_numbers="no"
                     )
 
     def test_invalid_data_release_config(self):
@@ -184,9 +184,7 @@ UNITS TDB
                         }
                     ]
                 }
-                MetaPulsarFactory().create_metapulsar(
-                    file_data, use_pulse_numbers=False
-                )
+                MetaPulsarFactory().create_metapulsar(file_data, use_pulse_numbers="no")
 
     @pytest.mark.slow
     @pytest.mark.requires_libstempo
@@ -241,9 +239,7 @@ UNITS TDB
                         }
                     ]
                 }
-                MetaPulsarFactory().create_metapulsar(
-                    file_data, use_pulse_numbers=False
-                )
+                MetaPulsarFactory().create_metapulsar(file_data, use_pulse_numbers="no")
 
     def test_memory_limit_handling(self, available_data_sets):
         """Test handling of memory limits with large datasets."""
