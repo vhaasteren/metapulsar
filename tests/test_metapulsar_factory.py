@@ -382,6 +382,7 @@ class TestMetaPulsarFactory:
                 "tim": Path("/data/epta/J1857+0943.tim"),
                 "timing_package": "pint",
                 "timespan_days": 1000.0,
+                "par_content": "PSR J1857+0943\nF0 123.456\n",
             }
         }
 
@@ -393,7 +394,7 @@ class TestMetaPulsarFactory:
             mock_get_model.return_value = (mock_model, mock_toas)
 
             result = self.factory._create_pulsar_objects(
-                file_pairs, file_data, use_pulse_numbers=False
+                file_pairs, file_data, use_pulse_numbers="no"
             )
 
             assert "epta_dr2" in result
@@ -419,6 +420,7 @@ class TestMetaPulsarFactory:
                 "tim": Path("/data/epta/J1857+0943.tim"),
                 "timing_package": "tempo2",
                 "timespan_days": 1000.0,
+                "par_content": "PSR J1857+0943\nF0 123.456\n",
             }
         }
 
@@ -427,7 +429,7 @@ class TestMetaPulsarFactory:
             mock_tempopulsar.return_value = mock_psr
 
             result = self.factory._create_pulsar_objects(
-                file_pairs, file_data, use_pulse_numbers=False
+                file_pairs, file_data, use_pulse_numbers="no"
             )
 
             assert "epta_dr2" in result
@@ -436,6 +438,63 @@ class TestMetaPulsarFactory:
                 parfile=str(file_pairs["epta_dr2"][0]),
                 timfile=str(file_pairs["epta_dr2"][1]),
                 dofit=False,
+            )
+
+    def test_create_pulsar_objects_tempo2_yes_uses_track_minus_2(self, tmp_path):
+        """Tempo2 yes mode wraps par with TRACK -2."""
+        par_path = tmp_path / "test.par"
+        tim_path = tmp_path / "test.tim"
+        par_path.write_text("PSR J1857+0943\nF0 123.456\n", encoding="utf-8")
+        tim_path.write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+
+        file_pairs = {"epta_dr2": (par_path, tim_path)}
+        file_data = {
+            "epta_dr2": {
+                "par": par_path,
+                "tim": tim_path,
+                "timing_package": "tempo2",
+                "par_content": par_path.read_text(encoding="utf-8"),
+            }
+        }
+
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.resolved_tim_for_pulse_numbers"
+            ) as mock_resolved,
+            patch(
+                "metapulsar.metapulsar_factory.temporary_par_with_track_minus_2"
+            ) as mock_track_par,
+            patch("metapulsar.metapulsar_factory.tempopulsar") as mock_tempopulsar,
+        ):
+            mock_resolved.return_value.__enter__.return_value = str(tim_path)
+            mock_track_par.return_value.__enter__.return_value = "/tmp/track.par"
+            mock_tempopulsar.return_value = Mock()
+
+            self.factory._create_pulsar_objects(
+                file_pairs, file_data, use_pulse_numbers="yes"
+            )
+
+            mock_track_par.assert_called_once()
+            mock_tempopulsar.assert_called_once_with(
+                parfile="/tmp/track.par",
+                timfile=str(tim_path),
+                dofit=False,
+            )
+
+    def test_validate_pulse_number_mode_rejects_bool(self):
+        with pytest.raises(ValueError, match="must be one of"):
+            self.factory.create_metapulsar(
+                {
+                    "pta": [
+                        {
+                            "par": Path("x.par"),
+                            "tim": Path("x.tim"),
+                            "timing_package": "pint",
+                            "par_content": "PSR J0000+0000\nF0 1\n",
+                        }
+                    ]
+                },
+                use_pulse_numbers=True,  # type: ignore[arg-type]
             )
 
 
