@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .engines import JaxTimingDeltaEngine, JugDeltaEngine, TimingDeltaEngine
 from .partitioning import TimingPartition, compute_timing_partition
 from .priors import SampledTimingParameterRegistry
 from .signal_builder import _call_engine_timing_delta
@@ -43,91 +44,46 @@ def _z_parameter_name(psr, name: str, param: str) -> str:
     return f"{psr_name}_{name}_{param}"
 
 
-def _build_delay_callable(
+def _engine_supports_jax(engine) -> bool:
+    return isinstance(engine, JaxTimingDeltaEngine) or callable(
+        getattr(engine, "timing_delay_jax", None)
+    )
+
+
+def _reject_host_jug_for_discovery(engine) -> None:
+    if isinstance(engine, JugDeltaEngine):
+        raise TypeError(
+            "JugDeltaEngine is a host residual engine and must not be used for "
+            "Discovery/NUTS. Construct JugJaxTimingEngine.from_session(...) instead."
+        )
+
+
+def _build_delay_callable_jax(
     *,
     engine,
     partition: TimingPartition,
-    transform_registry: TransformRegistry | None,
-    sampled_timing_registry: SampledTimingParameterRegistry | None,
     sampled_parameter_names: Mapping[str, str],
-    strict_missing_sampled_params: bool,
 ):
-    """Build a Discovery delay term compatible with JAX-based samplers (NumPyro NUTS)."""
     import jax
     import jax.numpy as jnp
 
-    ref_residuals = getattr(engine, "_reference_residuals", None)
-    if ref_residuals is None and hasattr(engine, "_mmat"):
-        ref_residuals = np.zeros(int(engine._mmat.shape[0]), dtype=float)
-    ref_residuals = np.asarray(ref_residuals, dtype=float)
-    if ref_residuals.ndim != 1:
-        raise ValueError(
-            "Engine must expose 1D '_reference_residuals' (or '_mmat') for Discovery delay."
-        )
-
     param_order = list(partition.sampled_params)
     param_name_order = [sampled_parameter_names[param] for param in param_order]
-    result_shape = (int(ref_residuals.shape[0]),)
+    ref_residuals = getattr(engine, "_reference_residuals", None)
+    if ref_residuals is None:
+        ref_residuals = np.zeros(int(engine.output_shape[0]), dtype=float)
     result_dtype = jnp.float64
-
-    def _delay_host(z_flat: np.ndarray) -> np.ndarray:
-        z_flat = np.asarray(z_flat, dtype=float).reshape(-1)
-        z_params = {param: float(z_flat[idx]) for idx, param in enumerate(param_order)}
-        if sampled_timing_registry is not None:
-            delta_params = sampled_timing_registry.delta_from_z_params(z_params)
-        else:
-            delta_params = transform_registry.to_physical(z_params)  # type: ignore[union-attr]
-        delay_sec = _call_engine_timing_delta(
-            engine,
-            delta_params=delta_params,
-            strict_missing=strict_missing_sampled_params,
-        )
-        return np.asarray(delay_sec, dtype=float)
-
-    def _delay_vjp_fwd(z_flat):
-        y = jax.pure_callback(
-            _delay_host,
-            jnp.zeros(result_shape, dtype=result_dtype),
-            z_flat,
-        )
-        return y, z_flat
-
-    def _delay_grad_host(
-        z_flat_host: np.ndarray, cotangent_host: np.ndarray
-    ) -> np.ndarray:
-        z_np = np.asarray(z_flat_host, dtype=float).reshape(-1)
-        g_np = np.asarray(cotangent_host, dtype=float).reshape(-1)
-        grad = np.zeros(z_np.shape[0], dtype=float)
-        f0 = _delay_host(z_np)
-        step = 1.0e-6
-        for idx in range(z_np.shape[0]):
-            z_plus = z_np.copy()
-            z_plus[idx] += step
-            f_plus = _delay_host(z_plus)
-            grad[idx] = float(np.dot(g_np, (f_plus - f0) / step))
-        return grad
-
-    def _delay_vjp_bwd(z_flat, cotangent):
-        grad = jax.pure_callback(
-            _delay_grad_host,
-            jnp.zeros((len(param_order),), dtype=result_dtype),
-            z_flat,
-            cotangent,
-        )
-        return (grad,)
-
-    @jax.custom_vjp
-    def _delay_jax(z_flat):
-        return _delay_vjp_fwd(z_flat)[0]
-
-    _delay_jax.defvjp(_delay_vjp_fwd, _delay_vjp_bwd)
 
     def _delay_eager(params):
         z_flat = np.array(
             [float(params[name]) for name in param_name_order],
             dtype=float,
         )
-        return _delay_host(z_flat)
+        return np.asarray(engine.timing_delay_np(z_flat), dtype=float)
+
+    def _delay_jax(z_flat):
+        z_flat = jnp.asarray(z_flat, dtype=result_dtype).reshape(-1)
+        return engine.timing_delay_jax(z_flat)
 
     def delay(params):
         if not any(isinstance(v, jax.core.Tracer) for v in params.values()):
@@ -144,6 +100,72 @@ def _build_delay_callable(
 
     delay.params = param_name_order
     return delay
+
+
+def _build_delay_callable_host(
+    *,
+    engine: TimingDeltaEngine,
+    partition: TimingPartition,
+    transform_registry: TransformRegistry | None,
+    sampled_timing_registry: SampledTimingParameterRegistry | None,
+    sampled_parameter_names: Mapping[str, str],
+    strict_missing_sampled_params: bool,
+):
+    """Debug-only eager host delay path (not for NUTS)."""
+
+    param_order = list(partition.sampled_params)
+    param_name_order = [sampled_parameter_names[param] for param in param_order]
+
+    def delay(params):
+        z_params = {
+            param: float(params[sampled_parameter_names[param]])
+            for param in param_order
+        }
+        if sampled_timing_registry is not None:
+            delta_params = sampled_timing_registry.delta_from_z_params(z_params)
+        else:
+            delta_params = transform_registry.to_physical(z_params)  # type: ignore[union-attr]
+        return _call_engine_timing_delta(
+            engine,
+            delta_params=delta_params,
+            strict_missing=strict_missing_sampled_params,
+        )
+
+    delay.params = param_name_order
+    return delay
+
+
+def _build_delay_callable(
+    *,
+    engine,
+    partition: TimingPartition,
+    transform_registry: TransformRegistry | None,
+    sampled_timing_registry: SampledTimingParameterRegistry | None,
+    sampled_parameter_names: Mapping[str, str],
+    strict_missing_sampled_params: bool,
+    allow_host_debug: bool = False,
+):
+    if _engine_supports_jax(engine):
+        return _build_delay_callable_jax(
+            engine=engine,
+            partition=partition,
+            sampled_parameter_names=sampled_parameter_names,
+        )
+
+    _reject_host_jug_for_discovery(engine)
+    if not allow_host_debug:
+        raise TypeError(
+            "Discovery/NUTS requires a JAX timing engine exposing timing_delay_jax. "
+            "Pass JugJaxTimingEngine or set allow_host_debug=True for eager tests only."
+        )
+    return _build_delay_callable_host(
+        engine=engine,
+        partition=partition,
+        transform_registry=transform_registry,
+        sampled_timing_registry=sampled_timing_registry,
+        sampled_parameter_names=sampled_parameter_names,
+        strict_missing_sampled_params=strict_missing_sampled_params,
+    )
 
 
 def _build_timing_gp(
@@ -198,6 +220,7 @@ def build_discovery_nonlinear_timing_components(
     scale: float = 1.0,
     strict_missing_sampled_params: bool = True,
     sampled_timing_registry: SampledTimingParameterRegistry | None = None,
+    allow_host_debug: bool = False,
 ) -> DiscoveryNonlinearTimingComponents:
     """Build Discovery delay + marginalized timing-GP components."""
 
@@ -246,6 +269,7 @@ def build_discovery_nonlinear_timing_components(
         sampled_timing_registry=sampled_timing_registry,
         sampled_parameter_names=sampled_parameter_names,
         strict_missing_sampled_params=strict_missing_sampled_params,
+        allow_host_debug=allow_host_debug,
     )
     timing_gp = _build_timing_gp(
         psr=psr,
@@ -287,6 +311,7 @@ def build_discovery_nonlinear_timing_likelihood(
     red_noise_signal: Any | None = None,
     extra_signals: Sequence[Any] | None = None,
     return_components: bool = False,
+    allow_host_debug: bool = False,
 ):
     """Build a Discovery ``PulsarLikelihood`` with nonlinear + linear timing components."""
 
@@ -304,6 +329,7 @@ def build_discovery_nonlinear_timing_likelihood(
         scale=scale,
         strict_missing_sampled_params=strict_missing_sampled_params,
         sampled_timing_registry=sampled_timing_registry,
+        allow_host_debug=allow_host_debug,
     )
     _, discovery_likelihood = _require_discovery()
 

@@ -256,6 +256,11 @@ class SampledTimingParameterRegistry:
             )
         return rows
 
+    def to_parameter_space(self):
+        from .parameter_space import SampledTimingParameterSpace
+
+        return SampledTimingParameterSpace.from_registry(self)
+
     def enterprise_parameter_priors(self) -> dict[str, object]:
         from enterprise.signals import parameter
 

@@ -2,12 +2,15 @@
 
 from .engines import (
     JugDeltaEngine,
+    JaxTimingDeltaEngine,
     PintDeltaEngine,
     Tempo2DeltaEngine,
     TimingDeltaEngine,
     build_delta_engine,
     infer_jug_param_mapping,
 )
+from .jug_jax_engine import JugJaxTimingEngine, JugLinearizedTimingContext
+from .parameter_space import SampledTimingParameterSpace
 from .partitioning import TimingPartition, compute_timing_partition
 from .signal_builder import build_nonlinear_timing_signal
 from .signal_builder_discovery import (
@@ -36,14 +39,18 @@ __all__ = [
     "PintPriorAdapter",
     "SampledTimingParameter",
     "SampledTimingParameterRegistry",
+    "SampledTimingParameterSpace",
     "build_sampled_timing_parameter_registry",
     "wls_uncertainties",
     "TimingPartition",
     "compute_timing_partition",
     "TimingDeltaEngine",
+    "JaxTimingDeltaEngine",
     "PintDeltaEngine",
     "Tempo2DeltaEngine",
     "JugDeltaEngine",
+    "JugJaxTimingEngine",
+    "JugLinearizedTimingContext",
     "infer_jug_param_mapping",
     "build_delta_engine",
     "build_nonlinear_timing_signal",

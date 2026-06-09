@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 import astropy.units as u
 import numpy as np
@@ -14,10 +14,28 @@ class TimingDeltaEngine(Protocol):
     """Engine that computes timing residual deviations for one PTA dataset."""
 
     param_names: list[str]
+    fitpars: list[str]
 
     def delta_residuals(self, delta_params: dict[str, float]) -> np.ndarray:
         """Return ``r(theta0 + delta_params) - r(theta0)`` in seconds."""
         ...
+
+
+@runtime_checkable
+class JaxTimingDeltaEngine(Protocol):
+    """JAX-native timing residual engine for Discovery/NUTS."""
+
+    param_names: list[str]
+    fitpars: list[str]
+    sampled_params: tuple[str, ...]
+    output_shape: tuple[int, ...]
+    output_dtype: Any
+
+    def residual_delta_jax(self, z_flat): ...
+
+    def timing_delay_jax(self, z_flat): ...
+
+    def residual_delta_np(self, z_flat: np.ndarray) -> np.ndarray: ...
 
 
 def _is_zero_delta(delta_params: dict[str, float]) -> bool:
@@ -34,6 +52,7 @@ class PintDeltaEngine:
         self._toas = toas
         self._isort = None if isort is None else np.asarray(isort, dtype=int)
         self.param_names = list(getattr(model, "params", []))
+        self.fitpars = list(self.param_names)
         self._reference_time_residuals = self._time_residuals(model)
         self._reference_residuals = self._reference_time_residuals
 
@@ -133,6 +152,7 @@ class Tempo2DeltaEngine:
         self._fit_param_names = list(lt_psr.pars())
         offset = ["Offset"] if "Offset" in self._fit_param_names else []
         self.param_names = offset + list(lt_psr.pars(which="set"))
+        self.fitpars = list(self._fit_param_names)
         self._reference_values = {}
         for name in self.param_names:
             try:

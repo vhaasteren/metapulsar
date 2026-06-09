@@ -276,6 +276,7 @@ def test_discovery_nmat_components_subset_and_zero_delay(monkeypatch):
         engine=engine,
         sampled_params=["F0"],
         mode="nmat",
+        allow_host_debug=True,
         name="nl_disc",
     )
 
@@ -299,6 +300,7 @@ def test_discovery_nmat_deterministic_small_delta_limit(monkeypatch):
         sampled_params=["DM"],
         marginalized_params=[],
         mode="nmat",
+        allow_host_debug=True,
         name="nl_disc_det",
     )
     assert components.timing_gp is None
@@ -327,6 +329,7 @@ def test_discovery_nmat_strict_missing_propagates(monkeypatch):
         engine=engine,
         sampled_params=["DM"],
         mode="nmat",
+        allow_host_debug=True,
         strict_missing_sampled_params=True,
     )
 
@@ -351,6 +354,7 @@ def test_discovery_nmat_likelihood_helper_builds_psl(monkeypatch):
         engine=engine,
         sampled_params=["F0"],
         mode="nmat",
+        allow_host_debug=True,
         return_components=True,
     )
 
@@ -443,6 +447,7 @@ def test_discovery_delay_uses_registry_deltas(monkeypatch):
         engine=engine,
         sampled_params=["F0"],
         mode="nmat",
+        allow_host_debug=True,
         name="nl_disc_reg",
         sampled_timing_registry=registry,
     )
