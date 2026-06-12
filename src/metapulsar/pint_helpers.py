@@ -4,7 +4,7 @@ This module provides pure functions that encapsulate PINT-specific logic
 for parameter discovery, alias resolution, and model validation.
 """
 
-from typing import Dict, List, Tuple, Any, Iterator, Literal
+from typing import Dict, List, Tuple, Any, Iterator, Literal, Optional, TYPE_CHECKING
 from functools import lru_cache
 from pint.models import TimingModel
 from pint.models.timing_model import AllComponents
@@ -15,6 +15,9 @@ import tempfile
 import subprocess
 from io import StringIO
 import numpy as np
+
+if TYPE_CHECKING:
+    from .tim_file_analyzer import TimMetadata
 
 
 class PINTDiscoveryError(Exception):
@@ -591,34 +594,6 @@ def pulse_number_tracking_enabled(mode: PulseNumberMode) -> bool:
     return mode in ("yes", "reuse", "overwrite")
 
 
-def classify_tim_pulse_numbers(tim_path: Path) -> Tuple[TimPulseNumberStatus, int, int]:
-    """Classify -pn coverage on TOA lines in a .tim file.
-
-    Returns:
-        (status, n_with_pn, n_without_pn) where status is complete, mixed, or none.
-    """
-    import numpy as np
-
-    tim_path = Path(tim_path)
-    toas = get_TOAs(str(tim_path), include_pn=True)
-    n_toas = len(toas)
-    if n_toas == 0:
-        return "none", 0, 0
-
-    if "pulse_number" not in toas.table.colnames:
-        return "none", 0, n_toas
-
-    pn = np.asarray(toas.table["pulse_number"])
-    has_pn = np.isfinite(pn)
-    n_with = int(np.sum(has_pn))
-    n_without = n_toas - n_with
-    if n_with == 0:
-        return "none", 0, n_without
-    if n_without == 0:
-        return "complete", n_with, 0
-    return "mixed", n_with, n_without
-
-
 def sanitize_tempo2_tim_noise_directives(tim_text: str) -> str:
     """Remove Tempo2 white-noise directive lines (T2E*, TNE*) from .tim text."""
     kept: List[str] = []
@@ -831,14 +806,22 @@ def resolved_tim_for_pulse_numbers(
     tim_path: Path,
     *,
     derive_backend: Literal["pint", "tempo2"],
+    tim_metadata: Optional["TimMetadata"] = None,
 ) -> Iterator[str]:
     """Yield the .tim path to load for the given pulse-number mode."""
+    from .tim_file_analyzer import TimFileAnalyzer
+
     tim_path = Path(tim_path)
     if mode == "no":
         yield str(tim_path)
         return
 
-    status, n_with, n_without = classify_tim_pulse_numbers(tim_path)
+    if tim_metadata is None:
+        tim_metadata = TimFileAnalyzer().get_tim_metadata(tim_path)
+
+    status = tim_metadata.pn_status
+    n_with = tim_metadata.pn_with_count
+    n_without = tim_metadata.pn_without_count
     derive = _should_derive_pulse_numbers(mode, status, tim_path, n_with, n_without)
 
     if not derive:

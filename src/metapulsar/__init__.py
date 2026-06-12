@@ -46,7 +46,7 @@ from .mockpulsar import (
     create_mock_flags,
     validate_mock_data,
 )
-from .tim_file_analyzer import TimFileAnalyzer
+from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 from .selection_utils import create_staggered_selection
 from .nonlinear_timing_model import (
     AffineTransform,
@@ -88,6 +88,7 @@ __all__ = [
     "create_mock_flags",
     "validate_mock_data",
     "TimFileAnalyzer",
+    "TimMetadata",
     "create_staggered_selection",
     "AffineTransform",
     "DiscoveryNonlinearTimingComponents",

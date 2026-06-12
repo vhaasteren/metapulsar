@@ -7,6 +7,7 @@ from metapulsar import MetaPulsarFactory, FileDiscoveryService
 from metapulsar.file_discovery_service import PTA_DATA_RELEASES
 from metapulsar.pint_helpers import PINTDiscoveryError
 from metapulsar.sandbox_tempo2 import Tempo2Error
+from tests.helpers import make_tim_metadata
 
 
 @pytest.mark.integration
@@ -55,7 +56,7 @@ DM 13.299 1 0.001
                                 "tim": Path(temp_dir) / "J0030+0451.tim",
                                 "par_content": malformed_parfile_content,
                                 "timing_package": "tempo2",
-                                "timespan_days": 1000.0,
+                                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                             }
                         ]
                     }
@@ -96,7 +97,7 @@ C 12345.67890 0.0001
                                 "tim": temp_tim,
                                 "par_content": "PSR J0030+0451\nRAJ 00:30:27.4\nDECJ 04:51:39.7\n",
                                 "timing_package": "tempo2",
-                                "timespan_days": 1000.0,
+                                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                             }
                         ]
                     }
@@ -119,7 +120,7 @@ C 12345.67890 0.0001
                     "tim": Path("/nonexistent/J0030+0451.tim"),
                     "par_content": "PSR J0030+0451\nRAJ 00:30:27.4\nDECJ 04:51:39.7\nF0 327.405\nF1 -1.2e-15\n",
                     "timing_package": "tempo2",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ]
         }
@@ -180,7 +181,7 @@ UNITS TDB
                             "tim": Path(temp_dir) / "J0030+0451.tim",
                             "par_content": minimal_parfile_content,  # Minimal valid content
                             "timing_package": "tempo2",
-                            "timespan_days": 1000.0,
+                            "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                         }
                     ]
                 }
@@ -235,7 +236,7 @@ UNITS TDB
                             "tim": Path(temp_dir) / "J0030+0451.tim",
                             "par_content": valid_parfile_content,  # Valid content for coordinate discovery
                             "timing_package": "tempo2",
-                            "timespan_days": 1000.0,
+                            "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                         }
                     ]
                 }

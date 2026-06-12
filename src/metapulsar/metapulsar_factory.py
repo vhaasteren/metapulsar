@@ -28,6 +28,7 @@ except ImportError:
 
 # Import sandbox for robust libstempo usage
 from .sandbox_tempo2 import tempopulsar
+from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 from .pint_helpers import (
     PulseNumberMode,
     ensure_pint_track_minus_2,
@@ -61,6 +62,7 @@ class MetaPulsarFactory:
         This factory only handles object creation from provided file paths.
         """
         self.logger = logger
+        self._tim_analyzer = TimFileAnalyzer()
         # ParameterManager will be instantiated as needed in methods
 
     def _ensure_parfile_content(
@@ -114,6 +116,27 @@ class MetaPulsarFactory:
 
         return validated_file_data
 
+    def _ensure_tim_metadata(
+        self, file_data: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Ensure each file dict has tim_metadata (populate at factory boundary)."""
+        enriched: Dict[str, List[Dict[str, Any]]] = {}
+        for pta_name, files in file_data.items():
+            enriched_files = []
+            for file_info in files:
+                updated = file_info.copy()
+                if "tim_metadata" not in updated:
+                    tim_path = updated.get("tim")
+                    if tim_path is not None:
+                        if isinstance(tim_path, str):
+                            tim_path = Path(tim_path)
+                        updated["tim_metadata"] = self._tim_analyzer.get_tim_metadata(
+                            tim_path
+                        )
+                enriched_files.append(updated)
+            enriched[pta_name] = enriched_files
+        return enriched
+
     def create_metapulsar(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
@@ -158,8 +181,9 @@ class MetaPulsarFactory:
         self.logger.info(f"Creating MetaPulsar using {combination_strategy} strategy")
         pulse_mode = validate_pulse_number_mode(use_pulse_numbers)
 
-        # 1. Ensure parfile content is loaded
+        # 1. Ensure parfile content and TIM metadata are loaded
         validated_data = self._ensure_parfile_content(file_data)
+        validated_data = self._ensure_tim_metadata(validated_data)
 
         # 2. Validate all files belong to same pulsar (coordinate-based)
         self._validate_single_pulsar_data(validated_data)
@@ -367,13 +391,49 @@ class MetaPulsarFactory:
                 continue
 
             # Get timespan for this PTA's files for this pulsar
-            timespan = max(f.get("timespan_days", 0) for f in files)
+            timespan = max(self._timespan_from_file_info(f) for f in files)
 
             if timespan > best_timespan:
                 best_timespan = timespan
                 best_pta = pta_name
 
         return best_pta or list(pulsar_file_data.keys())[0]
+
+    @staticmethod
+    def _timespan_from_file_info(file_info: Dict[str, Any]) -> float:
+        meta = file_info.get("tim_metadata")
+        if isinstance(meta, TimMetadata):
+            return meta.timespan_days
+        return 0.0
+
+    @staticmethod
+    def _toa_count_from_file_info(file_info: Dict[str, Any]) -> int:
+        meta = file_info.get("tim_metadata")
+        if isinstance(meta, TimMetadata):
+            return meta.toa_count
+        return 0
+
+    @staticmethod
+    def _pn_summary_from_files(files: List[Dict[str, Any]]) -> str:
+        total = 0
+        with_pn = 0
+        without_pn = 0
+        for file_info in files:
+            meta = file_info.get("tim_metadata")
+            if not isinstance(meta, TimMetadata):
+                continue
+            total += meta.toa_count
+            with_pn += meta.pn_with_count
+            without_pn += meta.pn_without_count
+        if total == 0:
+            return "pn=none (0/0)"
+        if with_pn == 0:
+            status = "none"
+        elif without_pn == 0:
+            status = "complete"
+        else:
+            status = "mixed"
+        return f"pn={status} ({with_pn}/{total})"
 
     def create_all_metapulsars(
         self,
@@ -399,8 +459,9 @@ class MetaPulsarFactory:
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
         """
-        # 1. Ensure parfile content is loaded
+        # 1. Ensure parfile content and TIM metadata are loaded
         validated_data = self._ensure_parfile_content(file_data)
+        validated_data = self._ensure_tim_metadata(validated_data)
 
         # 2. Group files by pulsar with reference PTA ordering
         pulsar_groups = self._group_files_by_pulsar_with_ordering(
@@ -522,8 +583,9 @@ class MetaPulsarFactory:
 
                 # Note: file_data contains file paths per PTA, but pulsars are not yet matched between PTAs.
                 # The coordinate-based discovery groups files by pulsar using coordinate matching, not name matching.
-                # 1. Ensure parfile content is loaded
+                # 1. Ensure parfile content and TIM metadata are loaded
                 validated_data = self._ensure_parfile_content(file_data)
+                validated_data = self._ensure_tim_metadata(validated_data)
 
                 # 2. Group files by pulsar with reference PTA ordering
                 pulsar_groups = self._group_files_by_pulsar_with_ordering(
@@ -550,12 +612,23 @@ class MetaPulsarFactory:
                         if not files:
                             continue
 
-                        # Get timespan and TOA count for this PTA's files for this pulsar
-                        timespan_days = max(f.get("timespan_days", 0) for f in files)
+                        # Get timespan, TOA count, and pn coverage for this PTA
+                        timespan_days = max(
+                            self._timespan_from_file_info(f) for f in files
+                        )
                         timespan_years = timespan_days / 365.25
-                        toa_count = sum(f.get("toa_count", 0) for f in files)
+                        toa_count = sum(
+                            self._toa_count_from_file_info(f) for f in files
+                        )
+                        pn_summary = self._pn_summary_from_files(files)
                         pta_timespans.append(
-                            (pta_name, timespan_days, timespan_years, toa_count)
+                            (
+                                pta_name,
+                                timespan_days,
+                                timespan_years,
+                                toa_count,
+                                pn_summary,
+                            )
                         )
 
                     # Sort by timespan (longest first)
@@ -571,12 +644,15 @@ class MetaPulsarFactory:
                         timespan_days,
                         timespan_years,
                         toa_count,
+                        pn_summary,
                     ) in pta_timespans:
                         reference_indicator = (
                             " -- Reference PTA" if pta_name == reference_pta else ""
                         )
                         print(
-                            f"- {pta_name}: {timespan_days:.0f} days ({timespan_years:.1f} years, {toa_count} TOAs){reference_indicator}"
+                            f"- {pta_name}: {timespan_days:.0f} days "
+                            f"({timespan_years:.1f} years, {toa_count} TOAs, "
+                            f"{pn_summary}){reference_indicator}"
                         )
 
                     print()
@@ -611,6 +687,7 @@ class MetaPulsarFactory:
             # Get timing package info from file data
             timing_package = file_data[pta_name]["timing_package"]
             original_par_text = file_data[pta_name]["par_content"]
+            tim_metadata = file_data[pta_name].get("tim_metadata")
 
             try:
                 if timing_package == "pint":
@@ -623,6 +700,7 @@ class MetaPulsarFactory:
                         original_par_text,
                         timfile,
                         derive_backend="pint",
+                        tim_metadata=tim_metadata,
                     ) as tim_path:
                         model, toas = get_model_and_toas(
                             str(parfile),
@@ -641,6 +719,7 @@ class MetaPulsarFactory:
                         original_par_text,
                         timfile,
                         derive_backend="tempo2",
+                        tim_metadata=tim_metadata,
                     ) as tim_path:
                         if track_pn:
                             with temporary_par_with_track_minus_2(

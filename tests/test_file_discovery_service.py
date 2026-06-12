@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from metapulsar.file_discovery_service import FileDiscoveryService, PTA_DATA_RELEASES
 from metapulsar import discover_files
+from tests.helpers import make_tim_metadata
 
 
 class TestFileDiscoveryService:
@@ -79,7 +80,7 @@ class TestFileDiscoveryService:
                     "par": Path("/test/J1857+0943.par"),
                     "tim": Path("/test/J1857+0943.tim"),
                     "timing_package": "tempo2",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
                 }
             ]
@@ -121,7 +122,7 @@ class TestFileDiscoveryService:
                     "par": Path("/test/J1857+0943.par"),
                     "tim": Path("/test/J1857+0943.tim"),
                     "timing_package": "tempo2",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ]
 
@@ -143,7 +144,7 @@ class TestFileDiscoveryService:
                         "par": Path("test1.par"),
                         "tim": Path("test1.tim"),
                         "timing_package": "tempo2",
-                        "timespan_days": 1000.0,
+                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     }
                 ],
                 "ppta_dr2": [],
@@ -292,9 +293,7 @@ class TestFileDiscoveryService:
 
     @patch("pathlib.Path.exists")
     @patch("pathlib.Path.rglob")
-    @patch(
-        "metapulsar.file_discovery_service.FileDiscoveryService._calculate_timespan_and_count_from_tim_file"
-    )
+    @patch("metapulsar.file_discovery_service.FileDiscoveryService._get_tim_metadata")
     @patch("pathlib.Path.read_text")
     def test_discover_all_file_pairs_in_config_success(
         self, mock_read_text, mock_timespan, mock_rglob, mock_exists
@@ -310,7 +309,9 @@ class TestFileDiscoveryService:
         mock_read_text.return_value = (
             "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n"
         )
-        mock_timespan.return_value = (1000.0, 500)
+        mock_timespan.return_value = make_tim_metadata(
+            timespan_days=1000.0, toa_count=500
+        )
 
         config = {
             "base_dir": "/test",
@@ -324,8 +325,8 @@ class TestFileDiscoveryService:
         assert len(result) == 1
         assert result[0]["par"] == Path("/test/J1857+0943.par")
         assert result[0]["tim"] == Path("/test/J1857+0943.tim")
-        assert result[0]["timespan_days"] == 1000.0
-        assert result[0]["toa_count"] == 500
+        assert result[0]["tim_metadata"].timespan_days == 1000.0
+        assert result[0]["tim_metadata"].toa_count == 500
 
     @patch("pathlib.Path.exists")
     def test_discover_all_file_pairs_in_config_no_base_dir(self, mock_exists):
@@ -413,7 +414,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -422,7 +423,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J1857+0943.par",
                     "tim": "test/J1857+0943.tim",
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.3907\nDECJ +09:43:17.2070\n",
-                    "timespan_days": 1200.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1200.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -465,7 +466,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -474,7 +475,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J1857+0943.par",
                     "tim": "test/J1857+0943.tim",
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.3907\nDECJ +09:43:17.2070\n",
-                    "timespan_days": 1200.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1200.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -517,7 +518,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -526,7 +527,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J1857+0943.par",
                     "tim": "test/J1857+0943.tim",
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.3907\nDECJ +09:43:17.2070\n",
-                    "timespan_days": 1200.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1200.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -575,7 +576,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -614,7 +615,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -623,7 +624,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J1857+0943.par",
                     "tim": "test/J1857+0943.tim",
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.3907\nDECJ +09:43:17.2070\n",
-                    "timespan_days": 1200.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1200.0),
                     "timing_package": "tempo2",
                 }
             ],
@@ -670,7 +671,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -725,7 +726,7 @@ class TestPulsarHelperFunctions:
                     "par": "test/J0613-0200.par",
                     "tim": "test/J0613-0200.tim",
                     "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]

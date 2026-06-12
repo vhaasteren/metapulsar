@@ -7,11 +7,11 @@ import pytest
 
 from metapulsar.pint_helpers import (
     PULSE_NUMBER_MODES,
-    classify_tim_pulse_numbers,
     sanitize_tempo2_tim_noise_directives,
     validate_pulse_number_mode,
     _should_derive_pulse_numbers,
 )
+from metapulsar.tim_file_analyzer import TimFileAnalyzer
 
 
 class TestValidatePulseNumberMode:
@@ -53,7 +53,7 @@ class TestSanitizeTempo2TimNoiseDirectives:
         assert sanitize_tempo2_tim_noise_directives(raw) == raw
 
 
-class TestClassifyTimPulseNumbers:
+class TestTimMetadataPnClassification:
     def test_complete_when_all_toas_have_pn(self, tmp_path):
         tim = tmp_path / "all_pn.tim"
         tim.write_text(
@@ -63,10 +63,10 @@ class TestClassifyTimPulseNumbers:
             " obs2 1400.0 58001.0 1.0 g -pn 1\n",
             encoding="utf-8",
         )
-        status, n_with, n_without = classify_tim_pulse_numbers(tim)
-        assert status == "complete"
-        assert n_with == 2
-        assert n_without == 0
+        meta = TimFileAnalyzer().get_tim_metadata(tim)
+        assert meta.pn_status == "complete"
+        assert meta.pn_with_count == 2
+        assert meta.pn_without_count == 0
 
     def test_none_when_no_pn(self, tmp_path):
         tim = tmp_path / "no_pn.tim"
@@ -77,10 +77,10 @@ class TestClassifyTimPulseNumbers:
             " obs2 1400.0 58001.0 1.0 g\n",
             encoding="utf-8",
         )
-        status, n_with, n_without = classify_tim_pulse_numbers(tim)
-        assert status == "none"
-        assert n_with == 0
-        assert n_without == 2
+        meta = TimFileAnalyzer().get_tim_metadata(tim)
+        assert meta.pn_status == "none"
+        assert meta.pn_with_count == 0
+        assert meta.pn_without_count == 2
 
     def test_mixed_when_partial_pn(self, tmp_path):
         tim = tmp_path / "mixed_pn.tim"
@@ -91,10 +91,10 @@ class TestClassifyTimPulseNumbers:
             " obs2 1400.0 58001.0 1.0 g\n",
             encoding="utf-8",
         )
-        status, n_with, n_without = classify_tim_pulse_numbers(tim)
-        assert status == "mixed"
-        assert n_with == 1
-        assert n_without == 1
+        meta = TimFileAnalyzer().get_tim_metadata(tim)
+        assert meta.pn_status == "mixed"
+        assert meta.pn_with_count == 1
+        assert meta.pn_without_count == 1
 
 
 class TestShouldDerivePulseNumbers:

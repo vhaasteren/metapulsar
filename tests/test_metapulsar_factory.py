@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from metapulsar.metapulsar_factory import MetaPulsarFactory
 from metapulsar.file_discovery_service import FileDiscoveryService
+from tests.helpers import make_tim_metadata
 
 
 class TestParfileContentValidation:
@@ -23,7 +24,7 @@ class TestParfileContentValidation:
                 {
                     "par": "data/ipta-dr2/PPTA_dr1dr2/par/J1857+0943_dr1dr2.par",
                     "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -46,7 +47,7 @@ class TestParfileContentValidation:
                     "par": "data/ipta-dr2/PPTA_dr1dr2/par/J1857+0943_dr1dr2.par",
                     "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
                     "par_content": "PSR J1857+0943\nF0 186.494081\n",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -68,7 +69,7 @@ class TestParfileContentValidation:
             "test_pta": [
                 {
                     "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -86,7 +87,7 @@ class TestParfileContentValidation:
                 {
                     "par": "non_existent_file.par",
                     "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
@@ -337,7 +338,7 @@ class TestMetaPulsarFactory:
                     "par": Path("/data/epta/J1857+0943.par"),
                     "tim": Path("/data/epta/J1857+0943.tim"),
                     "timing_package": "pint",
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "par_content": "PSR J1857+0943\nF0 123.456\nRAJ 18:57:36.4\nDECJ 9:43:17.2\n",
                 }
             ]
@@ -381,7 +382,7 @@ class TestMetaPulsarFactory:
                 "par": Path("/data/epta/J1857+0943.par"),
                 "tim": Path("/data/epta/J1857+0943.tim"),
                 "timing_package": "pint",
-                "timespan_days": 1000.0,
+                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             }
         }
@@ -419,7 +420,7 @@ class TestMetaPulsarFactory:
                 "par": Path("/data/epta/J1857+0943.par"),
                 "tim": Path("/data/epta/J1857+0943.tim"),
                 "timing_package": "tempo2",
-                "timespan_days": 1000.0,
+                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             }
         }
@@ -511,14 +512,14 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test1.par"),
                     "tim": Path("test1.tim"),
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 2000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=2000.0),
                 }
             ],
         }
@@ -550,14 +551,14 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test1.par"),
                     "tim": Path("test1.tim"),
-                    "timespan_days": 2000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=2000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
         }
@@ -588,14 +589,14 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test1.par"),
                     "tim": Path("test1.tim"),
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 2000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=2000.0),
                 }
             ],
         }
@@ -627,21 +628,21 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test1.par"),
                     "tim": Path("test1.tim"),
-                    "timespan_days": 1000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 2000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=2000.0),
                 }
             ],
             "nanograv_12y": [
                 {
                     "par": Path("test3.par"),
                     "tim": Path("test3.tim"),
-                    "timespan_days": 1500.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=1500.0),
                 }
             ],
         }
@@ -659,7 +660,7 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 2000.0,
+                    "tim_metadata": make_tim_metadata(timespan_days=2000.0),
                 }
             ],
         }
@@ -707,16 +708,18 @@ class TestPerPulsarOrdering:
                 {
                     "par": Path("test1.par"),
                     "tim": Path("test1.tim"),
-                    "timespan_days": 1000.0,
-                    "toa_count": 500,
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=1000.0, toa_count=500
+                    ),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("test2.par"),
                     "tim": Path("test2.tim"),
-                    "timespan_days": 2000.0,
-                    "toa_count": 1000,
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=2000.0, toa_count=1000
+                    ),
                 }
             ],
         }
@@ -752,3 +755,112 @@ class TestPerPulsarOrdering:
                     # Check that the file_data passed to create_metapulsar has PPTA first
                     file_data_passed = call_args[1]["file_data"]
                     assert list(file_data_passed.keys())[0] == "ppta_dr2"
+
+
+class TestPtaSummary:
+    """Tests for PTA summary display including pulse-number coverage."""
+
+    def test_pta_summary_shows_pn_status(self, capsys):
+        factory = MetaPulsarFactory()
+        file_data = {
+            "epta_dr2": [
+                {
+                    "par": Path("test1.par"),
+                    "tim": Path("test1.tim"),
+                    "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
+                    "timing_package": "tempo2",
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=1000.0,
+                        toa_count=100,
+                        pn_status="complete",
+                        pn_with_count=100,
+                        pn_without_count=0,
+                    ),
+                }
+            ],
+            "ppta_dr2": [
+                {
+                    "par": Path("test2.par"),
+                    "tim": Path("test2.tim"),
+                    "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
+                    "timing_package": "tempo2",
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=2000.0,
+                        toa_count=200,
+                        pn_status="mixed",
+                        pn_with_count=120,
+                        pn_without_count=80,
+                    ),
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            ) as mock_discover,
+            patch.object(
+                factory, "_get_display_name_for_pulsar", return_value="J1857+0943"
+            ),
+        ):
+            mock_discover.return_value = {
+                "J1857+0943": {
+                    "epta_dr2": file_data["epta_dr2"],
+                    "ppta_dr2": file_data["ppta_dr2"],
+                }
+            }
+            factory.pta_summary(file_data)
+
+        captured = capsys.readouterr().out
+        assert "pn=complete (100/100)" in captured
+        assert "pn=mixed (120/200)" in captured
+
+    def test_pta_summary_aggregates_pn_across_files(self, capsys):
+        factory = MetaPulsarFactory()
+        file_data = {
+            "epta_dr2": [
+                {
+                    "par": Path("test1.par"),
+                    "tim": Path("test1.tim"),
+                    "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
+                    "timing_package": "tempo2",
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=1000.0,
+                        toa_count=100,
+                        pn_status="complete",
+                        pn_with_count=100,
+                        pn_without_count=0,
+                    ),
+                },
+                {
+                    "par": Path("test1b.par"),
+                    "tim": Path("test1b.tim"),
+                    "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
+                    "timing_package": "tempo2",
+                    "tim_metadata": make_tim_metadata(
+                        timespan_days=800.0,
+                        toa_count=50,
+                        pn_status="none",
+                        pn_with_count=0,
+                        pn_without_count=50,
+                    ),
+                },
+            ],
+        }
+
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            ) as mock_discover,
+            patch.object(
+                factory, "_get_display_name_for_pulsar", return_value="J1857+0943"
+            ),
+        ):
+            mock_discover.return_value = {
+                "J1857+0943": {"epta_dr2": file_data["epta_dr2"]},
+            }
+            factory.pta_summary(file_data)
+
+        captured = capsys.readouterr().out
+        assert "150 TOAs" in captured
+        assert "pn=mixed (100/150)" in captured
