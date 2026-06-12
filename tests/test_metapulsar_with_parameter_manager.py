@@ -5,6 +5,7 @@ from pint.models import TimingModel
 from pint.toa import TOAs
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.parameter_manager import ParameterManager
+from tests.helpers import make_tim_metadata
 
 
 class TestMetaPulsarWithParameterManager:
@@ -58,11 +59,11 @@ class TestMetaPulsarWithParameterManager:
         # Test ParameterManager initialization directly
         mock_file_data = {
             "epta_dr2": {
-                "timespan_days": 1000,
+                "tim_metadata": make_tim_metadata(timespan_days=1000),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             },
             "ppta_dr2": {
-                "timespan_days": 1200,
+                "tim_metadata": make_tim_metadata(timespan_days=1200),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             },
         }
@@ -82,11 +83,11 @@ class TestMetaPulsarWithParameterManager:
         # Test ParameterManager initialization directly
         mock_file_data = {
             "epta_dr2": {
-                "timespan_days": 1000,
+                "tim_metadata": make_tim_metadata(timespan_days=1000),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             },
             "ppta_dr2": {
-                "timespan_days": 1200,
+                "tim_metadata": make_tim_metadata(timespan_days=1200),
                 "par_content": "PSR J1857+0943\nF0 123.456\n",
             },
         }
