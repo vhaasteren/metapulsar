@@ -18,9 +18,9 @@ from jug.fitting.optimized_fitter import (
     _build_general_fit_setup_from_cache,
     _compute_full_model_residuals,
     _update_param,
-    compute_designmatrix,
 )
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
+from jug.utils.units import validate_column_units
 
 
 @dataclass(frozen=True)
@@ -58,20 +58,17 @@ class JaxTimingState:
         return self._residual_delta_jax_fn(delta_theta)
 
     def linearized_residual_delta_jax(self, delta_theta):
+        # ``design_matrix`` is the timing design matrix ``d(residual)/d(theta)``
+        # at theta=0, already in the engine's native-delta / output (isort) order
+        # (identical convention to ``residual_delta_np``), so the linearized
+        # residual is a plain matmul -- no sign flip, no unit rescale, no isort.
         delta_theta = jnp.asarray(delta_theta, dtype=jnp.float64).reshape(-1)
         matrix = jnp.asarray(self.design_matrix, dtype=jnp.float64)
-        delta = matrix @ delta_theta
-        if self.isort is not None:
-            isort = jnp.asarray(self.isort, dtype=jnp.int32)
-            return delta[isort]
-        return delta
+        return matrix @ delta_theta
 
     def linearized_residual_delta_np(self, delta_theta: np.ndarray) -> np.ndarray:
         delta_theta = np.asarray(delta_theta, dtype=np.float64).reshape(-1)
-        delta = self.design_matrix @ delta_theta
-        if self.isort is not None:
-            return delta[self.isort]
-        return delta
+        return np.asarray(self.design_matrix, dtype=np.float64) @ delta_theta
 
     def _backend_name(self, canonical: str) -> str:
         for canon, backend in self.param_mapping:
@@ -87,52 +84,59 @@ def _phase_mean_mode(compatibility: str) -> str:
     return "weighted"
 
 
-def _compute_phase_residuals_jax(
-    dt_sec,
+def _phase_change_residual_delta_jax(
+    dt_base,
+    delay_change,
     f_coeffs,
     weights,
     *,
-    subtract_mean: bool,
     mean_mode: str,
-    tzr_phase,
     f0,
 ):
-    """JAX phase residuals matching tempo2/pint mean conventions."""
-    dt = jnp.asarray(dt_sec, dtype=jnp.float64)
+    """Precision-safe JAX residual *delta* from a (small) delay change.
+
+    JAX has no longdouble, but JUG's host ``compute_phase_residuals`` relies on
+    longdouble because the absolute spin phase ``F0*dt`` is ~1e11 turns while a
+    per-parameter residual change is ~1e-4 turns. Forming the absolute phase in
+    float64 quantises away the signal (the observed jax-vs-host divergence).
+
+    Instead we compute the residual *change* relative to the reference directly.
+    With ``phase(x) = sum_k F_k x^(k+1)/(k+1)!`` and a delay change ``d`` (so the
+    emission time becomes ``x - d``), the exact phase change is
+
+        phase(x - d) - phase(x) = sum_{j>=1} (-d)^j / j! * G_j(x),
+        G_j(x) = sum_{m>=0} F_{m+j-1} x^m / m!.
+
+    Every factor here is well-scaled in float64 (``d`` is small; ``G_j`` is a
+    low-order polynomial with tiny high-order coefficients), so no precision is
+    lost. The reference residual, its pulse numbers, the TZR phase, and any
+    non-fitted JUMP phase all cancel analytically in the difference, leaving an
+    exact, fully nonlinear residual delta. Pulse numbers are assumed unchanged,
+    which holds whenever the delay change stays well within half a spin period.
+    """
+    x = jnp.asarray(dt_base, dtype=jnp.float64)
+    d = jnp.asarray(delay_change, dtype=jnp.float64)
     weights = jnp.asarray(weights, dtype=jnp.float64)
-    phase = jnp.zeros_like(dt)
     n_coeffs = len(f_coeffs)
-    for i in range(n_coeffs - 1, -1, -1):
-        coeff = jnp.asarray(f_coeffs[i], dtype=jnp.float64)
-        factorial = float(math.factorial(i + 1))
-        phase = (phase + coeff / factorial) * dt
 
-    if tzr_phase is not None:
-        phase = phase - jnp.asarray(tzr_phase, dtype=jnp.float64)
+    phase_change = jnp.zeros_like(x)
+    for j in range(1, n_coeffs + 1):
+        g_j = jnp.zeros_like(x)
+        for m in range(0, n_coeffs - (j - 1)):
+            coeff = jnp.asarray(f_coeffs[m + j - 1], dtype=jnp.float64)
+            g_j = g_j + coeff * (x**m) / float(math.factorial(m))
+        phase_change = phase_change + ((-d) ** j) / float(math.factorial(j)) * g_j
 
-    sort_idx = jnp.argsort(dt)
-    pulse_number = jnp.zeros_like(phase)
-    pulse_number = pulse_number.at[sort_idx[0]].set(jnp.round(phase[sort_idx[0]]))
-
-    def body(k, pn):
-        i = sort_idx[k]
-        i_prev = sort_idx[k - 1]
-        predicted = phase[i] - (phase[i_prev] - pn[i_prev])
-        return pn.at[i].set(jnp.round(predicted))
-
-    pulse_number = jax.lax.fori_loop(1, sort_idx.shape[0], body, pulse_number)
-    frac_phase = phase - pulse_number
     f0_val = jnp.asarray(f0, dtype=jnp.float64)
-    residuals_sec = frac_phase / f0_val
+    residual_delta = phase_change / f0_val
 
-    if subtract_mean:
-        if mean_mode == "unweighted":
-            residuals_sec = residuals_sec - jnp.mean(residuals_sec)
-        else:
-            residuals_sec = residuals_sec - jnp.sum(residuals_sec * weights) / jnp.sum(
-                weights
-            )
-    return residuals_sec
+    if mean_mode == "unweighted":
+        residual_delta = residual_delta - jnp.mean(residual_delta)
+    else:
+        residual_delta = residual_delta - jnp.sum(residual_delta * weights) / jnp.sum(
+            weights
+        )
+    return residual_delta
 
 
 def _dm_delay_jax(tdb_mjd, freq_mhz, dm_values, dm_epoch: float):
@@ -199,16 +203,28 @@ def _param_scalar(params: dict, name: str, default: float = 0.0):
     return default
 
 
-def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: str):
-    dt_sec_np = (
+def _compute_residual_delta_jax(params: dict, setup, *, phase_mean_mode: str):
+    """Residual delta (perturbed - reference) mirroring JUG's host model.
+
+    This accumulates the per-component delay *change* relative to the cached
+    reference (``new - initial`` for each fitted group), exactly as JUG's host
+    ``_compute_full_model_residuals`` does, then converts that small change into
+    a residual delta via the precision-safe phase-change formulation. The huge
+    absolute emission time ``dt_base`` is never added to the small change, which
+    is what makes the float64 result match JUG's longdouble host path.
+    """
+    dt_base_np = (
         setup.dt_sec_ld
         if setup.dt_sec_ld is not None
         else np.array(setup.dt_sec_cached, dtype=np.float64)
     )
-    dt_sec = jnp.asarray(dt_sec_np, dtype=jnp.float64)
+    dt_base = jnp.asarray(np.asarray(dt_base_np, dtype=np.float64), dtype=jnp.float64)
     tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
     freq_mhz = jnp.asarray(setup.freq_mhz, dtype=jnp.float64)
     weights = jnp.asarray(setup.weights, dtype=jnp.float64)
+
+    # Accumulated delay change (seconds, small) relative to the reference.
+    delay_change = jnp.zeros_like(dt_base)
 
     if setup.dm_params and setup.initial_dm_delay is not None:
         dm_epoch = float(params.get("DMEPOCH", params.get("PEPOCH", 55000.0)))
@@ -218,7 +234,7 @@ def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: s
         ]
         new_dm = _dm_delay_jax(tdb_mjd, freq_mhz, dm_values, dm_epoch)
         init_dm = jnp.asarray(setup.initial_dm_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_dm - init_dm)
+        delay_change = delay_change + (new_dm - init_dm)
 
     if (
         setup.dmx_design_matrix is not None
@@ -226,13 +242,13 @@ def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: s
         and setup.initial_dmx_delay is not None
     ):
         current_dmx = jnp.array(
-            [float(params.get(label, 0.0)) for label in setup.dmx_labels],
+            [_param_scalar(params, label, 0.0) for label in setup.dmx_labels],
             dtype=jnp.float64,
         )
         matrix = jnp.asarray(setup.dmx_design_matrix, dtype=jnp.float64)
         new_dmx = matrix @ current_dmx
         init_dmx = jnp.asarray(setup.initial_dmx_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_dmx - init_dmx)
+        delay_change = delay_change + (new_dmx - init_dmx)
 
     if setup.binary_params and setup.initial_binary_delay is not None:
         toas_prebinary = (
@@ -263,7 +279,7 @@ def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: s
             _param_scalar(params, "EDOT"),
         )
         init_binary = jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_binary - init_binary)
+        delay_change = delay_change + (new_binary - init_binary)
 
     if setup.astrometry_params and setup.initial_astrometric_delay is not None:
         new_astro = compute_astrometric_delay(
@@ -278,20 +294,22 @@ def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: s
             obs_planet_pos_ls=setup.obs_planet_pos_ls,
         )
         init_astro = jnp.asarray(setup.initial_astrometric_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_astro - init_astro)
+        delay_change = delay_change + (new_astro - init_astro)
 
     if setup.fd_params and setup.initial_fd_delay is not None:
-        current_fd = {p: float(params[p]) for p in setup.fd_params if p in params}
+        current_fd = {
+            p: _param_scalar(params, p) for p in setup.fd_params if p in params
+        }
         new_fd = jnp.asarray(compute_fd_delay(freq_mhz, current_fd), dtype=jnp.float64)
         init_fd = jnp.asarray(setup.initial_fd_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_fd - init_fd)
+        delay_change = delay_change + (new_fd - init_fd)
 
     if setup.sw_params and setup.initial_sw_delay is not None:
-        ne_sw = float(params.get("NE_SW", params.get("NE1AU", 0.0)))
+        ne_sw = _param_scalar(params, "NE_SW", _param_scalar(params, "NE1AU", 0.0))
         sw_geom = jnp.asarray(setup.sw_geometry_pc, dtype=jnp.float64)
         new_sw = K_DM_SEC * ne_sw * sw_geom / (freq_mhz**2)
         init_sw = jnp.asarray(setup.initial_sw_delay, dtype=jnp.float64)
-        dt_sec = dt_sec - (new_sw - init_sw)
+        delay_change = delay_change + (new_sw - init_sw)
 
     f_terms = []
     for i in range(10):
@@ -303,14 +321,12 @@ def _compute_full_model_residuals_jax(params: dict, setup, *, phase_mean_mode: s
         else:
             break
 
-    tzr_phase = setup.tzr_phase
-    return _compute_phase_residuals_jax(
-        dt_sec,
+    return _phase_change_residual_delta_jax(
+        dt_base,
+        delay_change,
         f_terms,
         weights,
-        subtract_mean=True,
         mean_mode=phase_mean_mode,
-        tzr_phase=tzr_phase,
         f0=_param_scalar(params, "F0", f_terms[0]),
     )
 
@@ -334,16 +350,76 @@ def _make_residual_delta_jax_fn(
         params = _build_params_from_delta(
             ref_params, fit_params, param_mapping, ref_theta, delta_theta
         )
-        residuals_sec = _compute_full_model_residuals_jax(
+        # The residual delta is computed directly relative to the reference; the
+        # reference residuals (and their pulse numbers / TZR phase) cancel
+        # analytically in the phase-change formulation, so no longdouble-precision
+        # reference subtraction is required here.
+        delta = _compute_residual_delta_jax(
             params, setup, phase_mean_mode=phase_mean_mode
         )
-        delta = residuals_sec - jnp.asarray(reference_residuals_sec, dtype=jnp.float64)
         if isort is not None:
             isort_j = jnp.asarray(isort, dtype=jnp.int32)
             return delta[isort_j]
         return delta
 
     return _fn
+
+
+def _adaptive_central_derivative(residual_delta, ref_theta, index, n_params):
+    """Central-difference d(residual)/d(theta_i) with a self-selecting step.
+
+    The fit parameters span wildly different scales and conditioning (epochs
+    ~5e4 MJD, proper motions ~few mas/yr, eccentricities ~1e-3), so no single
+    finite-difference step works for all of them. We sweep a geometric ladder of
+    steps and keep the derivative that is most stable under step halving
+    (Richardson agreement). This rejects both the round-off floor (step too
+    small) and model nonlinearity (step too large), recovering the exact tangent
+    of the host nonlinear residual without any autodiff.
+    """
+    base = max(abs(float(ref_theta[index])), 1.0)
+    steps = base * 10.0 ** (-np.arange(2, 13, dtype=np.float64))
+
+    derivs = []
+    for h in steps:
+        plus = np.zeros(n_params)
+        plus[index] = h
+        minus = np.zeros(n_params)
+        minus[index] = -h
+        derivs.append(
+            (
+                np.asarray(residual_delta(plus), dtype=np.float64)
+                - np.asarray(residual_delta(minus), dtype=np.float64)
+            )
+            / (2.0 * h)
+        )
+
+    best_idx = len(derivs) - 1
+    best_score = np.inf
+    for j in range(len(derivs) - 1):
+        a, b = derivs[j], derivs[j + 1]
+        denom = np.linalg.norm(a) + np.linalg.norm(b)
+        if denom == 0.0:
+            score = 0.0
+        else:
+            score = float(np.linalg.norm(a - b) / denom)
+        if not np.isfinite(score):
+            continue
+        if score < best_score:
+            best_score = score
+            best_idx = j + 1  # finer member of the agreeing pair
+    return derivs[best_idx]
+
+
+def _finite_difference_design_matrix(residual_delta, ref_theta, n_rows):
+    """Timing design matrix (partials at theta=0) by FD of the host residual."""
+    n_params = len(ref_theta)
+    if n_params == 0:
+        return np.empty((n_rows, 0), dtype=np.float64)
+    cols = [
+        _adaptive_central_derivative(residual_delta, ref_theta, i, n_params)
+        for i in range(n_params)
+    ]
+    return np.column_stack(cols)
 
 
 def export_jax_timing_state(
@@ -415,17 +491,6 @@ def export_jax_timing_state(
     reference_residuals_sec, _, _, _ = _compute_full_model_residuals(ref_params, setup)
     reference_residuals_sec = np.asarray(reference_residuals_sec, dtype=np.float64)
 
-    design = compute_designmatrix(
-        session.par_file,
-        session.tim_file,
-        list(fit_params),
-        compatibility=compatibility,
-        verbose=False,
-    )
-    design_matrix = np.asarray(design.matrix, dtype=np.float64)
-    if isort is not None:
-        design_matrix = design_matrix[np.asarray(isort, dtype=int)]
-
     residual_fn = _make_residual_delta_jax_fn(
         ref_params=ref_params,
         fit_params=fit_params,
@@ -441,6 +506,32 @@ def export_jax_timing_state(
     if isort is not None:
         ref_for_delta = reference_residuals_sec[np.asarray(isort, dtype=int)]
 
+    # Linearized timing design matrix = the timing partials d(residual)/d(theta)
+    # at theta=0, built by adaptive finite differences of the *host* nonlinear
+    # residual (the same model that produces the nonlinear curve). It is computed
+    # directly in the engine's native-delta / output (isort) order, so it needs
+    # no sign/unit/ordering/standardization conversion and is the exact tangent
+    # of the nonlinear path. No autodiff is used, so the same construction works
+    # for non-JAX backends (e.g. libstempo) that only expose a residual evaluator.
+    isort_idx = None if isort is None else np.asarray(isort, dtype=int)
+
+    def _host_residual_delta(delta_theta: np.ndarray) -> np.ndarray:
+        params = dict(ref_params)
+        for idx, name in enumerate(fit_params):
+            backend = mapping.get(name, name)
+            current = float(params.get(backend, ref_theta[idx]))
+            _update_param(params, backend, current + float(delta_theta[idx]))
+        residuals_sec, _, _, _ = _compute_full_model_residuals(params, setup)
+        residuals_sec = np.asarray(residuals_sec, dtype=np.float64)
+        if isort_idx is not None:
+            residuals_sec = residuals_sec[isort_idx]
+        return residuals_sec - ref_for_delta
+
+    design_matrix = _finite_difference_design_matrix(
+        _host_residual_delta, ref_theta, n_rows=ref_for_delta.shape[0]
+    )
+    column_units = tuple(validate_column_units(list(fit_params)))
+
     return JaxTimingState(
         fit_params=fit_params,
         param_mapping=tuple(sorted(mapping.items())),
@@ -452,7 +543,7 @@ def export_jax_timing_state(
         phase_mean_mode=phase_mean_mode,
         isort=None if isort is None else np.asarray(isort, dtype=int),
         design_matrix=design_matrix,
-        column_units=tuple(design.column_units),
+        column_units=column_units,
         setup=setup,
         _residual_delta_jax_fn=residual_fn,
     )

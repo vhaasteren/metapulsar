@@ -14,7 +14,21 @@ from .parameter_space import SampledTimingParameterSpace
 
 @dataclass(frozen=True)
 class JugLinearizedTimingContext:
-    """Diagnostic linearized timing evaluator: ``delta_r ~= M @ delta_theta``."""
+    """Diagnostic linearized timing evaluator: ``delta_r ~= M @ delta_theta``.
+
+    Convention (must match the nonlinear path so the linear curve is its exact
+    tangent):
+
+    * ``design_matrix`` is the timing design matrix ``d(residual)/d(theta)`` at
+      theta=0 (the partial derivatives of the timing model wrt the timing
+      parameters), built by ``export_jax_timing_state`` as adaptive finite
+      differences of the host nonlinear residual -- no autodiff -- already in the
+      engine's native-delta / output (isort) order exactly like
+      ``reference_residuals_sec``. The residual delta is therefore a plain
+      ``design_matrix @ delta_theta`` -- no sign flip and no further ``isort``.
+    * ``isort`` is retained only so external consumers can align separately-built
+      bases (e.g. the marginalized Woodbury basis) into the same output order.
+    """
 
     param_names: tuple[str, ...]
     theta_ref: np.ndarray
@@ -25,18 +39,11 @@ class JugLinearizedTimingContext:
 
     def residual_delta_jax(self, delta_theta):
         delta_theta = jnp.asarray(delta_theta, dtype=jnp.float64).reshape(-1)
-        delta = jnp.asarray(self.design_matrix, dtype=jnp.float64) @ delta_theta
-        if self.isort is not None:
-            isort = jnp.asarray(self.isort, dtype=jnp.int32)
-            return delta[isort]
-        return delta
+        return jnp.asarray(self.design_matrix, dtype=jnp.float64) @ delta_theta
 
     def residual_delta_np(self, delta_theta: np.ndarray) -> np.ndarray:
         delta_theta = np.asarray(delta_theta, dtype=np.float64).reshape(-1)
-        delta = np.asarray(self.design_matrix, dtype=np.float64) @ delta_theta
-        if self.isort is not None:
-            return delta[np.asarray(self.isort, dtype=int)]
-        return delta
+        return np.asarray(self.design_matrix, dtype=np.float64) @ delta_theta
 
 
 class JugJaxTimingEngine:
