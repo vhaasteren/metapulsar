@@ -56,6 +56,44 @@ def test_parameter_space_rejects_out_of_support():
     assert space.logprior_z_np(np.array([2.0, 0.0])) == -np.inf
 
 
+def _log_uniform_registry():
+    params = [
+        SampledTimingParameter(
+            name="M2",
+            theta_ref=0.25,
+            transform=AffineTransform(center=0.0, scale=0.05),
+            prior=PintPriorAdapter.from_log_uniform(
+                1.0e-9, 100.0, source="vela_default"
+            ),
+            source="vela_default",
+            units="solMass",
+            sigma_wls=0.01,
+        ),
+    ]
+    return SampledTimingParameterRegistry(params)
+
+
+def test_parameter_space_log_uniform_prior_parity():
+    registry = _log_uniform_registry()
+    space = SampledTimingParameterSpace.from_registry(registry)
+    z = np.array([0.0], dtype=float)
+    lp_np = space.logprior_z_np(z)
+    lp_jax = float(space.logprior_z_jax(z))
+    assert np.isfinite(lp_np)
+    np.testing.assert_allclose(lp_np, lp_jax, atol=2e-7, rtol=0.0)
+    assert space.theta_from_z_np(z)[0] > 0.0
+
+
+def test_parameter_space_log_uniform_prior_transform_roundtrip():
+    registry = _log_uniform_registry()
+    space = SampledTimingParameterSpace.from_registry(registry)
+    for q in [0.01, 0.25, 0.5, 0.99]:
+        z = float(space.prior_transform_z_np(np.array([q]), 0)[0])
+        theta = float(space.theta_from_z_np(np.array([z]))[0])
+        assert 1.0e-9 <= theta <= 100.0
+        assert registry.parameters[0].logpdf_z(z) > -np.inf
+
+
 def test_registry_to_parameter_space_metadata():
     registry = _uniform_registry()
     space = registry.to_parameter_space()

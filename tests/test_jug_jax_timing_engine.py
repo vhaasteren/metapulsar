@@ -11,21 +11,15 @@ from metapulsar.nonlinear_timing_model import (
     SampledTimingParameterSpace,
 )
 
-DATA_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "examples"
-    / "notebooks-dev"
-    / "data"
-    / "nonlinear-tests"
-)
+DATA_ROOT = Path(__file__).resolve().parent / "fixtures" / "jug_jax"
 
 
 @pytest.fixture(scope="module")
 def ng5_paths():
     par = DATA_ROOT / "ng5" / "J1640+2224" / "J1640+2224_NANOGrav_dfg+12.par"
     tim = DATA_ROOT / "ng5" / "J1640+2224" / "J1640+2224_NANOGrav_dfg+12.tim"
-    if not par.is_file() or not tim.is_file():
-        pytest.skip("ng5 nonlinear test data unavailable")
+    assert par.is_file(), f"missing fixture par file: {par}"
+    assert tim.is_file(), f"missing fixture tim file: {tim}"
     return par, tim
 
 
@@ -174,10 +168,10 @@ def test_jug_jax_engine_eager_matches_host_with_isort_nonzero_delta(ng5_paths):
 def test_jug_jax_linearized_is_tangent_of_nonlinear(ng5_paths):
     """The linearized timing path must be the tangent of the nonlinear path.
 
-    The linearized residual uses the timing design matrix (partials at z=0) built
-    by adaptive finite differences of the host nonlinear residual -- the same
-    model that drives the nonlinear curve and Discovery's marginalized lnL. This
-    is the design-matrix route (no autodiff) that also serves non-JAX backends.
+    The linearized residual uses the timing design matrix (partials at z=0) from
+    JUG's public ``compute_designmatrix`` route -- no autodiff -- converted once
+    into the engine's native residual-delta convention. This is the route that
+    also serves non-JAX backends.
 
     The check is run end-to-end through the engine's standardized ``z`` interface
     so it gates the full chain (parameter ordering, units, the standardization

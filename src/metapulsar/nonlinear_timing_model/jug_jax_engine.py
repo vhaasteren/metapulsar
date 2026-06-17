@@ -19,13 +19,13 @@ class JugLinearizedTimingContext:
     Convention (must match the nonlinear path so the linear curve is its exact
     tangent):
 
-    * ``design_matrix`` is the timing design matrix ``d(residual)/d(theta)`` at
-      theta=0 (the partial derivatives of the timing model wrt the timing
-      parameters), built by ``export_jax_timing_state`` as adaptive finite
-      differences of the host nonlinear residual -- no autodiff -- already in the
+    * ``design_matrix`` is ``d(residual_delta)/d(theta)`` at theta=0, assembled
+      once from JUG's analytic derivative blocks on the cached fit setup and
+      weighted-mean-centered to match the host residual convention, stored in the
       engine's native-delta / output (isort) order exactly like
       ``reference_residuals_sec``. The residual delta is therefore a plain
-      ``design_matrix @ delta_theta`` -- no sign flip and no further ``isort``.
+      ``design_matrix @ delta_theta`` -- no further sign flip, unit conversion,
+      mean subtraction, or ``isort``.
     * ``isort`` is retained only so external consumers can align separately-built
       bases (e.g. the marginalized Woodbury basis) into the same output order.
     """

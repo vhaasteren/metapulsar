@@ -408,6 +408,51 @@ def test_build_registry_override_replaces_fallback():
     assert lo == 10.0 and hi == 20.0
 
 
+def test_vela_aligned_overrides_apply_m2_loguniform():
+    from metapulsar.nonlinear_timing_model.priors import (
+        VELA_M2_LOGUNIFORM_LOWER,
+        VELA_M2_LOGUNIFORM_UPPER,
+        vela_aligned_timing_prior_overrides,
+    )
+
+    overrides = vela_aligned_timing_prior_overrides(["F0", "M2"])
+    assert "M2" in overrides
+    assert "F0" not in overrides
+    spec = overrides["M2"]
+    assert spec.kind == "log_uniform"
+    assert float(spec.lower) == VELA_M2_LOGUNIFORM_LOWER
+    assert float(spec.upper) == VELA_M2_LOGUNIFORM_UPPER
+
+
+def test_build_registry_log_uniform_override():
+    model, toas = _epta_pint_model_with_free_f0()
+    registry = build_sampled_timing_parameter_registry(
+        pint_model=model,
+        sampled_params=["F0"],
+        pint_toas=toas,
+        prior_overrides={"F0": {"kind": "log_uniform", "lower": 300.0, "upper": 350.0}},
+    )
+    param = registry.parameters[0]
+    assert param.prior.is_log_uniform
+    theta0 = param.theta_from_z(0.0)
+    assert 300.0 <= theta0 <= 350.0
+    assert registry.logprior_z({"F0": 0.0}) > -np.inf
+
+
+def test_cheat_wls_uniform_bounds_clip_ecc_and_pb():
+    from metapulsar.nonlinear_timing_model.priors import _cheat_wls_uniform_bounds
+
+    ecc_lo, ecc_hi = _cheat_wls_uniform_bounds(
+        "ECC", theta_ref=0.0005, sigma_wls=1.0e-4
+    )
+    assert ecc_lo >= 0.0
+    assert ecc_hi <= 1.0
+
+    pb_lo, pb_hi = _cheat_wls_uniform_bounds("PB", theta_ref=10.0, sigma_wls=1.0)
+    assert pb_lo >= 0.0
+    assert pb_hi > pb_lo
+
+
 def test_build_registry_strict_raises_on_improper_pint_prior():
     model, toas = _epta_pint_model_with_free_f0()
     try:

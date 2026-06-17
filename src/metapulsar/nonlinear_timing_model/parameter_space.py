@@ -45,7 +45,11 @@ class SampledTimingParameterSpace:
         z_lower = np.array([lo for lo, _hi in z_bounds], dtype=np.float64)
         z_upper = np.array([hi for _lo, hi in z_bounds], dtype=np.float64)
         prior_kind = tuple(
-            "uniform" if registry._params[name].prior.is_uniform else "other"
+            (
+                "log_uniform"
+                if registry._params[name].prior.is_log_uniform
+                else "uniform" if registry._params[name].prior.is_uniform else "other"
+            )
             for name in names
         )
         theta_bounds = [registry._params[name].prior.support() for name in names]
@@ -122,21 +126,37 @@ class SampledTimingParameterSpace:
         theta = np.asarray(theta, dtype=np.float64).reshape(-1)
         return (theta - self.theta_ref - self.center) / self.scale
 
+    def _logprior_z_contrib(self, z: np.ndarray, idx: int) -> float:
+        kind = self.prior_kind[idx]
+        z_lo = float(self.z_lower[idx])
+        z_hi = float(self.z_upper[idx])
+        a = float(self.theta_lower[idx])
+        b = float(self.theta_upper[idx])
+        scale = float(self.scale[idx])
+        theta = float(self.theta_ref[idx] + self.center[idx] + scale * float(z[idx]))
+        if kind == "uniform":
+            if not np.isfinite(z_lo) or not np.isfinite(z_hi):
+                return 0.0
+            if float(z[idx]) < z_lo or float(z[idx]) > z_hi:
+                return -np.inf
+            return -np.log(z_hi - z_lo) + np.log(abs(scale))
+        if kind == "log_uniform":
+            if theta < a or theta > b:
+                return -np.inf
+            log_span = np.log(b / a)
+            return -np.log(theta) - np.log(log_span) + np.log(abs(scale))
+        raise NotImplementedError(
+            f"NumPy prior for {self.names[idx]!r} requires uniform or log_uniform support."
+        )
+
     def logprior_z_np(self, z: np.ndarray) -> float:
         z = np.asarray(z, dtype=np.float64).reshape(-1)
         total = 0.0
-        for idx, kind in enumerate(self.prior_kind):
-            if kind != "uniform":
-                raise NotImplementedError(
-                    f"NumPy prior for {self.names[idx]!r} requires uniform support."
-                )
-            z_lo = float(self.z_lower[idx])
-            z_hi = float(self.z_upper[idx])
-            if not np.isfinite(z_lo) or not np.isfinite(z_hi):
-                return 0.0
-            if z[idx] < z_lo or z[idx] > z_hi:
+        for idx in range(len(self.names)):
+            lp = self._logprior_z_contrib(z, idx)
+            if not np.isfinite(lp):
                 return -np.inf
-            total += -np.log(z_hi - z_lo) + np.log(abs(float(self.scale[idx])))
+            total += lp
         return float(total)
 
     def delta_from_z_jax(self, z):
@@ -148,24 +168,72 @@ class SampledTimingParameterSpace:
     def theta_from_z_jax(self, z):
         return self.theta_ref + self.delta_from_z_jax(z)
 
+    def prior_transform_z_np(self, q: np.ndarray, idx: int) -> np.ndarray:
+        kind = self.prior_kind[idx]
+        a = float(self.theta_lower[idx])
+        b = float(self.theta_upper[idx])
+        q = np.clip(np.asarray(q, dtype=np.float64), 0.0, 1.0)
+        if kind == "uniform":
+            theta = a + q * (b - a)
+        elif kind == "log_uniform":
+            theta = a * (b / a) ** q
+        else:
+            raise NotImplementedError(
+                f"NumPy prior transform for {self.names[idx]!r} requires "
+                "uniform or log_uniform support."
+            )
+        return (theta - self.theta_ref[idx] - self.center[idx]) / self.scale[idx]
+
+    def prior_transform_z_jax(self, q, idx: int):
+        import jax.numpy as jnp
+
+        kind = self.prior_kind[idx]
+        a = float(self.theta_lower[idx])
+        b = float(self.theta_upper[idx])
+        q = jnp.clip(jnp.asarray(q, dtype=jnp.float64), 0.0, 1.0)
+        if kind == "uniform":
+            theta = a + q * (b - a)
+        elif kind == "log_uniform":
+            theta = a * (b / a) ** q
+        else:
+            raise NotImplementedError(
+                f"JAX prior transform for {self.names[idx]!r} requires "
+                "uniform or log_uniform support."
+            )
+        return (theta - self.theta_ref[idx] - self.center[idx]) / self.scale[idx]
+
     def logprior_z_jax(self, z):
         import jax.numpy as jnp
 
         z = jnp.asarray(z, dtype=jnp.float64).reshape(-1)
         lp = jnp.array(0.0, dtype=jnp.float64)
         for idx, kind in enumerate(self.prior_kind):
-            if kind != "uniform":
-                raise NotImplementedError(
-                    f"JAX prior for {self.names[idx]!r} requires uniform support."
-                )
             z_lo = float(self.z_lower[idx])
             z_hi = float(self.z_upper[idx])
-            if np.isfinite(z_lo) and np.isfinite(z_hi):
-                inside = (z[idx] >= z_lo) & (z[idx] <= z_hi)
+            a = float(self.theta_lower[idx])
+            b = float(self.theta_upper[idx])
+            scale = self.scale[idx]
+            theta = self.theta_ref[idx] + self.center[idx] + scale * z[idx]
+            if kind == "uniform":
+                if np.isfinite(z_lo) and np.isfinite(z_hi):
+                    inside = (z[idx] >= z_lo) & (z[idx] <= z_hi)
+                    lp = lp + jnp.where(
+                        inside,
+                        -jnp.log(z_hi - z_lo) + jnp.log(jnp.abs(scale)),
+                        -jnp.inf,
+                    )
+            elif kind == "log_uniform":
+                inside = (theta >= a) & (theta <= b)
+                log_span = jnp.log(b / a)
                 lp = lp + jnp.where(
                     inside,
-                    -jnp.log(z_hi - z_lo) + jnp.log(jnp.abs(self.scale[idx])),
+                    -jnp.log(theta) - jnp.log(log_span) + jnp.log(jnp.abs(scale)),
                     -jnp.inf,
+                )
+            else:
+                raise NotImplementedError(
+                    f"JAX prior for {self.names[idx]!r} requires "
+                    "uniform or log_uniform support."
                 )
         return lp
 

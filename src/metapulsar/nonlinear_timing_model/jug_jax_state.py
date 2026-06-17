@@ -16,10 +16,11 @@ from jug.fitting.derivatives_dd import _compute_dd_binary_delay_jit
 from jug.fitting.derivatives_fd import compute_fd_delay
 from jug.fitting.optimized_fitter import (
     _build_general_fit_setup_from_cache,
+    _compute_designmatrix_from_setup,
     _compute_full_model_residuals,
     _update_param,
 )
-from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
+from jug.utils.constants import HOURANGLE_PER_RAD, K_DM_SEC, RAD_TO_DEG, SECS_PER_DAY
 from jug.utils.units import validate_column_units
 
 
@@ -365,61 +366,14 @@ def _make_residual_delta_jax_fn(
     return _fn
 
 
-def _adaptive_central_derivative(residual_delta, ref_theta, index, n_params):
-    """Central-difference d(residual)/d(theta_i) with a self-selecting step.
-
-    The fit parameters span wildly different scales and conditioning (epochs
-    ~5e4 MJD, proper motions ~few mas/yr, eccentricities ~1e-3), so no single
-    finite-difference step works for all of them. We sweep a geometric ladder of
-    steps and keep the derivative that is most stable under step halving
-    (Richardson agreement). This rejects both the round-off floor (step too
-    small) and model nonlinearity (step too large), recovering the exact tangent
-    of the host nonlinear residual without any autodiff.
-    """
-    base = max(abs(float(ref_theta[index])), 1.0)
-    steps = base * 10.0 ** (-np.arange(2, 13, dtype=np.float64))
-
-    derivs = []
-    for h in steps:
-        plus = np.zeros(n_params)
-        plus[index] = h
-        minus = np.zeros(n_params)
-        minus[index] = -h
-        derivs.append(
-            (
-                np.asarray(residual_delta(plus), dtype=np.float64)
-                - np.asarray(residual_delta(minus), dtype=np.float64)
-            )
-            / (2.0 * h)
-        )
-
-    best_idx = len(derivs) - 1
-    best_score = np.inf
-    for j in range(len(derivs) - 1):
-        a, b = derivs[j], derivs[j + 1]
-        denom = np.linalg.norm(a) + np.linalg.norm(b)
-        if denom == 0.0:
-            score = 0.0
-        else:
-            score = float(np.linalg.norm(a - b) / denom)
-        if not np.isfinite(score):
-            continue
-        if score < best_score:
-            best_score = score
-            best_idx = j + 1  # finer member of the agreeing pair
-    return derivs[best_idx]
-
-
-def _finite_difference_design_matrix(residual_delta, ref_theta, n_rows):
-    """Timing design matrix (partials at theta=0) by FD of the host residual."""
-    n_params = len(ref_theta)
-    if n_params == 0:
-        return np.empty((n_rows, 0), dtype=np.float64)
-    cols = [
-        _adaptive_central_derivative(residual_delta, ref_theta, i, n_params)
-        for i in range(n_params)
-    ]
-    return np.column_stack(cols)
+def _fit_unit_column_to_native_delta(param: str, column: np.ndarray) -> np.ndarray:
+    """Convert a JUG design-matrix column from API fit units to native deltas."""
+    param_upper = param.upper()
+    if param_upper == "RAJ":
+        return column * HOURANGLE_PER_RAD
+    if param_upper == "DECJ":
+        return column * RAD_TO_DEG
+    return column
 
 
 def export_jax_timing_state(
@@ -506,30 +460,32 @@ def export_jax_timing_state(
     if isort is not None:
         ref_for_delta = reference_residuals_sec[np.asarray(isort, dtype=int)]
 
-    # Linearized timing design matrix = the timing partials d(residual)/d(theta)
-    # at theta=0, built by adaptive finite differences of the *host* nonlinear
-    # residual (the same model that produces the nonlinear curve). It is computed
-    # directly in the engine's native-delta / output (isort) order, so it needs
-    # no sign/unit/ordering/standardization conversion and is the exact tangent
-    # of the nonlinear path. No autodiff is used, so the same construction works
-    # for non-JAX backends (e.g. libstempo) that only expose a residual evaluator.
-    isort_idx = None if isort is None else np.asarray(isort, dtype=int)
-
-    def _host_residual_delta(delta_theta: np.ndarray) -> np.ndarray:
-        params = dict(ref_params)
-        for idx, name in enumerate(fit_params):
-            backend = mapping.get(name, name)
-            current = float(params.get(backend, ref_theta[idx]))
-            _update_param(params, backend, current + float(delta_theta[idx]))
-        residuals_sec, _, _, _ = _compute_full_model_residuals(params, setup)
-        residuals_sec = np.asarray(residuals_sec, dtype=np.float64)
-        if isort_idx is not None:
-            residuals_sec = residuals_sec[isort_idx]
-        return residuals_sec - ref_for_delta
-
-    design_matrix = _finite_difference_design_matrix(
-        _host_residual_delta, ref_theta, n_rows=ref_for_delta.shape[0]
+    # Linearized timing design matrix = d(residual_delta)/d(native theta) at
+    # theta=0, assembled once from the analytic derivative blocks of the cached
+    # ``setup`` (no second par/tim read, no parameter perturbation). JUG's basis
+    # is the fitter timing basis in API fit units (M ~= -d residual / d fit-unit
+    # param), so exporting residual deltas requires one sign flip plus the
+    # RAJ/DECJ fit-unit conversion back to the native delta convention used by
+    # ``parameter_space``.
+    design_matrix = -np.asarray(
+        _compute_designmatrix_from_setup(setup, list(fit_params)), dtype=np.float64
     )
+    for col, name in enumerate(fit_params):
+        design_matrix[:, col] = _fit_unit_column_to_native_delta(
+            name, design_matrix[:, col]
+        )
+    # Match the residual convention: the host ``_compute_full_model_residuals``
+    # always removes the *weighted* prefit mean (``compute_phase_residuals`` with
+    # its default ``mean_mode="weighted"``), which is equivalent to the timing
+    # offset/phase parameter being marginalized in the GLS likelihood. Centering
+    # each column the same way makes ``design_matrix @ delta`` tangent to the
+    # mean-subtracted nonlinear residual delta. Done once here, in setup
+    # (pre-isort) row order so the weights line up with the residual computation.
+    weights = np.asarray(setup.weights, dtype=np.float64)
+    col_means = (weights @ design_matrix) / weights.sum()
+    design_matrix = design_matrix - col_means
+    if isort is not None:
+        design_matrix = design_matrix[np.asarray(isort, dtype=int), :]
     column_units = tuple(validate_column_units(list(fit_params)))
 
     return JaxTimingState(

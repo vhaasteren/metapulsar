@@ -25,7 +25,10 @@ from .priors import (
     PintPriorAdapter,
     SampledTimingParameter,
     SampledTimingParameterRegistry,
+    VELA_M2_LOGUNIFORM_LOWER,
+    VELA_M2_LOGUNIFORM_UPPER,
     build_sampled_timing_parameter_registry,
+    vela_aligned_timing_prior_overrides,
 )
 from .transforms import AffineTransform, TransformRegistry
 from .wls import wls_uncertainties
@@ -34,6 +37,8 @@ __all__ = [
     "AffineTransform",
     "TransformRegistry",
     "CHEAT_PRIOR_SIGMA_MULTIPLIER",
+    "VELA_M2_LOGUNIFORM_LOWER",
+    "VELA_M2_LOGUNIFORM_UPPER",
     "PriorOverrideSpec",
     "PriorPolicy",
     "PintPriorAdapter",
@@ -41,6 +46,7 @@ __all__ = [
     "SampledTimingParameterRegistry",
     "SampledTimingParameterSpace",
     "build_sampled_timing_parameter_registry",
+    "vela_aligned_timing_prior_overrides",
     "wls_uncertainties",
     "TimingPartition",
     "compute_timing_partition",
