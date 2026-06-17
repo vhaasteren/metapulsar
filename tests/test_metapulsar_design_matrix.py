@@ -5,6 +5,7 @@ import pytest
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
+from metapulsar.pint_helpers import resolve_parameter_alias
 
 
 class TestMetaPulsarDesignMatrix:
@@ -168,3 +169,17 @@ class TestMetaPulsarDesignMatrix:
         dm_consistent = self.consistent_mp._designmatrix
         assert dm_composite.shape[0] == 60
         assert dm_consistent.shape[0] == 60
+
+    def test_design_matrix_edot_parameter_index_lookup(self):
+        """EDOT fitpars must align with fitpars_canonical for column construction."""
+        fitpars = ["EDOT", "F0", "RAJ"]
+        fitpars_canonical = [resolve_parameter_alias(p) for p in fitpars]
+        mapped_param = "EDOT"
+
+        par_idx = fitpars_canonical.index(resolve_parameter_alias(mapped_param))
+        assert par_idx == 0
+        assert fitpars_canonical[par_idx] == "EDOT"
+
+        mapped_param = "ECCDOT"
+        par_idx = fitpars_canonical.index(resolve_parameter_alias(mapped_param))
+        assert par_idx == 0

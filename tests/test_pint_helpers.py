@@ -2,11 +2,15 @@
 
 import pytest
 from unittest.mock import Mock, patch
+from pint.models.timing_model import AllComponents
+
 from metapulsar.pint_helpers import (
     check_component_available_in_model,
+    get_aliases_for_parameter,
     get_parameter_identifiability_from_model,
     get_parameters_by_type_from_parfiles,
     create_pint_model,
+    resolve_parameter_alias,
     PINTDiscoveryError,
 )
 
@@ -44,6 +48,43 @@ def mock_astrometry_components():
     mock_instance.AstrometryEcliptic = mock_astrometry_ec
 
     return mock_instance
+
+
+class TestResolveParameterAlias:
+    """Test resolve_parameter_alias and get_aliases_for_parameter."""
+
+    def test_edot_matches_pint_canonical(self):
+        """EDOT should stay EDOT to match PINT AllComponents."""
+        pint_canon, _ = AllComponents().alias_to_pint_param("EDOT")
+        assert resolve_parameter_alias("EDOT") == pint_canon == "EDOT"
+
+    def test_eccdot_maps_to_edot(self):
+        """Tempo2-style ECCDOT should resolve to PINT canonical EDOT."""
+        assert resolve_parameter_alias("ECCDOT") == "EDOT"
+
+    def test_edot_aliases_include_eccdot(self):
+        """EDOT canonical name should list Tempo2-style ECCDOT alias."""
+        aliases = get_aliases_for_parameter("EDOT")
+        assert "EDOT" in aliases
+        assert "ECCDOT" in aliases
+
+    def test_fitpars_canonical_index_lookup_with_edot(self):
+        """Mapped EDOT must be found in fitpars_canonical for design-matrix indexing."""
+        fitpars = ["EDOT", "F0", "RAJ"]
+        fitpars_canonical = [resolve_parameter_alias(p) for p in fitpars]
+        mapped_param = "EDOT"
+
+        assert fitpars_canonical == ["EDOT", "F0", "RAJ"]
+        assert fitpars_canonical.index(mapped_param) == 0
+
+    def test_fitpars_canonical_index_lookup_with_eccdot(self):
+        """Enterprise fitpars with Tempo2 ECCDOT name must still index correctly."""
+        fitpars = ["ECCDOT", "F0", "RAJ"]
+        fitpars_canonical = [resolve_parameter_alias(p) for p in fitpars]
+        mapped_param = "ECCDOT"
+
+        assert fitpars_canonical == ["EDOT", "F0", "RAJ"]
+        assert fitpars_canonical.index(resolve_parameter_alias(mapped_param)) == 0
 
 
 # These tests are commented out until the function is implemented as part of the refactor

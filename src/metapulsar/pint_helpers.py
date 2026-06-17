@@ -79,9 +79,9 @@ def resolve_parameter_alias(param_name: str) -> str:
     Returns:
         Canonical parameter name, or original name if not an alias
     """
-    # Handle special case: EDOT -> ECCDOT alias that PINT doesn't have
-    if param_name == "EDOT":
-        return "ECCDOT"
+    # Tempo2 uses ECCDOT; PINT canonical name is EDOT (not in AllComponents map).
+    if param_name == "ECCDOT":
+        return "EDOT"
 
     try:
         all_components = _get_all_components()
@@ -111,9 +111,9 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
             if canonical == canonical_param and alias != canonical_param:
                 aliases.append(alias)
 
-        # Handle special case: if canonical is ECCDOT, also include EDOT
-        if canonical_param == "ECCDOT" and "EDOT" not in aliases:
-            aliases.append("EDOT")
+        # Tempo2-style alias for eccentricity derivative (PINT canonical is EDOT).
+        if canonical_param == "EDOT" and "ECCDOT" not in aliases:
+            aliases.append("ECCDOT")
 
         return aliases
     except Exception:
