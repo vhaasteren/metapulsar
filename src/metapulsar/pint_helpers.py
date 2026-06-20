@@ -722,6 +722,7 @@ def temporary_pn_tim_from_par_tim_tempo2(
         par_tmp.write_text(parfile_text, encoding="utf-8")
         cmd = [
             "tempo2",
+            "-nofit",
             "-f",
             str(par_tmp),
             str(tim_path),

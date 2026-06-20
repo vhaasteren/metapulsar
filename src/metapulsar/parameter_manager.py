@@ -11,7 +11,7 @@ import tempfile
 import subprocess
 from pathlib import Path
 from io import StringIO
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional, Set
 import logging
 
 from pint.models.model_builder import parse_parfile
@@ -25,6 +25,7 @@ from .pint_helpers import (
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
     parse_parameter_using_pint,
+    detect_astrometry_style,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,16 @@ class ParameterManager:
     - Resolving parameter aliases and availability
     - Working with both PINT and Tempo2 PTAs
     """
+
+    _EQUATORIAL_WARNING = (
+        "Equatorial astrometry detected. PINT/tempo2 parity after T2CMETHOD "
+        "modification is typically a few ns (about 6 ns on NG5 J1600), "
+        "slightly larger than ecliptic pars with full convention alignment "
+        "(about 1 ns on NG11 J1600). Reason: no explicit ECL obliquity "
+        "convention to align; residual differences from ecliptic-frame "
+        "geometry entering delay terms may remain. For best parity, prefer "
+        "ecliptic coordinates in new timing solutions."
+    )
 
     def __init__(
         self,
@@ -276,7 +287,13 @@ class ParameterManager:
         except Exception as e:
             raise RuntimeError(f"PINT conversion failed: {e}") from e
 
-    def _align_parameter(self, parfile_dict, reference_dict, aliases):
+    def _align_parameter(
+        self,
+        parfile_dict: Dict[str, List[str]],
+        reference_dict: Dict[str, List[str]],
+        aliases,
+        required: bool = False,
+    ) -> bool:
         alias_list = [aliases] if isinstance(aliases, str) else list(aliases)
 
         # Grab the reference value from whichever alias the reference PTA used
@@ -286,10 +303,11 @@ class ParameterManager:
                 ref_key = alias
                 break
         if ref_key is None:
-            self.logger.error(
-                f"No alias from {alias_list} found in reference PTA {self.reference_pta}"
-            )
-            return
+            msg = f"No alias from {alias_list} found in reference PTA {self.reference_pta}"
+            if required:
+                raise ValueError(msg)
+            self.logger.error(msg)
+            return False
         ref_value = reference_dict[ref_key]
 
         # Keep only the first alias that already exists in this PTA; drop the rest
@@ -310,6 +328,249 @@ class ParameterManager:
 
         # Update the value in-place using the existing key
         parfile_dict[target_key] = ref_value
+        return True
+
+    def _is_t2cmethod_tempo(self, value: List[str]) -> bool:
+        if not value:
+            return False
+        first = value[0].split()[0].upper() if value[0].split() else ""
+        return first == "TEMPO"
+
+    def _normalize_timing_package(self, package: str) -> str:
+        normalized = (package or "pint").strip().lower()
+        if normalized == "libstempo":
+            return "tempo2"
+        return normalized
+
+    def _normalized_timing_packages(self) -> Set[str]:
+        return {
+            self._normalize_timing_package(self._get_timing_package(pta_name))
+            for pta_name in self.file_data
+        }
+
+    def _is_cross_engine_mix(self, normalized_packages: Set[str]) -> bool:
+        return {"pint", "tempo2"}.issubset(normalized_packages)
+
+    def _parse_ecl_value(self, parfile_dict: Dict[str, List[str]]) -> Optional[str]:
+        raw_value = parfile_dict.get("ECL")
+        if not raw_value:
+            return None
+        parts = raw_value[0].split() if raw_value[0] else []
+        if not parts:
+            return None
+        return parts[0].upper()
+
+    def _parse_t2cmethod_value(
+        self, parfile_dict: Dict[str, List[str]]
+    ) -> Optional[str]:
+        raw_value = parfile_dict.get("T2CMETHOD")
+        if not raw_value:
+            return None
+        parts = raw_value[0].split() if raw_value[0] else []
+        if not parts:
+            return None
+        return parts[0].upper()
+
+    def _collect_convention_states(
+        self, parfile_dicts: Dict[str, Dict[str, List[str]]]
+    ) -> Dict[str, Dict[str, Optional[str]]]:
+        states: Dict[str, Dict[str, Optional[str]]] = {}
+        for pta_name, parfile_dict in parfile_dicts.items():
+            states[pta_name] = {
+                "style": detect_astrometry_style(parfile_dict),
+                "ecl": self._parse_ecl_value(parfile_dict),
+                "t2cmethod": self._parse_t2cmethod_value(parfile_dict),
+                "package": self._normalize_timing_package(
+                    self._get_timing_package(pta_name)
+                ),
+            }
+        return states
+
+    def _require_reference_conventions(
+        self, reference_dict: Dict[str, List[str]]
+    ) -> None:
+        """Require reference conventions needed for multi-PTA parfile alignment."""
+        if "EPHEM" not in reference_dict:
+            raise ValueError(
+                f"No alias from ['EPHEM'] found in reference PTA {self.reference_pta}"
+            )
+        if "CLOCK" not in reference_dict and "CLK" not in reference_dict:
+            raise ValueError(
+                "No alias from ['CLOCK', 'CLK'] found in reference PTA "
+                f"{self.reference_pta}"
+            )
+
+    def _align_reference_conventions(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+    ) -> None:
+        """Apply the reference EPHEM and clock convention to every PTA."""
+        for parfile_dict in parfile_dicts.values():
+            self._align_parameter(parfile_dict, reference_dict, "EPHEM", required=True)
+            self._align_parameter(
+                parfile_dict, reference_dict, ["CLOCK", "CLK"], required=True
+            )
+
+    def _apply_cross_engine_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Apply convention rules needed when PINT and tempo2 pulsars are mixed."""
+        for pta_name, parfile_dict in parfile_dicts.items():
+            actions: List[str] = []
+            style = convention_states[pta_name]["style"]
+
+            if style == "ecliptic":
+                # PINT and tempo2 agree best for ecliptic pars under IERS2003.
+                old_ecl = parfile_dict.get("ECL", ["(missing)"])[0]
+                parfile_dict["ECL"] = ["IERS2003"]
+                actions.append(f"set ECL=IERS2003 (was {old_ecl})")
+            else:
+                # Equatorial pars have no active ECL obliquity convention to align.
+                if "ECL" in parfile_dict:
+                    old_ecl = parfile_dict.pop("ECL")
+                    actions.append(f"removed ECL ({old_ecl[0]})")
+                self.logger.warning(f"[{pta_name}] {self._EQUATORIAL_WARNING}")
+                actions.append("emitted equatorial warning")
+
+            if "T2CMETHOD" in parfile_dict and self._is_t2cmethod_tempo(
+                parfile_dict["T2CMETHOD"]
+            ):
+                # Active tempo2 TEMPO mode is a cross-engine convention mismatch.
+                old_t2c = parfile_dict.pop("T2CMETHOD")
+                actions.append(f"removed T2CMETHOD ({old_t2c[0]})")
+
+            self.logger.info(
+                f"PTA {pta_name}: consistent convention rules applied "
+                f"(reason=cross_engine_parity, style={style}); "
+                f"actions: {', '.join(actions) if actions else 'none'}"
+            )
+
+    def _apply_pint_only_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Align heterogeneous ecliptic conventions for multi-PTA PINT stacks."""
+        ecliptic_ptas = [
+            pta_name
+            for pta_name, state in convention_states.items()
+            if state["style"] == "ecliptic"
+        ]
+        ecliptic_ecl_values = {
+            convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
+        }
+
+        if len(ecliptic_ecl_values) <= 1:
+            self.logger.info(
+                "Consistent convention rules skipped "
+                "(reason=homogeneous_ecl_single_engine_pint)"
+            )
+            return
+
+        reference_ecl = self._parse_ecl_value(reference_dict)
+        target_ecl = reference_ecl or "IERS2010"
+        for pta_name in ecliptic_ptas:
+            old_ecl = parfile_dicts[pta_name].get("ECL", ["(missing)"])[0]
+            parfile_dicts[pta_name]["ECL"] = [target_ecl]
+            self.logger.info(
+                f"PTA {pta_name}: consistent convention rules applied "
+                f"(reason=pint_only_ecl_heterogeneous); set ECL={target_ecl} (was {old_ecl})"
+            )
+
+    def _apply_tempo2_only_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Align heterogeneous ecliptic and T2CMETHOD conventions for tempo2 stacks."""
+        ecliptic_ptas = [
+            pta_name
+            for pta_name, state in convention_states.items()
+            if state["style"] == "ecliptic"
+        ]
+        ecliptic_ecl_values = {
+            convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
+        }
+        if len(ecliptic_ecl_values) > 1:
+            for pta_name in ecliptic_ptas:
+                old_ecl = parfile_dicts[pta_name].get("ECL", ["(missing)"])[0]
+                parfile_dicts[pta_name]["ECL"] = ["IERS2003"]
+                self.logger.info(
+                    f"PTA {pta_name}: consistent convention rules applied "
+                    f"(reason=tempo2_only_ecl_heterogeneous); "
+                    f"set ECL=IERS2003 (was {old_ecl})"
+                )
+        else:
+            self.logger.info(
+                "Consistent convention rules skipped "
+                "(reason=homogeneous_ecl_single_engine_tempo2)"
+            )
+
+        t2_values = {state["t2cmethod"] for state in convention_states.values()}
+        if len(t2_values) > 1:
+            if "T2CMETHOD" not in reference_dict:
+                self.logger.info(
+                    "T2CMETHOD alignment skipped (reason=reference_missing_t2cmethod)"
+                )
+            else:
+                for pta_name, parfile_dict in parfile_dicts.items():
+                    self._align_parameter(
+                        parfile_dict, reference_dict, "T2CMETHOD", required=False
+                    )
+                    self.logger.info(
+                        f"PTA {pta_name}: consistent convention rules applied "
+                        "(reason=tempo2_only_t2cmethod_heterogeneous); "
+                        f"set T2CMETHOD={parfile_dict['T2CMETHOD'][0]}"
+                    )
+        else:
+            self.logger.info(
+                "T2CMETHOD alignment skipped "
+                "(reason=homogeneous_t2cmethod_single_engine_tempo2)"
+            )
+
+    def _apply_consistent_convention_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+    ) -> None:
+        """Apply gated convention rules across consistent parfile dictionaries."""
+        self._require_reference_conventions(reference_dict)
+        convention_states = self._collect_convention_states(parfile_dicts)
+
+        if len(parfile_dicts) == 1:
+            self.logger.info("Consistent convention rules skipped (reason=single_pta)")
+            return
+
+        # Multi-PTA combinations share the reference ephemeris and clock.
+        self._align_reference_conventions(parfile_dicts, reference_dict)
+
+        normalized_packages = self._normalized_timing_packages()
+
+        if self._is_cross_engine_mix(normalized_packages):
+            self._apply_cross_engine_rules(parfile_dicts, convention_states)
+            return
+
+        if normalized_packages == {"pint"}:
+            self._apply_pint_only_rules(
+                parfile_dicts, reference_dict, convention_states
+            )
+            return
+
+        if normalized_packages == {"tempo2"}:
+            self._apply_tempo2_only_rules(
+                parfile_dicts, reference_dict, convention_states
+            )
+            return
+
+        self.logger.info(
+            "Consistent convention rules skipped "
+            f"(reason=unsupported_single_engine_packages:{sorted(normalized_packages)})"
+        )
 
     def _make_parameters_consistent(
         self, parfile_data: Dict[str, str]
@@ -396,23 +657,12 @@ class ParameterManager:
                     dmx_params_map,
                 )
 
-        # Always align CLOCK and EPHEM parameters
-        for pta_name, parfile_dict in parfile_dicts.items():
-            self._align_parameter(parfile_dict, reference_dict, "EPHEM")
-            self._align_parameter(parfile_dict, reference_dict, ["CLOCK", "CLK"])
-        #    parfile_dict["EPHEM"] = reference_dict["EPHEM"]
-        #    if "CLOCK" in reference_dict:
-        #        parfile_dict["CLOCK"] = reference_dict["CLOCK"]
-        #        if "CLK" in parfile_dict:
-        #            parfile_dict.pop("CLK")
-        #    elif "CLK" in reference_dict:
-        #        parfile_dict["CLK"] = reference_dict["CLK"]
-        #        if "CLOCK" in parfile_dict:
-        #            parfile_dict.pop("CLOCK")
-        #    else:
-        #        self.logger.error(
-        #            f"No CLOCK or CLK parameter found in reference PTA {self.reference_pta}"
-        #        )
+        # Apply reference and engine-specific conventions after component updates.
+        try:
+            self._apply_consistent_convention_rules(parfile_dicts, reference_dict)
+        except ValueError as e:
+            self.logger.error(f"Consistent convention rules failed: {e}")
+            raise RuntimeError(f"Consistent convention rules failed: {e}") from e
 
         # Convert back to par file strings
         consistent_parfiles = {}
