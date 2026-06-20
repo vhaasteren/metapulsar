@@ -164,7 +164,7 @@ C 55000.0 123.456 0.001 1234.5 1234.5
             # This should raise Tempo2Error when libstempo processes the consistent par/tim pair
             with pytest.raises(Tempo2Error):
                 # Create file_data format for the test (list format)
-                # par_content must include EPHEM/CLOCK for convention harmonization; on-disk par is empty
+                # par_content must include EPHEM/CLOCK for consistent convention rules; on-disk par is empty
                 minimal_parfile_content = """RAJ 00:30:27.4
 DECJ 04:51:39.7
 F0 123.456
@@ -219,7 +219,7 @@ C 55000.0 123.456 0.001 1234.5 1234.5
             # This should raise Tempo2Error when libstempo processes the consistent par/tim pair
             with pytest.raises(Tempo2Error):
                 # Create file_data format for the test (list format)
-                # par_content must include EPHEM/CLOCK for convention harmonization; on-disk par is corrupted
+                # par_content must include EPHEM/CLOCK for consistent convention rules; on-disk par is corrupted
                 valid_parfile_content = """RAJ 00:30:27.4
 DECJ 04:51:39.7
 F0 123.456

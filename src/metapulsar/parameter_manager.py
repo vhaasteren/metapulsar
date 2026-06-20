@@ -46,7 +46,7 @@ class ParameterManager:
         "modification is typically a few ns (about 6 ns on NG5 J1600), "
         "slightly larger than ecliptic pars with full convention alignment "
         "(about 1 ns on NG11 J1600). Reason: no explicit ECL obliquity "
-        "convention to harmonize; residual differences from ecliptic-frame "
+        "convention to align; residual differences from ecliptic-frame "
         "geometry entering delay terms may remain. For best parity, prefer "
         "ecliptic coordinates in new timing solutions."
     )
@@ -386,147 +386,191 @@ class ParameterManager:
             }
         return states
 
-    def _apply_convention_harmonization(
+    def _require_reference_conventions(
+        self, reference_dict: Dict[str, List[str]]
+    ) -> None:
+        """Require reference conventions needed for multi-PTA parfile alignment."""
+        if "EPHEM" not in reference_dict:
+            raise ValueError(
+                f"No alias from ['EPHEM'] found in reference PTA {self.reference_pta}"
+            )
+        if "CLOCK" not in reference_dict and "CLK" not in reference_dict:
+            raise ValueError(
+                "No alias from ['CLOCK', 'CLK'] found in reference PTA "
+                f"{self.reference_pta}"
+            )
+
+    def _align_reference_conventions(
         self,
         parfile_dicts: Dict[str, Dict[str, List[str]]],
         reference_dict: Dict[str, List[str]],
     ) -> None:
-        """Apply gated convention harmonization across consistent parfile dictionaries."""
-        # Required shared conventions must exist in reference model
-        self._align_parameter(reference_dict, reference_dict, "EPHEM", required=True)
-        self._align_parameter(
-            reference_dict, reference_dict, ["CLOCK", "CLK"], required=True
-        )
-
+        """Apply the reference EPHEM and clock convention to every PTA."""
         for parfile_dict in parfile_dicts.values():
             self._align_parameter(parfile_dict, reference_dict, "EPHEM", required=True)
             self._align_parameter(
                 parfile_dict, reference_dict, ["CLOCK", "CLK"], required=True
             )
 
-        convention_states = self._collect_convention_states(parfile_dicts)
-        normalized_packages = self._normalized_timing_packages()
-        cross_engine = self._is_cross_engine_mix(normalized_packages)
+    def _apply_cross_engine_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Apply convention rules needed when PINT and tempo2 pulsars are mixed."""
+        for pta_name, parfile_dict in parfile_dicts.items():
+            actions: List[str] = []
+            style = convention_states[pta_name]["style"]
 
-        if cross_engine:
-            for pta_name, parfile_dict in parfile_dicts.items():
-                actions: List[str] = []
-                style = convention_states[pta_name]["style"]
+            if style == "ecliptic":
+                # PINT and tempo2 agree best for ecliptic pars under IERS2003.
+                old_ecl = parfile_dict.get("ECL", ["(missing)"])[0]
+                parfile_dict["ECL"] = ["IERS2003"]
+                actions.append(f"set ECL=IERS2003 (was {old_ecl})")
+            else:
+                # Equatorial pars have no active ECL obliquity convention to align.
+                if "ECL" in parfile_dict:
+                    old_ecl = parfile_dict.pop("ECL")
+                    actions.append(f"removed ECL ({old_ecl[0]})")
+                self.logger.warning(f"[{pta_name}] {self._EQUATORIAL_WARNING}")
+                actions.append("emitted equatorial warning")
 
-                if style == "ecliptic":
-                    old_ecl = parfile_dict.get("ECL", ["(missing)"])[0]
-                    parfile_dict["ECL"] = ["IERS2003"]
-                    actions.append(f"set ECL=IERS2003 (was {old_ecl})")
-                else:
-                    if "ECL" in parfile_dict:
-                        old_ecl = parfile_dict.pop("ECL")
-                        actions.append(f"removed ECL ({old_ecl[0]})")
-                    self.logger.warning(f"[{pta_name}] {self._EQUATORIAL_WARNING}")
-                    actions.append("emitted equatorial warning")
+            if "T2CMETHOD" in parfile_dict and self._is_t2cmethod_tempo(
+                parfile_dict["T2CMETHOD"]
+            ):
+                # Active tempo2 TEMPO mode is a cross-engine convention mismatch.
+                old_t2c = parfile_dict.pop("T2CMETHOD")
+                actions.append(f"removed T2CMETHOD ({old_t2c[0]})")
 
-                if "T2CMETHOD" in parfile_dict and self._is_t2cmethod_tempo(
-                    parfile_dict["T2CMETHOD"]
-                ):
-                    old_t2c = parfile_dict.pop("T2CMETHOD")
-                    actions.append(f"removed T2CMETHOD ({old_t2c[0]})")
-
-                self.logger.info(
-                    f"PTA {pta_name}: convention harmonization applied "
-                    f"(reason=cross_engine_parity, style={style}); "
-                    f"actions: {', '.join(actions) if actions else 'none'}"
-                )
-            return
-
-        if len(parfile_dicts) == 1:
             self.logger.info(
-                "Convention harmonization skipped (reason=single_pta_single_engine)"
+                f"PTA {pta_name}: consistent convention rules applied "
+                f"(reason=cross_engine_parity, style={style}); "
+                f"actions: {', '.join(actions) if actions else 'none'}"
+            )
+
+    def _apply_pint_only_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Align heterogeneous ecliptic conventions for multi-PTA PINT stacks."""
+        ecliptic_ptas = [
+            pta_name
+            for pta_name, state in convention_states.items()
+            if state["style"] == "ecliptic"
+        ]
+        ecliptic_ecl_values = {
+            convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
+        }
+
+        if len(ecliptic_ecl_values) <= 1:
+            self.logger.info(
+                "Consistent convention rules skipped "
+                "(reason=homogeneous_ecl_single_engine_pint)"
             )
             return
 
-        if normalized_packages == {"pint"}:
-            ecliptic_ptas = [
-                pta_name
-                for pta_name, state in convention_states.items()
-                if state["style"] == "ecliptic"
-            ]
-            ecliptic_ecl_values = {
-                convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
-            }
+        reference_ecl = self._parse_ecl_value(reference_dict)
+        target_ecl = reference_ecl or "IERS2010"
+        for pta_name in ecliptic_ptas:
+            old_ecl = parfile_dicts[pta_name].get("ECL", ["(missing)"])[0]
+            parfile_dicts[pta_name]["ECL"] = [target_ecl]
+            self.logger.info(
+                f"PTA {pta_name}: consistent convention rules applied "
+                f"(reason=pint_only_ecl_heterogeneous); set ECL={target_ecl} (was {old_ecl})"
+            )
 
-            if len(ecliptic_ecl_values) <= 1:
-                self.logger.info(
-                    "Convention harmonization skipped (reason=homogeneous_ecl_single_engine_pint)"
-                )
-                return
-
-            reference_ecl = self._parse_ecl_value(reference_dict)
-            target_ecl = reference_ecl or "IERS2010"
+    def _apply_tempo2_only_rules(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+        convention_states: Dict[str, Dict[str, Optional[str]]],
+    ) -> None:
+        """Align heterogeneous ecliptic and T2CMETHOD conventions for tempo2 stacks."""
+        ecliptic_ptas = [
+            pta_name
+            for pta_name, state in convention_states.items()
+            if state["style"] == "ecliptic"
+        ]
+        ecliptic_ecl_values = {
+            convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
+        }
+        if len(ecliptic_ecl_values) > 1:
             for pta_name in ecliptic_ptas:
                 old_ecl = parfile_dicts[pta_name].get("ECL", ["(missing)"])[0]
-                parfile_dicts[pta_name]["ECL"] = [target_ecl]
+                parfile_dicts[pta_name]["ECL"] = ["IERS2003"]
                 self.logger.info(
-                    f"PTA {pta_name}: convention harmonization applied "
-                    f"(reason=pint_only_ecl_heterogeneous); set ECL={target_ecl} (was {old_ecl})"
+                    f"PTA {pta_name}: consistent convention rules applied "
+                    f"(reason=tempo2_only_ecl_heterogeneous); "
+                    f"set ECL=IERS2003 (was {old_ecl})"
                 )
-            return
+        else:
+            self.logger.info(
+                "Consistent convention rules skipped "
+                "(reason=homogeneous_ecl_single_engine_tempo2)"
+            )
 
-        if normalized_packages == {"tempo2"}:
-            ecliptic_ptas = [
-                pta_name
-                for pta_name, state in convention_states.items()
-                if state["style"] == "ecliptic"
-            ]
-            ecliptic_ecl_values = {
-                convention_states[pta_name]["ecl"] for pta_name in ecliptic_ptas
-            }
-            if len(ecliptic_ecl_values) > 1:
-                for pta_name in ecliptic_ptas:
-                    old_ecl = parfile_dicts[pta_name].get("ECL", ["(missing)"])[0]
-                    parfile_dicts[pta_name]["ECL"] = ["IERS2003"]
-                    self.logger.info(
-                        f"PTA {pta_name}: convention harmonization applied "
-                        f"(reason=tempo2_only_ecl_heterogeneous); "
-                        f"set ECL=IERS2003 (was {old_ecl})"
-                    )
+        t2_values = {state["t2cmethod"] for state in convention_states.values()}
+        if len(t2_values) > 1:
+            if "T2CMETHOD" not in reference_dict:
+                self.logger.info(
+                    "T2CMETHOD alignment skipped (reason=reference_missing_t2cmethod)"
+                )
             else:
-                self.logger.info(
-                    "Convention harmonization skipped (reason=homogeneous_ecl_single_engine_tempo2)"
-                )
-
-            t2_values = {state["t2cmethod"] for state in convention_states.values()}
-            if len(t2_values) > 1:
-                if "T2CMETHOD" not in reference_dict:
-                    self.logger.info(
-                        "T2CMETHOD alignment skipped (reason=reference_missing_t2cmethod)"
+                for pta_name, parfile_dict in parfile_dicts.items():
+                    self._align_parameter(
+                        parfile_dict, reference_dict, "T2CMETHOD", required=False
                     )
-                else:
-                    for pta_name, parfile_dict in parfile_dicts.items():
-                        self._align_parameter(
-                            parfile_dict, reference_dict, "T2CMETHOD", required=False
-                        )
-                        self.logger.info(
-                            f"PTA {pta_name}: convention harmonization applied "
-                            "(reason=tempo2_only_t2cmethod_heterogeneous); "
-                            f"set T2CMETHOD={parfile_dict['T2CMETHOD'][0]}"
-                        )
-            else:
-                self.logger.info(
-                    "T2CMETHOD alignment skipped (reason=homogeneous_t2cmethod_single_engine_tempo2)"
-                )
-            return
+                    self.logger.info(
+                        f"PTA {pta_name}: consistent convention rules applied "
+                        "(reason=tempo2_only_t2cmethod_heterogeneous); "
+                        f"set T2CMETHOD={parfile_dict['T2CMETHOD'][0]}"
+                    )
+        else:
+            self.logger.info(
+                "T2CMETHOD alignment skipped "
+                "(reason=homogeneous_t2cmethod_single_engine_tempo2)"
+            )
 
-        self.logger.info(
-            "Convention harmonization skipped "
-            f"(reason=unsupported_single_engine_packages:{sorted(normalized_packages)})"
-        )
-
-    def _apply_parity_protocol(
+    def _apply_consistent_convention_rules(
         self,
         parfile_dicts: Dict[str, Dict[str, List[str]]],
         reference_dict: Dict[str, List[str]],
     ) -> None:
-        """Backward-compatible alias for convention harmonization."""
-        self._apply_convention_harmonization(parfile_dicts, reference_dict)
+        """Apply gated convention rules across consistent parfile dictionaries."""
+        self._require_reference_conventions(reference_dict)
+        convention_states = self._collect_convention_states(parfile_dicts)
+
+        if len(parfile_dicts) == 1:
+            self.logger.info("Consistent convention rules skipped (reason=single_pta)")
+            return
+
+        # Multi-PTA combinations share the reference ephemeris and clock.
+        self._align_reference_conventions(parfile_dicts, reference_dict)
+
+        normalized_packages = self._normalized_timing_packages()
+
+        if self._is_cross_engine_mix(normalized_packages):
+            self._apply_cross_engine_rules(parfile_dicts, convention_states)
+            return
+
+        if normalized_packages == {"pint"}:
+            self._apply_pint_only_rules(
+                parfile_dicts, reference_dict, convention_states
+            )
+            return
+
+        if normalized_packages == {"tempo2"}:
+            self._apply_tempo2_only_rules(
+                parfile_dicts, reference_dict, convention_states
+            )
+            return
+
+        self.logger.info(
+            "Consistent convention rules skipped "
+            f"(reason=unsupported_single_engine_packages:{sorted(normalized_packages)})"
+        )
 
     def _make_parameters_consistent(
         self, parfile_data: Dict[str, str]
@@ -613,12 +657,12 @@ class ParameterManager:
                     dmx_params_map,
                 )
 
-        # Make conventions consistent with gated cross/single engine rules
+        # Apply reference and engine-specific conventions after component updates.
         try:
-            self._apply_convention_harmonization(parfile_dicts, reference_dict)
+            self._apply_consistent_convention_rules(parfile_dicts, reference_dict)
         except ValueError as e:
-            self.logger.error(f"Convention harmonization failed: {e}")
-            raise RuntimeError(f"Convention harmonization failed: {e}") from e
+            self.logger.error(f"Consistent convention rules failed: {e}")
+            raise RuntimeError(f"Consistent convention rules failed: {e}") from e
 
         # Convert back to par file strings
         consistent_parfiles = {}
