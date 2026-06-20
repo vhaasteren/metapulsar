@@ -121,6 +121,65 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
         return [canonical_param]
 
 
+def _parfile_alias_value_present(parfile_dict: Dict[str, Any], alias: str) -> bool:
+    """Return True if alias is present in a parfile dict with a non-empty value."""
+    if alias not in parfile_dict:
+        return False
+    value = parfile_dict[alias]
+    if value is None:
+        return False
+    if isinstance(value, list):
+        if not value:
+            return False
+        return bool(str(value[0]).strip())
+    return bool(str(value).strip())
+
+
+def has_parameter_alias(parfile_dict: Dict[str, Any], canonical_param: str) -> bool:
+    """Return True if any PINT alias for canonical_param is present and non-empty."""
+    return any(
+        _parfile_alias_value_present(parfile_dict, alias)
+        for alias in get_aliases_for_parameter(canonical_param)
+    )
+
+
+def has_equatorial_astrometry(parfile_dict: Dict[str, Any]) -> bool:
+    """Return True if equatorial astrometry parameters are present (via PINT aliases)."""
+    return has_parameter_alias(parfile_dict, "RAJ") and has_parameter_alias(
+        parfile_dict, "DECJ"
+    )
+
+
+def has_ecliptic_astrometry(parfile_dict: Dict[str, Any]) -> bool:
+    """Return True if ecliptic astrometry parameters are present (via PINT aliases)."""
+    return has_parameter_alias(parfile_dict, "ELONG") and has_parameter_alias(
+        parfile_dict, "ELAT"
+    )
+
+
+def detect_astrometry_style(parfile_dict: Dict[str, Any]) -> str:
+    """Detect whether a parfile uses equatorial or ecliptic astrometry.
+
+    Uses PINT's alias map rather than hard-coded parameter names.
+    """
+    has_equatorial = has_equatorial_astrometry(parfile_dict)
+    has_ecliptic = has_ecliptic_astrometry(parfile_dict)
+
+    if has_equatorial and has_ecliptic:
+        raise ValueError(
+            "Mixed astrometry detected (equatorial and ecliptic parameters present). "
+            "Refuse to make ambiguous coordinate representation consistent."
+        )
+    if has_ecliptic:
+        return "ecliptic"
+    if has_equatorial:
+        return "equatorial"
+    raise ValueError(
+        "Could not detect astrometry style. Expected either RAJ/DECJ or "
+        "LAMBDA/BETA (or ELONG/ELAT)."
+    )
+
+
 def clear_all_components_cache():
     """Clear the AllComponents cache.
 
@@ -570,6 +629,7 @@ def temporary_pn_tim_from_par_tim_tempo2(
         par_tmp.write_text(parfile_text, encoding="utf-8")
         cmd = [
             "tempo2",
+            "-nofit",
             "-f",
             str(par_tmp),
             str(tim_path),

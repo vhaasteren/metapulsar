@@ -24,10 +24,8 @@ def ipta_dr3_dir(data_dir):
 
 @pytest.fixture(scope="session")
 def legacy_module():
-    """Import and return the legacy module."""
-    from metapulsar.legacy import metapulsar
-
-    return metapulsar
+    """Import and return the legacy module (skip if not installed)."""
+    return pytest.importorskip("metapulsar.legacy.metapulsar")
 
 
 @pytest.fixture(scope="session")
