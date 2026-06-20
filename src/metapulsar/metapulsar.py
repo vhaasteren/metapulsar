@@ -474,7 +474,11 @@ class MetaPulsar(ep.BasePulsar):
                         full_parname
                     ].items():
                         if mapped_pta == pta:
-                            par_idx = psr.fitpars_canonical.index(mapped_param)
+                            from .pint_helpers import resolve_parameter_alias
+
+                            par_idx = psr.fitpars_canonical.index(
+                                resolve_parameter_alias(mapped_param)
+                            )
                             column[slice_obj] = dm[:, par_idx]
                             break
 
