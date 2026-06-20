@@ -65,26 +65,29 @@ Terminology: in MetaPulsar we use the word consistent to describe model componen
 
 ### Step 3: Make timing‑model conventions consistent
 
-Still inside `_make_parameters_consistent`, **after** the component merge (Step 2) and **before** the consistent `.par` strings are written, MetaPulsar calls `_apply_convention_harmonization`. The policy uses the pattern: discover per‑PTA state, compare PTAs/engines, and only act when heterogeneity matters.
+Still inside `_make_parameters_consistent`, **after** the component merge (Step 2) and **before** the consistent `.par` strings are written, MetaPulsar calls `_apply_consistent_convention_rules`. The policy is deliberately small: validate the reference conventions, skip multi‑PTA alignment when there is only one PTA, otherwise discover per‑PTA state and apply only the rules needed for the observed timing engines.
 
-**Prerequisites.** The reference PTA must contain `EPHEM` and either `CLOCK` or `CLK`; harmonization raises if either is missing.
+**Prerequisites.** The reference PTA must contain `EPHEM` and either `CLOCK` or `CLK`; the convention step raises if either is missing.
 
 **Astrometry guard.** If a parfile contains both equatorial and ecliptic astrometry parameters, `detect_astrometry_style` raises a `ValueError` (surfaced as `RuntimeError` by `_make_parameters_consistent`).
 
-Layer A is always applied:
+For a **single‑PTA pulsar**, the par/tim rewrite path is still used when needed for DM model cleanup and pulse‑number support. The multi‑PTA convention rules below are skipped because there is no second PTA to align to: `ECL`, `T2CMETHOD`, `EPHEM`, and `CLOCK`/`CLK` are not changed by this step.
+
+For **multi‑PTA pulsars**, MetaPulsar first applies the reference conventions:
 
 1. align `EPHEM` to the reference PTA,
 2. align `CLOCK`/`CLK` to the reference PTA.
 
-Layer B is applied only when both PINT and tempo2 PTAs are present
-(cross-engine stack):
+Then it applies engine‑specific rules:
+
+When both PINT and tempo2 PTAs are present:
 
 1. ecliptic astrometry: set `ECL IERS2003`,
 2. remove active `T2CMETHOD TEMPO` (only when the first token is `TEMPO`),
 3. equatorial astrometry: remove active `ECL` and emit a warning about the
    known residual few-ns parity floor for equatorial inputs.
 
-Layer C is applied only for single-engine, multi-PTA stacks:
+For single‑engine, multi‑PTA stacks:
 
 - **PINT-only:** if ecliptic `ECL` values differ (including missing vs present),
   align to the reference `ECL`; if the reference omits `ECL`, default to
@@ -95,13 +98,12 @@ Layer C is applied only for single-engine, multi-PTA stacks:
 
 No-op cases:
 
-- single PTA: Layers B and C are skipped (Layer A still aligns `EPHEM` and
-  `CLOCK`/`CLK`, which is usually already true),
+- single PTA: multi‑PTA convention rules are skipped,
 - multi-PTA single-engine stacks that are already homogeneous for the relevant
   conventions.
 
 `UNITS` normalization remains handled by `_convert_units_if_needed`; convention
-harmonization does not force `UNITS`.
+alignment does not force `UNITS`.
 
 For cross-engine parity motivation and validation context, see Luo et al. 2021,
 *ApJ* 911, 45, [doi:10.3847/1538-4357/abe62f](https://doi.org/10.3847/1538-4357/abe62f).
@@ -180,10 +182,11 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Challenging timing models.** If a pulsar resides in a regime where ( **M** ) varies rapidly with ( β₀ ) (high‑order binary models, poorly constrained orbital evolution), manual inspection is recommended. For Pulsar Timing Array purposes this is typically not an important regime to take into account. Note that the factory allows a **composite** strategy (no merging model components) for such cases (aka: FrankenStat) that is slightly more forgiving in this regard.
 * **Name handling.** Pulsar identity is validated via **coordinates**. B‑ vs J‑name is a display convention only and does not enter any computation.
 * **Determinism and provenance.** Given the set of `.par`/`.tim` inputs, the chosen reference PTA, and the list of consistent components, the output is deterministic. The code can optionally write the **consistent** `.par` files it constructs for full auditability.
+* **Single‑PTA behavior.** A single‑PTA pulsar may still have its `.par`/`.tim` artifacts rewritten for DM model cleanup and pulse‑number handling. What is skipped is only the multi‑PTA consistency/alignment step, because there is no cross‑PTA reference relationship to enforce.
 
 ### Implementation details (reproducibility pointers)
 
-* **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **consistent** strategy) calls `ParameterManager.make_parfiles_consistent()` to emit consistent `.par` files (optionally to disk). That method runs: parse → unit convert → `_make_parameters_consistent` (component merge, then convention harmonization) → write.
+* **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **consistent** strategy) calls `ParameterManager.make_parfiles_consistent()` to emit consistent `.par` files (optionally to disk). That method runs: parse → unit convert → `_make_parameters_consistent` (component merge, then consistent convention rules) → write.
 * **Parameter discovery and aliasing.** `ParameterManager` uses PINT’s model metadata plus a lightweight alias resolver to collect the parameter sets by *component type* and to resolve name differences between PINT and Tempo2.
 * **Design‑matrix assembly.** `MetaPulsar` (a subclass of `enterprise.pulsar.BasePulsar`) builds `fitparameters`/`setparameters` from the mapping, concatenates the per‑PTA arrays, and assembles the combined `designmatrix` column‑by‑column—applying explicit unit corrections for astrometric columns where PINT and Tempo2 differ. A zero‑information column cull prevents singularities.
 * **Flags and metadata.** The combined flags include `pta`, `pta_dataset`, and `timing_package`. Planetary and positional arrays are copied row‑wise from the underlying Enterprise pulsars.
@@ -197,7 +200,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 1. **Parse & normalize units** for all PTAs (`UNITS → TDB` only when needed).
 2. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, set DM (free), set DMEPOCH (frozen), add DM1/DM2 (free, 0).
-3. **Harmonize conventions** with gated rules: always align `EPHEM`, `CLOCK/CLK`; apply cross-engine parity rules only when both PINT and tempo2 are present; otherwise apply single-engine multi-PTA alignment only when conventions are heterogeneous.
+3. **Apply consistent convention rules**: for single‑PTA pulsars, skip multi‑PTA alignment; for multi‑PTA pulsars, align `EPHEM`, `CLOCK/CLK`, then apply cross-engine rules only when both PINT and tempo2 are present, otherwise apply single-engine multi-PTA alignment only when conventions are heterogeneous.
 4. **Instantiate** Enterprise pulsars (PINT or Tempo2 path). Validate same pulsar by coordinates.
 5. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).
 6. **Concatenate** per‑PTA arrays (TOAs, flags, etc.) without modification.
@@ -210,7 +213,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 * **Unit conversions:** `ParameterManager._convert_units_if_needed`, `_convert_pint_to_tdb`, `_convert_tempo2_to_tdb`.
 * **Component merge:** `_make_component_parameters_consistent`, `_handle_dm_special_cases`.
-* **Convention harmonization (Layers A/B/C):** `ParameterManager._apply_convention_harmonization` (called at the end of `_make_parameters_consistent`); legacy alias `_apply_parity_protocol`. Astrometry style detection: `detect_astrometry_style` in `pint_helpers.py`. Legacy mirror: `MetaParfiles.apply_parity_protocol` in `metapulsar.legacy`.
+* **Consistent convention rules:** `ParameterManager._apply_consistent_convention_rules` (called at the end of `_make_parameters_consistent`). Astrometry style detection: `detect_astrometry_style` in `pint_helpers.py`.
 * **Component discovery/aliasing:** `get_parameters_by_type_from_models`, `resolve_parameter_alias`, `check_component_available_in_model`.
 * **Detector‑specific timing‑model parameters remain local:** anything not in the consistent component set becomes PTA‑suffixed in `_add_pta_specific_parameter`.
 * **Phase offset exposure:** if `PHOFF` is absent MetaPulsar defines a meta‑parameter mapped to the canonical “Offset” column so that per‑dataset constant phase terms are explicit.

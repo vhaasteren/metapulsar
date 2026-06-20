@@ -1,4 +1,4 @@
-"""Unit tests for legacy MetaParfiles parity protocol harmonization."""
+"""Unit tests for legacy MetaParfiles parity protocol convention rules."""
 
 from io import StringIO
 from unittest.mock import patch
@@ -19,7 +19,7 @@ def _build_input(pta: str, par_content: str, package: str = "tempo2") -> dict:
     }
 
 
-def test_legacy_parity_protocol_cross_engine_ecliptic_harmonization():
+def test_legacy_parity_protocol_cross_engine_ecliptic_convention_rules():
     par1 = (
         "PSR J1600-3053\n"
         "LAMBDA 244.347\n"
