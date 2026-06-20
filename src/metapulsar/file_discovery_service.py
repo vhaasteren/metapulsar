@@ -5,10 +5,12 @@ It is completely independent - NO external dependencies on PINT, libstempo, or o
 Uses only regex patterns for file matching and pattern extraction.
 """
 
-from typing import Dict, List, Any, Union, Tuple
+from typing import Dict, List, Any, Union
 from pathlib import Path
 import re
 from loguru import logger
+
+from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 
 __all__ = [
     "FileDiscoveryService",
@@ -142,6 +144,7 @@ class FileDiscoveryService:
         self.data_releases = pta_data_releases or PTA_DATA_RELEASES.copy()
         self.verbose = verbose
         self.logger = logger
+        self._tim_analyzer = TimFileAnalyzer()
 
     def discover_patterns_in_data_release(self, data_release_name: str) -> List[str]:
         """Discover all file patterns in a single data release using regex.
@@ -197,7 +200,7 @@ class FileDiscoveryService:
 
         Returns:
             Dictionary mapping data release names to lists of enriched file dictionaries
-            Format: {data_release_name: [{'par': parfile_path, 'tim': timfile_path, 'timing_package': 'pint', 'timespan_days': 1000.0}, ...]}
+            Format: {data_release_name: [{'par': parfile_path, 'tim': timfile_path, 'timing_package': 'pint', 'tim_metadata': TimMetadata(...)}, ...]}
         """
         if data_release_names is None:
             data_release_names = self.list_data_releases()
@@ -387,18 +390,14 @@ class FileDiscoveryService:
         # Step 3: Match par and tim files by canonical pulsar name
         for pulsar_name in par_files_by_pulsar:
             if pulsar_name in tim_files_by_pulsar:
-                # Calculate timespan and TOA count for this data release/pulsar combination
-                timespan, toa_count = self._calculate_timespan_and_count_from_tim_file(
-                    tim_files_by_pulsar[pulsar_name]
-                )
+                tim_metadata = self._get_tim_metadata(tim_files_by_pulsar[pulsar_name])
 
                 file_pairs.append(
                     {
                         "par": par_files_by_pulsar[pulsar_name],
                         "tim": tim_files_by_pulsar[pulsar_name],
                         "timing_package": data_release["timing_package"],
-                        "timespan_days": timespan,
-                        "toa_count": toa_count,
+                        "tim_metadata": tim_metadata,
                         "par_content": par_files_by_pulsar[pulsar_name].read_text(
                             encoding="utf-8"
                         ),
@@ -407,27 +406,24 @@ class FileDiscoveryService:
 
         return file_pairs
 
-    def _calculate_timespan_and_count_from_tim_file(
-        self, tim_file_path: Path
-    ) -> Tuple[float, int]:
-        """Calculate timespan and TOA count from TIM file using TimFileAnalyzer.
-
-        Args:
-            tim_file_path: Path to the TIM file
-
-        Returns:
-            Tuple of (timespan_in_days, toa_count)
-        """
+    def _get_tim_metadata(self, tim_file_path: Path) -> TimMetadata:
+        """Extract unified TIM metadata using the shared analyzer cache."""
         try:
-            from .tim_file_analyzer import TimFileAnalyzer
-
-            analyzer = TimFileAnalyzer()
-            return analyzer._get_timespan_and_count(tim_file_path)
+            return self._tim_analyzer.get_tim_metadata(tim_file_path)
         except Exception as e:
             self.logger.warning(
-                f"Could not calculate timespan and count for {tim_file_path}: {e}"
+                f"Could not parse TIM metadata for {tim_file_path}: {e}"
             )
-            return 0.0, 0
+            return TimMetadata(
+                toa_count=0,
+                mjd_min=None,
+                mjd_max=None,
+                timespan_days=0.0,
+                pn_with_count=0,
+                pn_without_count=0,
+                pn_status="none",
+                parse_warnings=(f"metadata extraction failed: {e}",),
+            )
 
 
 # Convenience function for easy access

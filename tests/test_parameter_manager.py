@@ -15,6 +15,7 @@ from metapulsar.parameter_manager import (
     ParameterInconsistencyError,
     ParameterMapping,
 )
+from tests.helpers import make_tim_metadata
 
 # Mark all tests as slow
 pytestmark = pytest.mark.slow
@@ -30,21 +31,21 @@ class TestParameterManager:
             "EPTA": {
                 "par": Path("test_parfiles/epta.par"),
                 "tim": Path("test_parfiles/epta.tim"),
-                "timespan_days": 3650.5,
+                "tim_metadata": make_tim_metadata(timespan_days=3650.5),
                 "timing_package": "pint",
                 "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\nUNITS TDB\n",
             },
             "PPTA": {
                 "par": Path("test_parfiles/ppta.par"),
                 "tim": Path("test_parfiles/ppta.tim"),
-                "timespan_days": 4200.3,
+                "tim_metadata": make_tim_metadata(timespan_days=4200.3),
                 "timing_package": "tempo2",
                 "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\nUNITS TDB\n",
             },
             "NANOGrav": {
                 "par": Path("test_parfiles/nanograv.par"),
                 "tim": Path("test_parfiles/nanograv.tim"),
-                "timespan_days": 2800.1,
+                "tim_metadata": make_tim_metadata(timespan_days=2800.1),
                 "timing_package": "pint",
                 "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\nUNITS TDB\n",
             },
@@ -400,14 +401,14 @@ UNITS TDB
             "EPTA": {
                 "par": Path("test_parfiles/epta.par"),
                 "tim": Path("test_parfiles/epta.tim"),
-                "timespan_days": 3650.5,
+                "tim_metadata": make_tim_metadata(timespan_days=3650.5),
                 "timing_package": "pint",
                 "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
             },
             "PPTA": {
                 "par": Path("test_parfiles/ppta.par"),
                 "tim": Path("test_parfiles/ppta.tim"),
-                "timespan_days": 4200.3,
+                "tim_metadata": make_tim_metadata(timespan_days=4200.3),
                 "timing_package": "tempo2",
                 "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
             },

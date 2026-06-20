@@ -184,7 +184,7 @@ class TestLegacyComparison:
 
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
-                use_pulse_numbers=False,
+                use_pulse_numbers="no",
             )
 
             # Compare basic properties
@@ -485,7 +485,7 @@ class TestLegacyComparison:
 
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
-                use_pulse_numbers=False,
+                use_pulse_numbers="no",
             )
 
             # Get design matrices
@@ -646,7 +646,7 @@ class TestLegacyComparison:
 
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
-                use_pulse_numbers=False,
+                use_pulse_numbers="no",
             )
 
             # Get flags
@@ -758,7 +758,7 @@ class TestLegacyComparison:
 
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
-                use_pulse_numbers=False,
+                use_pulse_numbers="no",
             )
 
             # Get intermediate par files (if available)
@@ -865,7 +865,7 @@ class TestLegacyComparison:
 
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
-                use_pulse_numbers=False,
+                use_pulse_numbers="no",
             )
 
             # Get fitpars from both implementations
@@ -897,7 +897,12 @@ class TestLegacyComparison:
     def test_pulse_number_mode_residual_equivalence(
         self, new_module, available_data_sets
     ):
-        """Pulse-number and non-pulse-number paths should match to machine precision."""
+        """Pulse-number and non-pulse-number paths should match to machine precision.
+
+        Unlike ``tests/test_pulse_tracking.py`` (synthetic PTAs where consistent
+        merging breaks DM/DMX coherence), this IPTA case stays coherent after merge,
+        so ``yes`` and ``no`` should yield the same residuals.
+        """
         if not available_data_sets:
             pytest.skip("No data available for testing")
 
@@ -920,11 +925,11 @@ class TestLegacyComparison:
         factory = new_module["MetaPulsarFactory"]()
         mp_without_pn = factory.create_metapulsar(
             file_data=filtered_file_data,
-            use_pulse_numbers=False,
+            use_pulse_numbers="no",
         )
         mp_with_pn = factory.create_metapulsar(
             file_data=filtered_file_data,
-            use_pulse_numbers=True,
+            use_pulse_numbers="yes",
         )
 
         assert len(mp_without_pn._residuals) == len(mp_with_pn._residuals)

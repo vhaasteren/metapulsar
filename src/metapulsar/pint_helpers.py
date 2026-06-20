@@ -4,7 +4,7 @@ This module provides pure functions that encapsulate PINT-specific logic
 for parameter discovery, alias resolution, and model validation.
 """
 
-from typing import Dict, List, Tuple, Any, Iterator
+from typing import Dict, List, Tuple, Any, Iterator, Literal, Optional, TYPE_CHECKING
 from functools import lru_cache
 from pint.models import TimingModel
 from pint.models.timing_model import AllComponents
@@ -15,7 +15,9 @@ import tempfile
 import subprocess
 from io import StringIO
 import numpy as np
-from pint.models.model_builder import parse_parfile
+
+if TYPE_CHECKING:
+    from .tim_file_analyzer import TimMetadata
 
 
 class PINTDiscoveryError(Exception):
@@ -362,7 +364,6 @@ def create_pint_model(parfile_data) -> TimingModel:
         InvalidModelParameters,
         ComponentConflict,
     )
-    from io import StringIO
     from loguru import logger
 
     try:
@@ -567,9 +568,95 @@ def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]
 # ----------------------- Pulse-number helper utilities ----------------------- #
 
 from pint.toa import get_TOAs, TOAs  # noqa: E402 (import after top-level defs)
+from loguru import logger as loguru_logger  # noqa: E402
+
+PulseNumberMode = Literal["no", "yes", "reuse", "overwrite"]
+PULSE_NUMBER_MODES: Tuple[str, ...] = ("no", "yes", "reuse", "overwrite")
+TimPulseNumberStatus = Literal["complete", "mixed", "none"]
 
 
-def ensure_pulse_numbers(toas: TOAs, model: TimingModel) -> TOAs:
+def validate_pulse_number_mode(value: object) -> PulseNumberMode:
+    """Validate and normalize use_pulse_numbers mode string."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"use_pulse_numbers must be one of {PULSE_NUMBER_MODES!r}, "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    mode = value.strip().lower()
+    if mode not in PULSE_NUMBER_MODES:
+        raise ValueError(
+            f"use_pulse_numbers must be one of {PULSE_NUMBER_MODES!r}, got {value!r}"
+        )
+    return mode  # type: ignore[return-value]
+
+
+def pulse_number_tracking_enabled(mode: PulseNumberMode) -> bool:
+    return mode in ("yes", "reuse", "overwrite")
+
+
+def sanitize_tempo2_tim_noise_directives(tim_text: str) -> str:
+    """Remove Tempo2 white-noise directive lines (T2E*, TNE*) from .tim text."""
+    kept: List[str] = []
+    for line in tim_text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if stripped.startswith("#") or stripped.upper().startswith("C "):
+            kept.append(line)
+            continue
+        first_token = stripped.split()[0]
+        if first_token.startswith("T2E") or first_token.startswith("TNE"):
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
+def _should_derive_pulse_numbers(
+    mode: PulseNumberMode,
+    status: TimPulseNumberStatus,
+    tim_path: Path,
+    n_with: int,
+    n_without: int,
+) -> bool:
+    """Return True when pulse numbers must be re-derived for this mode/status."""
+    if mode == "no":
+        return False
+    if mode == "overwrite":
+        return True
+    if status == "complete":
+        return False
+    if status == "mixed":
+        loguru_logger.warning(
+            "Mixed -pn flags in {}: {} TOAs with -pn, {} without; re-deriving pulse numbers",
+            tim_path,
+            n_with,
+            n_without,
+        )
+        return True
+    # none
+    if mode == "reuse":
+        loguru_logger.warning(
+            "No complete -pn in {}; re-deriving pulse numbers (reuse mode)",
+            tim_path,
+        )
+    return True
+
+
+def ensure_pint_track_minus_2(model: TimingModel) -> None:
+    """Set PINT TRACK to -2 for pulse-number tracking."""
+    if "TRACK" in model.params:
+        model.TRACK.value = "-2"
+    else:
+        loguru_logger.warning(
+            "TRACK parameter not in PINT timing model; "
+            "pulse-number tracking may be ineffective"
+        )
+
+
+def ensure_pulse_numbers(
+    toas: TOAs, model: TimingModel, *, force_recompute: bool = False
+) -> TOAs:
     """Ensure TOAs has a complete pulse_number column.
 
     If a -pn flag was present in the .tim, PINT already parsed it into
@@ -580,6 +667,9 @@ def ensure_pulse_numbers(toas: TOAs, model: TimingModel) -> TOAs:
 
     if "delta_pulse_number" not in toas.table.colnames:
         toas.table["delta_pulse_number"] = np.zeros(len(toas))
+    if force_recompute:
+        toas.compute_pulse_numbers(model)
+        return toas
     if ("pulse_number" not in toas.table.colnames) or (
         toas.table["pulse_number"] != toas.table["pulse_number"]
     ).any():  # NaN check
@@ -596,13 +686,16 @@ def write_pn_tim(toas: TOAs, out_path: Path) -> Path:
 
 @contextmanager
 def temporary_pn_tim_from_par_tim_pint(
-    parfile_text: str, tim_path: Path
+    parfile_text: str,
+    tim_path: Path,
+    *,
+    force_recompute: bool = False,
 ) -> Iterator[str]:
     """Yield a temporary pn-tagged .tim derived via PINT; file is deleted on exit."""
     tim_path = Path(tim_path)
     model = create_pint_model(parfile_text)
     toas = get_TOAs(str(tim_path), model=model, include_pn=True)
-    ensure_pulse_numbers(toas, model)
+    ensure_pulse_numbers(toas, model, force_recompute=force_recompute)
     with tempfile.TemporaryDirectory(prefix="withpn_pint_") as td:
         out_path = Path(td) / "withpn.tim"
         write_pn_tim(toas, out_path)
@@ -698,8 +791,54 @@ def temporary_pn_tim_from_par_tim_tempo2(
         src = td_path / "withpn.tim"
         if not src.exists():
             raise RuntimeError("tempo2 plugin did not produce withpn.tim")
+        sanitized = sanitize_tempo2_tim_noise_directives(
+            src.read_text(encoding="utf-8")
+        )
+        src.write_text(sanitized, encoding="utf-8")
         yield str(src)
     # temp dir auto-removed
+
+
+@contextmanager
+def resolved_tim_for_pulse_numbers(
+    mode: PulseNumberMode,
+    parfile_text: str,
+    tim_path: Path,
+    *,
+    derive_backend: Literal["pint", "tempo2"],
+    tim_metadata: Optional["TimMetadata"] = None,
+) -> Iterator[str]:
+    """Yield the .tim path to load for the given pulse-number mode."""
+    from .tim_file_analyzer import TimFileAnalyzer
+
+    tim_path = Path(tim_path)
+    if mode == "no":
+        yield str(tim_path)
+        return
+
+    if tim_metadata is None:
+        tim_metadata = TimFileAnalyzer().get_tim_metadata(tim_path)
+
+    status = tim_metadata.pn_status
+    n_with = tim_metadata.pn_with_count
+    n_without = tim_metadata.pn_without_count
+    derive = _should_derive_pulse_numbers(mode, status, tim_path, n_with, n_without)
+
+    if not derive:
+        yield str(tim_path)
+        return
+
+    force_recompute = mode == "overwrite"
+    if derive_backend == "pint":
+        with temporary_pn_tim_from_par_tim_pint(
+            parfile_text,
+            tim_path,
+            force_recompute=force_recompute,
+        ) as pn_tim:
+            yield pn_tim
+    else:
+        with temporary_pn_tim_from_par_tim_tempo2(parfile_text, tim_path) as pn_tim:
+            yield pn_tim
 
 
 def _write_pn_tim_libstempo(psr, out_path: Path) -> None:
@@ -779,12 +918,41 @@ def temporary_pn_tim_from_par_tim_libstempo(
         yield str(out_tim)
 
 
+def par_text_with_track_minus_2(par_text: str) -> str:
+    """Return par text with TRACK set to -2 using line-based editing.
+
+    Avoids PINT re-serialization, which can fail on Tempo2 fit flags (``N``/``Y``).
+    """
+    out_lines: List[str] = []
+    replaced = False
+    for line in par_text.splitlines():
+        stripped = line.strip()
+        if (
+            not stripped
+            or stripped.startswith("#")
+            or stripped.upper().startswith("C ")
+        ):
+            out_lines.append(line)
+            continue
+        first_token = stripped.split()[0]
+        if first_token.upper() == "TRACK":
+            prefix = line[: len(line) - len(line.lstrip())]
+            out_lines.append(f"{prefix}TRACK -2")
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        out_lines.append("TRACK -2")
+    result = "\n".join(out_lines)
+    if par_text.endswith("\n"):
+        result += "\n"
+    return result
+
+
 @contextmanager
 def temporary_par_with_track_minus_2(par_text: str) -> Iterator[str]:
     """Yield a temporary tempo2-formatted par file with TRACK -2; deleted on exit."""
-    par_dict = parse_parfile(StringIO(par_text))
-    par_dict["TRACK"] = ["-2"]
-    par_out = dict_to_parfile_string(par_dict, format="tempo2")
+    par_out = par_text_with_track_minus_2(par_text)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".par", delete=False) as tf:
         tf.write(par_out)
         tf.flush()

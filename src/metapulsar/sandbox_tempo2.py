@@ -1436,7 +1436,7 @@ class tempopulsar:
 
             logger.info(f"Proactively counting TOAs in {timfile_path}")
             analyzer = TimFileAnalyzer()
-            toa_count = analyzer.count_toas(timfile_path)
+            toa_count = analyzer.get_tim_metadata(timfile_path).toa_count
 
             if toa_count > self._policy.nobs_threshold:
                 maxobs_with_margin = int(toa_count * self._policy.nobs_safety_margin)
