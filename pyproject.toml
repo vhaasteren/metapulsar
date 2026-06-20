@@ -142,4 +142,5 @@ markers = [
     "unit: marks tests as unit tests",
     "requires_libstempo: marks tests that need libstempo/Tempo2 available",
     "requires_ipta_data: marks tests that need IPTA data files present",
+    "requires_legacy: marks tests that need metapulsar.legacy installed",
 ]

@@ -437,3 +437,405 @@ UNITS TDB
                 add_dm_derivatives=True,
                 dmx_params_map={"EPTA": [], "PPTA": []},
             )
+
+    def test_apply_consistent_convention_rules_cross_engine_ecliptic(self):
+        """Cross-engine ecliptic pars force ECL IERS2003 and remove T2CMETHOD TEMPO."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE436\n"
+                    "CLOCK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE440\n"
+                    "CLK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_consistent_convention_rules(
+            parfile_dicts, reference_dict
+        )
+
+        for _, pd in parfile_dicts.items():
+            assert pd["UNITS"] == ["TDB"]
+            assert pd["ECL"] == ["IERS2003"]
+            assert "T2CMETHOD" not in pd
+            assert pd["EPHEM"] == ["DE436"]
+            clock_value = pd["CLOCK"] if "CLOCK" in pd else pd["CLK"]
+            assert clock_value == ["TT(BIPM2015)"]
+
+    def test_apply_consistent_convention_rules_cross_engine_equatorial_warning_and_no_ecl(
+        self,
+    ):
+        """Cross-engine equatorial pars emit warning and should not carry ECL."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE436\n"
+                    "CLK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        with patch.object(parameter_manager.logger, "warning") as mock_warning:
+            parameter_manager._apply_consistent_convention_rules(
+                parfile_dicts, reference_dict
+            )
+
+        for _, pd in parfile_dicts.items():
+            assert pd["UNITS"] == ["TDB"]
+            assert "ECL" not in pd
+            assert "T2CMETHOD" not in pd
+        assert mock_warning.call_count == 2
+
+    def test_apply_consistent_convention_rules_pint_only_aligns_missing_ecl_to_iers2010(
+        self,
+    ):
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "EPHEM DE436\n"
+                    "CLK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        with patch.object(parameter_manager.logger, "warning") as mock_warning:
+            parameter_manager._apply_consistent_convention_rules(
+                parfile_dicts, reference_dict
+            )
+
+        assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
+        assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
+        assert "T2CMETHOD" not in parfile_dicts["EPTA"]
+        assert "T2CMETHOD" not in parfile_dicts["PPTA"]
+        assert mock_warning.call_count == 0
+
+    def test_apply_consistent_convention_rules_tempo2_only_preserves_shared_t2cmethod(
+        self,
+    ):
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE436\n"
+                    "CLOCK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE440\n"
+                    "CLK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_consistent_convention_rules(
+            parfile_dicts, reference_dict
+        )
+
+        for pd in parfile_dicts.values():
+            assert pd["ECL"] == ["IERS2010"]
+            assert pd["T2CMETHOD"] == ["TEMPO"]
+
+    def test_apply_consistent_convention_rules_tempo2_only_aligns_heterogeneous_conventions(
+        self,
+    ):
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE436\n"
+                    "CLOCK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2003\n"
+                    "T2CMETHOD IAU2000B\n"
+                    "EPHEM DE440\n"
+                    "CLK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_consistent_convention_rules(
+            parfile_dicts, reference_dict
+        )
+
+        assert parfile_dicts["EPTA"]["ECL"] == ["IERS2003"]
+        assert parfile_dicts["PPTA"]["ECL"] == ["IERS2003"]
+        assert parfile_dicts["EPTA"]["T2CMETHOD"] == ["TEMPO"]
+        assert parfile_dicts["PPTA"]["T2CMETHOD"] == ["TEMPO"]
+
+    def test_apply_consistent_convention_rules_single_pta_skips_alignment(self):
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "ECL IERS2010\n"
+                    "T2CMETHOD TEMPO\n"
+                    "EPHEM DE436\n"
+                    "CLOCK TT(BIPM2015)\n"
+                    "CLK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            }
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_consistent_convention_rules(
+            parfile_dicts, reference_dict
+        )
+
+        assert parfile_dicts["EPTA"]["T2CMETHOD"] == ["TEMPO"]
+        assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
+        assert parfile_dicts["EPTA"]["CLOCK"] == ["TT(BIPM2015)"]
+        assert parfile_dicts["EPTA"]["CLK"] == ["TT(BIPM2021)"]
+
+    def test_single_pta_dispersion_cleanup_still_rewrites_dm_model(self):
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.2 0\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            }
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+        parfile_dicts = {
+            "EPTA": {
+                "DM": ["13.2 0"],
+                "DMEPOCH": ["55000"],
+                "DMX_0001": ["0.01 1"],
+            }
+        }
+
+        parameter_manager._handle_dm_special_cases(
+            parfile_dicts=parfile_dicts,
+            reference_dict=parfile_dicts["EPTA"],
+            add_dm_derivatives=True,
+            dmx_params_map={"EPTA": ["DMX_0001"]},
+        )
+
+        assert "DMX_0001" not in parfile_dicts["EPTA"]
+        assert parfile_dicts["EPTA"]["DM"] == ["13.2 1"]
+        assert parfile_dicts["EPTA"]["DMEPOCH"] == ["55000.0 0"]
+        assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
+        assert parfile_dicts["EPTA"]["DM2"] == ["0.0 1"]
+
+    def test_apply_consistent_convention_rules_mixed_astrometry_raises(self):
+        """Mixed ecliptic/equatorial astrometry should fail fast."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "LAMBDA 244.347\n"
+                    "BETA -10.07\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            }
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        with pytest.raises(ValueError, match="Mixed astrometry detected"):
+            parameter_manager._apply_consistent_convention_rules(
+                parfile_dicts, reference_dict
+            )
+
+    def test_apply_consistent_convention_rules_pint_only_elong_elat_aliases(self):
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "ELONG 244.347\n"
+                    "ELAT -10.07\n"
+                    "ECL IERS2010\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "ELONG 244.347\n"
+                    "ELAT -10.07\n"
+                    "EPHEM DE436\n"
+                    "CLK TT(BIPM2015)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._apply_consistent_convention_rules(
+            parfile_dicts, reference_dict
+        )
+
+        assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
+        assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
+
+    def test_apply_consistent_convention_rules_missing_reference_clock_raises(self):
+        """Reference parfile must contain CLOCK or CLK."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "EPHEM DE440\n"
+                    "UNITS TDB\n"
+                ),
+            }
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        with pytest.raises(ValueError, match="CLOCK'.*CLK"):
+            parameter_manager._apply_consistent_convention_rules(
+                parfile_dicts, reference_dict
+            )
+
+    def test_apply_consistent_convention_rules_missing_reference_ephem_raises(self):
+        """Reference parfile must contain EPHEM."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            }
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        with pytest.raises(ValueError, match="EPHEM"):
+            parameter_manager._apply_consistent_convention_rules(
+                parfile_dicts, reference_dict
+            )
