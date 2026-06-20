@@ -25,7 +25,7 @@ class TestLegacyComparison:
             return maybe_path.read_text(encoding="utf-8")
         return par_content
 
-    def _assert_protocol_harmonized(
+    def _assert_protocol_conventions(
         self, par_content: str, label: str, engine_mix: bool
     ):
         text = self._read_par_content(par_content)
@@ -44,11 +44,11 @@ class TestLegacyComparison:
             keys[key] = parts[1:]
 
         if engine_mix:
-            # Cross-engine harmonization should neutralize active TEMPO mode.
+            # Cross-engine convention rules should neutralize active TEMPO mode.
             if "T2CMETHOD" in keys and keys["T2CMETHOD"]:
                 assert (
                     keys["T2CMETHOD"][0].upper() != "TEMPO"
-                ), f"{label}: active T2CMETHOD TEMPO found after harmonization"
+                ), f"{label}: active T2CMETHOD TEMPO found after convention rules"
 
         has_equatorial = "RAJ" in keys and "DECJ" in keys
         has_ecliptic = ("LAMBDA" in keys or "ELONG" in keys) and (
@@ -56,7 +56,7 @@ class TestLegacyComparison:
         )
         assert not (
             has_equatorial and has_ecliptic
-        ), f"{label}: mixed astrometry detected after harmonization"
+        ), f"{label}: mixed astrometry detected after convention rules"
 
         if has_ecliptic and engine_mix:
             assert "ECL" in keys, f"{label}: expected ECL for ecliptic astrometry"
@@ -766,10 +766,10 @@ class TestLegacyComparison:
             new_par_content = getattr(new_mp, "intermediate_par_content", None)
 
             if legacy_par_content and new_par_content:
-                self._assert_protocol_harmonized(
+                self._assert_protocol_conventions(
                     legacy_par_content, "legacy", engine_mix=engine_mix
                 )
-                self._assert_protocol_harmonized(
+                self._assert_protocol_conventions(
                     new_par_content, "new", engine_mix=engine_mix
                 )
 
