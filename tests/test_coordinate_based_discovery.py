@@ -19,6 +19,7 @@ from metapulsar.position_helpers import (
     discover_pulsars_by_coordinates_optimized,
 )
 from metapulsar.metapulsar import MetaPulsar
+from tests.helpers import make_tim_metadata
 
 
 # === FIXTURES ===
@@ -211,7 +212,7 @@ class TestCoordinateBasedDiscovery:
                         "tim": mock_file_system / "data1" / "J1857+0943.tim",
                         "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
                         "timing_package": "pint",
-                        "timespan_days": 1000.0,
+                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     }
                 ],
                 "test_data_release2": [
@@ -220,7 +221,7 @@ class TestCoordinateBasedDiscovery:
                         "tim": mock_file_system / "data2" / "J1857+0943.tim",
                         "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
                         "timing_package": "pint",
-                        "timespan_days": 1000.0,
+                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     }
                 ],
             }
@@ -317,7 +318,7 @@ class TestEdgeCases:
                         "tim": mock_file_system / "data1" / "malformed.tim",
                         "par_content": "This is not a valid parfile",
                         "timing_package": "pint",
-                        "timespan_days": 1000.0,
+                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     }
                 ]
             }

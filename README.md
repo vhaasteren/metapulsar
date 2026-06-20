@@ -62,6 +62,24 @@ print(f"Number of TOAs: {len(metapulsar.toas)}")
 print(f"PTA names: {list(metapulsar._pulsars.keys())}")
 ```
 
+### Pulse-number tracking (`use_pulse_numbers`)
+
+When combining PTAs with `combination_strategy="consistent"`, merged par files can
+break per-PTA phase coherence. Pulse-number tracking preserves phase connectivity
+via `-pn` flags and `TRACK -2` on the timing model.
+
+Pass a **string** mode to `create_metapulsar` (default `"yes"`). Booleans are no
+longer accepted.
+
+| Mode | Behavior |
+|------|----------|
+| `"no"` | Ignore pulse numbers; no `TRACK -2` override (Tempo2). |
+| `"yes"` | Reuse complete `-pn` on all TOAs; otherwise re-derive from original `par` + `tim`; warn on mixed partial `-pn`. |
+| `"reuse"` | Same as `"yes"` when complete; warn and re-derive when `-pn` is missing or incomplete. |
+| `"overwrite"` | Always re-derive `-pn` from the original coherent `par` + `tim`. |
+
+Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`.
+
 ## Documentation
 
 - **[Interactive Tutorial](examples/notebooks/using_metapulsar.ipynb)** - Complete usage guide with examples
