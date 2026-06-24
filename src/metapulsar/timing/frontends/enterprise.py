@@ -25,7 +25,7 @@ def _coord_from_transform(transform: str) -> str:
     if transform == "none":
         return "delta"
     if transform == "standardized":
-        return "z"
+        return "standardized"
     if transform == "whitening":
         return "x"
     raise ValueError(f"Unsupported transform: {transform}")
@@ -57,6 +57,14 @@ def _scalar_user_parameter(*, space, coord: str, idx: int):
             return float(
                 axis.logprior_physical(delta, np) + axis.logabsdet_delta_from_z(q, np)
             )
+        if coord == "standardized":
+            z = np.asarray([space.linear.C[idx, idx] * value + space.linear.z0[idx]])
+            delta = axis.delta_from_z(z, np)
+            return float(
+                axis.logprior_physical(delta, np)
+                + axis.logabsdet_delta_from_z(z, np)
+                + np.log(space.linear.C[idx, idx])
+            )
         raise ValueError(f"Scalar Enterprise parameters do not support coord={coord!r}")
 
     def _ppf(u):
@@ -66,6 +74,9 @@ def _scalar_user_parameter(*, space, coord: str, idx: int):
             return float(delta[0])
         if coord == "z":
             return float(axis.z_from_delta(delta, np)[0])
+        if coord == "standardized":
+            z = float(axis.z_from_delta(delta, np)[0])
+            return float((z - space.linear.z0[idx]) / space.linear.C[idx, idx])
         raise ValueError(f"Scalar Enterprise parameters do not support coord={coord!r}")
 
     return parameter.UserParameter(
@@ -133,14 +144,17 @@ def _make_waveform(
         backend = _get_backend(psr, backend_name, backend_kwargs=backend_kwargs)
         ndim = len(partition.fitpars)
 
-        if coord in {"delta", "z"}:
+        if coord in {"delta", "z", "standardized"}:
 
             def _evaluate(**coord_values):
                 q = np.asarray(
                     [coord_values[param] for param in sampled_names],
                     dtype=float,
                 )
-                delta_sampled = np.asarray(space.delta_from_coord(q, np, coord=coord))
+                space_coord = "x" if coord == "standardized" else coord
+                delta_sampled = np.asarray(
+                    space.delta_from_coord(q, np, coord=space_coord)
+                )
                 full_delta = np.zeros((ndim,), dtype=float)
                 for i, col in enumerate(sampled_indices):
                     full_delta[col] = delta_sampled[i]
@@ -192,6 +206,7 @@ def _make_marginalizing_signal(*, partition_spec, name: str):
                 idx_exclude=partition.idx_sampled,
             )
             self._inner = base(psr)
+            self.name = self._inner.name
             self._params = self._inner._params
             self.basis_params = list(self._inner.basis_params)
             self.prior_params = list(getattr(self._inner, "prior_params", []))

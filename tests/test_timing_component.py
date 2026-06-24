@@ -10,6 +10,7 @@ from metapulsar.timing.backends.base import LinearModel
 from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
 from metapulsar.timing.backends.pint import LinearizedPintTimingBackend
 from metapulsar.timing.component import NonLinearTimingModel
+from metapulsar.timing.partition import resolve_partition
 
 
 class _Host:
@@ -115,6 +116,29 @@ def _monkeypatch_numpyro(monkeypatch, sample_value):
     return calls
 
 
+def _schur_fisher(host, *, marginalize, variance):
+    part = resolve_partition(host, marginalize=marginalize)
+    mmat = np.asarray(host.Mmat, dtype=float)
+    weights = 1.0 / np.asarray(variance, dtype=float)
+    sampled = mmat[:, part.idx_sampled]
+    marginalized = mmat[:, part.idx_marginalized]
+    fisher = sampled.T @ (weights[:, None] * sampled)
+    if marginalized.shape[1]:
+        fisher_sm = sampled.T @ (weights[:, None] * marginalized)
+        fisher_mm = marginalized.T @ (weights[:, None] * marginalized)
+        fisher = fisher - fisher_sm @ np.linalg.solve(fisher_mm, fisher_sm.T)
+    return 0.5 * (fisher + fisher.T) + 1.0e-12 * np.eye(sampled.shape[1])
+
+
+def _z_space_fisher(space, delta_fisher):
+    jac = np.asarray(
+        space.prior_bijector.jacobian_diag_delta_from_z(space.linear.z0, np),
+        dtype=float,
+    )
+    J = np.diag(jac)
+    return J @ delta_fisher @ J
+
+
 def test_component_config_only_build_and_with_backend():
     ntm = NonLinearTimingModel(
         backend="jug",
@@ -173,6 +197,96 @@ def test_whitening_named_builders_bind_from_serializable_configs(host):
     assert sp_default.linear.C.shape == (1, 1)
     assert sp_fixed.linear.C.shape == (1, 1)
     assert float(sp_default.linear.C[0, 0]) != float(sp_fixed.linear.C[0, 0])
+
+
+def test_whitening_builders_condition_fisher_to_unit_scale(host):
+    marginalize = None
+    ntm_default = NonLinearTimingModel(
+        backend="jug",
+        transform="whitening",
+        marginalize=marginalize,
+    )
+    ntm_fixed = NonLinearTimingModel(
+        backend="jug",
+        transform="whitening",
+        marginalize=marginalize,
+        whitening_config={
+            "name": "fixed_hyperparameters",
+            "hyperparameters": {"efac": {"demo": 1.2}, "equad": {"demo": 1.0e-7}},
+        },
+    )
+
+    default_fisher = _schur_fisher(
+        host,
+        marginalize=marginalize,
+        variance=np.asarray(host.toaerrs, dtype=float) ** 2,
+    )
+    labels = np.asarray(host.backend_flags)
+    efac = np.asarray([1.2 if label == "demo" else 1.0 for label in labels])
+    fixed_fisher = _schur_fisher(
+        host,
+        marginalize=marginalize,
+        variance=(efac * np.asarray(host.toaerrs, dtype=float)) ** 2 + 1.0e-14,
+    )
+
+    for space, fisher in (
+        (ntm_default.space(host), default_fisher),
+        (ntm_fixed.space(host), fixed_fisher),
+    ):
+        fisher_z = _z_space_fisher(space, fisher)
+        conditioned = space.linear.C.T @ fisher_z @ space.linear.C
+        np.testing.assert_allclose(
+            conditioned,
+            np.eye(len(space.names)),
+            rtol=1.0e-10,
+            atol=1.0e-10,
+        )
+
+
+def test_standardized_builder_uses_z_space_marginal_scales(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=None,
+        name="timing",
+    )
+    space = ntm.space(host)
+    fisher = _schur_fisher(
+        host,
+        marginalize=None,
+        variance=np.asarray(host.toaerrs, dtype=float) ** 2,
+    )
+    fisher_z = _z_space_fisher(space, fisher)
+    covariance_z = np.linalg.inv(fisher_z)
+    covariance_z = 0.5 * (covariance_z + covariance_z.T)
+
+    assert np.allclose(space.linear.C, np.diag(np.diag(space.linear.C)))
+    np.testing.assert_allclose(
+        np.diag(space.linear.C),
+        np.sqrt(np.diag(covariance_z)),
+    )
+
+
+def test_cheat_wls_prior_widths_are_data_derived(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=None,
+        name="timing",
+    )
+    block = ntm.priors(host)
+    fisher = _schur_fisher(
+        host,
+        marginalize=None,
+        variance=np.asarray(host.toaerrs, dtype=float) ** 2,
+    )
+    expected_stds = np.sqrt(np.diag(np.linalg.inv(fisher)))
+
+    assert set(block.sources.values()) == {"cheat_wls"}
+    np.testing.assert_allclose(
+        [prior.std for prior in block.priors],
+        expected_stds,
+    )
 
 
 def test_discovery_signals_delta_only_and_jax_gate(host):
@@ -251,8 +365,8 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
 
     assert f"{host.name}_timing_F1" in out
     assert out["efac"] == 1.0
-    assert calls["sample"][0][0] == f"{host.name}_timing_z"
-    assert calls["factor"][0][0] == f"{host.name}_timing_z_logprior"
+    assert calls["sample"][0][0] == f"{host.name}_timing_x"
+    assert calls["factor"][0][0] == f"{host.name}_timing_x_logprior"
 
 
 def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
@@ -320,9 +434,9 @@ def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
 
     substituted = handlers.substitute(
         model,
-        data={f"{host.name}_timing_z": np.array([0.0])},
+        data={f"{host.name}_timing_x": np.array([0.0])},
     )
     trace = handlers.trace(handlers.seed(substituted, jr.PRNGKey(0))).get_trace()
-    site = trace[f"{host.name}_timing_z"]
+    site = trace[f"{host.name}_timing_x"]
     assert tuple(site["fn"].batch_shape) == ()
     assert tuple(site["fn"].event_shape) == (1,)

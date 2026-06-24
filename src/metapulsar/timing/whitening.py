@@ -20,6 +20,15 @@ class LinearTransform:
         return WhiteningLinear(C=self.C, z0=self.z0)
 
 
+@dataclass(frozen=True)
+class DeltaWLS:
+    """Schur-complement WLS approximation in sampled delta coordinates."""
+
+    fisher: np.ndarray
+    covariance: np.ndarray
+    mean: np.ndarray
+
+
 def _as_columns(matrix: np.ndarray, indices: tuple[int, ...]) -> np.ndarray:
     if not indices:
         return np.zeros((matrix.shape[0], 0), dtype=float)
@@ -32,14 +41,14 @@ def _weighted_cross(
     return left.T @ (weights[:, None] * right)
 
 
-def _schur_fisher_and_mean(
+def schur_delta_wls(
     *,
     host,
     partition,
     variance: np.ndarray,
-    prior_bijector=None,
     jitter: float = 1e-12,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> DeltaWLS:
+    """Return sampled-block Fisher, covariance, and WLS mean in delta units."""
     mmat = np.asarray(host.Mmat, dtype=float)
     residuals = np.asarray(host.residuals, dtype=float)
     weights = 1.0 / np.asarray(variance, dtype=float)
@@ -48,7 +57,12 @@ def _schur_fisher_and_mean(
     marginalized = _as_columns(mmat, tuple(partition.idx_marginalized))
     ndim = sampled.shape[1]
     if ndim == 0:
-        return np.eye(0, dtype=float), np.zeros(0, dtype=float)
+        empty = np.eye(0, dtype=float)
+        return DeltaWLS(
+            fisher=empty,
+            covariance=empty,
+            mean=np.zeros(0, dtype=float),
+        )
 
     fisher_ss = _weighted_cross(sampled, weights, sampled)
     rhs_s = sampled.T @ (weights * residuals)
@@ -63,12 +77,49 @@ def _schur_fisher_and_mean(
 
     fisher_ss = 0.5 * (fisher_ss + fisher_ss.T)
     fisher_ss = fisher_ss + jitter * np.eye(ndim, dtype=float)
+    covariance = np.linalg.inv(fisher_ss)
+    covariance = 0.5 * (covariance + covariance.T)
     mean_delta = np.linalg.solve(fisher_ss, rhs_s)
+    return DeltaWLS(fisher=fisher_ss, covariance=covariance, mean=mean_delta)
+
+
+def _z_space_wls(wls: DeltaWLS, prior_bijector) -> tuple[np.ndarray, np.ndarray]:
+    """Map delta-space WLS mean/covariance into local PIT z coordinates."""
     if prior_bijector is None:
-        z0 = mean_delta
-    else:
-        z0 = np.asarray(prior_bijector.z_from_delta(mean_delta, np), dtype=float)
-    return fisher_ss, z0
+        return wls.mean, wls.covariance
+    mean_z = np.asarray(prior_bijector.z_from_delta(wls.mean, np), dtype=float)
+    jac = np.asarray(prior_bijector.jacobian_diag_delta_from_z(mean_z, np), dtype=float)
+    if np.any(~np.isfinite(jac)) or np.any(jac <= 0.0):
+        raise ValueError(
+            "Invalid prior bijector Jacobian while building timing transform"
+        )
+    inv_jac = np.diag(1.0 / jac)
+    covariance_z = inv_jac @ wls.covariance @ inv_jac
+    covariance_z = 0.5 * (covariance_z + covariance_z.T)
+    return mean_z, covariance_z
+
+
+def _linear_from_z_covariance(covariance_z: np.ndarray, *, mode: str) -> np.ndarray:
+    if mode == "standardized":
+        return np.diag(np.sqrt(np.diag(covariance_z)))
+    if mode == "whitening":
+        return np.linalg.cholesky(covariance_z)
+    raise ValueError(f"Unsupported transform mode for WLS linear layer: {mode}")
+
+
+def _linear_transform_from_wls(
+    wls: DeltaWLS,
+    *,
+    prior_bijector,
+    mode: str,
+    name: str,
+) -> LinearTransform:
+    z0, covariance_z = _z_space_wls(wls, prior_bijector)
+    return LinearTransform(
+        C=_linear_from_z_covariance(covariance_z, mode=mode),
+        z0=z0,
+        name=name,
+    )
 
 
 def diagonal_white(
@@ -77,6 +128,7 @@ def diagonal_white(
     host=None,
     partition=None,
     prior_bijector=None,
+    mode: str = "whitening",
     jitter: float = 1e-12,
 ) -> LinearTransform:
     """Default diagonal-white Fisher/WLS preconditioner."""
@@ -90,16 +142,16 @@ def diagonal_white(
         )
 
     variance = np.asarray(host.toaerrs, dtype=float) ** 2
-    fisher, z0 = _schur_fisher_and_mean(
+    wls = schur_delta_wls(
         host=host,
         partition=partition,
         variance=variance,
-        prior_bijector=prior_bijector,
         jitter=jitter,
     )
-    return LinearTransform(
-        C=np.linalg.cholesky(fisher),
-        z0=z0,
+    return _linear_transform_from_wls(
+        wls,
+        prior_bijector=prior_bijector,
+        mode=mode,
         name="diagonal_white",
     )
 
@@ -121,6 +173,7 @@ def fixed_hyperparameters(
     host=None,
     partition=None,
     prior_bijector=None,
+    mode: str = "whitening",
     jitter: float = 1e-12,
 ) -> LinearTransform:
     """Deterministic linear transform from fixed hyperparameter snapshot.
@@ -156,15 +209,15 @@ def fixed_hyperparameters(
     equad = _resolve_noise_value(hyperparameters.get("equad", 0.0), labels, 0.0)
     toaerrs = np.asarray(host.toaerrs, dtype=float)
     variance = (efac * toaerrs) ** 2 + equad**2
-    fisher, z0 = _schur_fisher_and_mean(
+    wls = schur_delta_wls(
         host=host,
         partition=partition,
         variance=variance,
-        prior_bijector=prior_bijector,
         jitter=jitter,
     )
-    return LinearTransform(
-        C=np.linalg.cholesky(fisher),
-        z0=z0,
+    return _linear_transform_from_wls(
+        wls,
+        prior_bijector=prior_bijector,
+        mode=mode,
         name="fixed_hyperparameters",
     )

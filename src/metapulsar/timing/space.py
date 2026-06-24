@@ -179,11 +179,7 @@ class ParameterSpace:
 
     def to_physical(self, samples, units: str = "display", coord: str | None = None):
         if coord is None:
-            coord = (
-                "delta"
-                if self.transform == "none"
-                else ("z" if self.transform == "standardized" else "x")
-            )
+            coord = "delta" if self.transform == "none" else "x"
         arr = np.asarray(samples, dtype=float)
         if arr.ndim == 1:
             arr = arr[None, :]

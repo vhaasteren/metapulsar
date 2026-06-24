@@ -137,3 +137,36 @@ def test_record_physical_does_not_change_density_calls(host, monkeypatch):
     assert len(calls["sample"]) == n_sample
     assert len(calls["factor"]) == n_factor
     assert len(calls["deterministic"]) == 1
+
+
+def test_record_physical_explicit_coord_handles_standardized_scalar_params(
+    host, monkeypatch
+):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=["F0"],
+        name="timing",
+    )
+    calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.0]))
+    x_value = 0.25
+    params = {f"{host.name}_timing_F1": x_value}
+
+    ntm.record_physical(host, params, scope="timing", coord="x")
+
+    space = ntm.space(host)
+    delta = space.delta_from_coord(np.array([x_value], dtype=float), np, coord="x")
+    expected_theta = space.theta_from_delta(delta)
+    assert calls["deterministic"][0][0] == f"{host.name}_timing_F1_theta"
+    np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
+
+
+def test_record_physical_invalid_coord_raises(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="none",
+        marginalize=["F0"],
+        name="timing",
+    )
+    with pytest.raises(ValueError, match="coord must be one of"):
+        ntm.record_physical(host, {}, scope="timing", coord="invalid")

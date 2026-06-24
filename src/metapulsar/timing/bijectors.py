@@ -45,6 +45,10 @@ def _standard_normal_logpdf(x, xp):
     return -0.5 * x * x - 0.5 * math.log(2.0 * math.pi)
 
 
+def _standard_normal_pdf(x, xp):
+    return xp.exp(_standard_normal_logpdf(x, xp))
+
+
 @dataclass(frozen=True)
 class AxisPrior:
     """Per-parameter prior used for PIT-style delta<->z maps."""
@@ -246,6 +250,34 @@ class PriorBijector:
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.sum(xp.stack(terms))
+
+    def jacobian_diag_delta_from_z(self, z, xp):
+        """Return per-axis d(delta_i) / d(z_i) at z."""
+        z = xp.asarray(z)
+        out = []
+        for idx, prior in enumerate(self.priors):
+            zi = z[idx]
+            if prior.family == "normal":
+                out.append(xp.asarray(prior.std))
+            elif prior.family == "uniform":
+                out.append(
+                    xp.asarray(prior.upper - prior.lower) * _standard_normal_pdf(zi, xp)
+                )
+            elif prior.family == "log_uniform":
+                u = _standard_normal_cdf(zi, xp)
+                log_lower = math.log(prior.lower)
+                log_width = math.log(prior.upper) - log_lower
+                absolute = xp.exp(log_lower + log_width * u)
+                out.append(absolute * log_width * _standard_normal_pdf(zi, xp))
+            elif prior.family == "truncated_normal":
+                delta = self.delta_from_z(z, xp)[idx]
+                logpdf = PriorBijector((self.names[idx],), (prior,)).logprior_physical(
+                    xp.stack([delta]), xp
+                )
+                out.append(_standard_normal_pdf(zi, xp) / xp.exp(logpdf))
+            else:
+                raise ValueError(f"Unsupported prior family: {prior.family}")
+        return xp.stack(out)
 
 
 class WhiteningLinear:

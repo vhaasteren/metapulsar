@@ -13,7 +13,7 @@ from .bijectors import AxisPrior, WhiteningLinear
 from .partition import PartitionResult, resolve_partition
 from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
 from .space import ParameterSpace
-from .whitening import diagonal_white, fixed_hyperparameters
+from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 
 _BACKENDS = {"jug", "pint", "tempo2"}
 _TRANSFORMS = {"none", "standardized", "whitening"}
@@ -23,7 +23,7 @@ def _default_coord_for_transform(transform: str) -> str:
     if transform == "none":
         return "delta"
     if transform == "standardized":
-        return "z"
+        return "x"
     if transform == "whitening":
         return "x"
     raise ValueError(f"Unsupported transform: {transform}")
@@ -191,11 +191,37 @@ class NonLinearTimingModel:
             theta_ref=sampled_refs,
             pint_model=host.pint_model(),
         )
-        return block
+        return self._fill_wls_cheat_priors(host=host, partition=partition, block=block)
+
+    def _fill_wls_cheat_priors(
+        self,
+        *,
+        host,
+        partition: PartitionResult,
+        block: PriorBlock,
+    ) -> PriorBlock:
+        if not partition.sampled or "cheat_wls" not in block.sources.values():
+            return block
+        variance = np.asarray(host.toaerrs, dtype=float) ** 2
+        wls = schur_delta_wls(host=host, partition=partition, variance=variance)
+        stds = np.sqrt(np.diag(wls.covariance))
+        priors = []
+        for idx, (name, prior) in enumerate(
+            zip(block.names, block.priors, strict=True)
+        ):
+            if block.sources.get(name) == "cheat_wls":
+                priors.append(
+                    AxisPrior(family="normal", mean=0.0, std=float(stds[idx]))
+                )
+            else:
+                priors.append(prior)
+        return PriorBlock(
+            names=block.names, priors=tuple(priors), sources=block.sources
+        )
 
     def _linear_transform(self, *, host, partition, prior_bijector) -> WhiteningLinear:
         ndim = len(partition.sampled)
-        if self.transform in {"none", "standardized"}:
+        if self.transform == "none":
             return WhiteningLinear.identity(ndim)
 
         cfg = self.whitening_config
@@ -204,6 +230,7 @@ class NonLinearTimingModel:
                 host=host,
                 partition=partition,
                 prior_bijector=prior_bijector,
+                mode=self.transform,
             ).to_whitening_linear()
 
         cfg = dict(cfg)
@@ -213,6 +240,7 @@ class NonLinearTimingModel:
                 host=host,
                 partition=partition,
                 prior_bijector=prior_bijector,
+                mode=self.transform,
                 **cfg,
             ).to_whitening_linear()
         if builder == "fixed_hyperparameters":
@@ -220,6 +248,7 @@ class NonLinearTimingModel:
                 host=host,
                 partition=partition,
                 prior_bijector=prior_bijector,
+                mode=self.transform,
                 **cfg,
             ).to_whitening_linear()
         raise ValueError(f"Unsupported whitening builder: {builder}")
@@ -375,25 +404,72 @@ class NonLinearTimingModel:
             out[f"{host.name}_{self.name}_{name}"] = delta[i]
         return out
 
-    def _delta_from_params(self, host, params: Mapping[str, Any]) -> np.ndarray:
+    def _delta_from_params(
+        self,
+        host,
+        params: Mapping[str, Any],
+        *,
+        coord: str | None = None,
+    ) -> np.ndarray:
         sampled = self.sampled(host)
         if not sampled:
             return np.zeros((0,), dtype=float)
 
-        delay_keys = self._delay_keys(host)
-        if all(key in params for key in delay_keys):
-            return np.asarray([params[key] for key in delay_keys], dtype=float)
+        if coord is not None and coord not in {"delta", "z", "x"}:
+            raise ValueError("coord must be one of {'delta', 'z', 'x'}")
 
-        site_name = self._coord_site_name(host)
-        if site_name not in params:
-            raise ValueError(
-                "Timing parameters missing from params mapping; call contribute_timing "
-                "before record_physical or include injected delta keys"
+        if coord is None:
+            # Backward-compatible inference.
+            delay_keys = self._delay_keys(host)
+            if all(key in params for key in delay_keys):
+                return np.asarray([params[key] for key in delay_keys], dtype=float)
+
+            site_name = self._coord_site_name(host)
+            if site_name not in params:
+                raise ValueError(
+                    "Timing parameters missing from params mapping; call contribute_timing "
+                    "before record_physical or include injected delta keys"
+                )
+            resolved = _default_coord_for_transform(self.transform)
+            space = self.space(host)
+            q = np.asarray(params[site_name], dtype=float)
+            return np.asarray(
+                space.delta_from_coord(q, np, coord=resolved), dtype=float
             )
-        coord = _default_coord_for_transform(self.transform)
+
+        delay_keys = self._delay_keys(host)
+        site_name = self._coord_site_name(host, coord=coord)
         space = self.space(host)
-        q = np.asarray(params[site_name], dtype=float)
-        return np.asarray(space.delta_from_coord(q, np, coord=coord), dtype=float)
+
+        if coord == "delta":
+            if all(key in params for key in delay_keys):
+                return np.asarray([params[key] for key in delay_keys], dtype=float)
+            if site_name in params:
+                q = np.asarray(params[site_name], dtype=float)
+                return np.asarray(
+                    space.delta_from_coord(q, np, coord="delta"), dtype=float
+                )
+            raise ValueError(
+                "record_physical(coord='delta') requires injected delta keys "
+                "or a delta site"
+            )
+
+        if site_name in params:
+            q = np.asarray(params[site_name], dtype=float)
+            return np.asarray(space.delta_from_coord(q, np, coord=coord), dtype=float)
+
+        # Enterprise standardized scalars reuse delay-key names for x axes.
+        if (
+            coord == "x"
+            and self.transform == "standardized"
+            and all(key in params for key in delay_keys)
+        ):
+            q = np.asarray([params[key] for key in delay_keys], dtype=float)
+            return np.asarray(space.delta_from_coord(q, np, coord="x"), dtype=float)
+
+        raise ValueError(
+            f"record_physical(coord={coord!r}) could not find matching timing coordinates"
+        )
 
     def record_physical(
         self,
@@ -401,7 +477,13 @@ class NonLinearTimingModel:
         params: Mapping[str, Any],
         *,
         scope: str = "timing",
+        coord: str | None = None,
     ) -> None:
+        if coord is not None and coord not in {"delta", "z", "x"}:
+            raise ValueError("coord must be one of {'delta', 'z', 'x'}")
+        if coord is None:
+            coord = _default_coord_for_transform(self.transform)
+
         if scope == "all":
             raise NotImplementedError("scope='all' is deferred")
         if scope != "timing":
@@ -414,7 +496,7 @@ class NonLinearTimingModel:
         import numpyro
 
         space = self.space(host)
-        delta = self._delta_from_params(host, params)
+        delta = self._delta_from_params(host, params, coord=coord)
         theta = space.theta_from_delta(delta)
         for i, name in enumerate(sampled):
             numpyro.deterministic(
