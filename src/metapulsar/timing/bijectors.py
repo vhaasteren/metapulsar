@@ -54,6 +54,7 @@ class AxisPrior:
     upper: float | None = None
     mean: float = 0.0
     std: float = 1.0
+    offset: float = 0.0
 
 
 class PriorBijector:
@@ -95,6 +96,21 @@ class PriorBijector:
             elif prior.family == "uniform":
                 u = _standard_normal_cdf(zi, xp)
                 out.append(prior.lower + (prior.upper - prior.lower) * u)
+            elif prior.family == "log_uniform":
+                u = _standard_normal_cdf(zi, xp)
+                log_lower = math.log(prior.lower)
+                log_width = math.log(prior.upper) - log_lower
+                out.append(xp.exp(log_lower + log_width * u) - prior.offset)
+            elif prior.family == "truncated_normal":
+                alpha = (prior.lower - prior.mean) / prior.std
+                beta = (prior.upper - prior.mean) / prior.std
+                cdf_alpha = _standard_normal_cdf(alpha, xp)
+                z_norm = _standard_normal_cdf(beta, xp) - cdf_alpha
+                u = _standard_normal_cdf(zi, xp)
+                out.append(
+                    prior.mean
+                    + prior.std * _standard_normal_ppf(cdf_alpha + u * z_norm, xp)
+                )
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.stack(out)
@@ -109,6 +125,19 @@ class PriorBijector:
             elif prior.family == "uniform":
                 u = (di - prior.lower) / (prior.upper - prior.lower)
                 out.append(_standard_normal_ppf(u, xp))
+            elif prior.family == "log_uniform":
+                absolute = di + prior.offset
+                u = (xp.log(absolute) - math.log(prior.lower)) / (
+                    math.log(prior.upper) - math.log(prior.lower)
+                )
+                out.append(_standard_normal_ppf(u, xp))
+            elif prior.family == "truncated_normal":
+                alpha = (prior.lower - prior.mean) / prior.std
+                beta = (prior.upper - prior.mean) / prior.std
+                cdf_alpha = _standard_normal_cdf(alpha, xp)
+                z_norm = _standard_normal_cdf(beta, xp) - cdf_alpha
+                cdf_di = _standard_normal_cdf((di - prior.mean) / prior.std, xp)
+                out.append(_standard_normal_ppf((cdf_di - cdf_alpha) / z_norm, xp))
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.stack(out)
@@ -122,6 +151,19 @@ class PriorBijector:
                 out.append(prior.mean + prior.std * _standard_normal_ppf(ui, xp))
             elif prior.family == "uniform":
                 out.append(prior.lower + (prior.upper - prior.lower) * ui)
+            elif prior.family == "log_uniform":
+                log_lower = math.log(prior.lower)
+                log_width = math.log(prior.upper) - log_lower
+                out.append(xp.exp(log_lower + log_width * ui) - prior.offset)
+            elif prior.family == "truncated_normal":
+                alpha = (prior.lower - prior.mean) / prior.std
+                beta = (prior.upper - prior.mean) / prior.std
+                cdf_alpha = _standard_normal_cdf(alpha, xp)
+                z_norm = _standard_normal_cdf(beta, xp) - cdf_alpha
+                out.append(
+                    prior.mean
+                    + prior.std * _standard_normal_ppf(cdf_alpha + ui * z_norm, xp)
+                )
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.stack(out)
@@ -139,6 +181,36 @@ class PriorBijector:
                 terms.append(
                     xp.where(inside, -math.log(prior.upper - prior.lower), -xp.inf)
                 )
+            elif prior.family == "log_uniform":
+                absolute = di + prior.offset
+                inside = xp.logical_and(
+                    absolute >= prior.lower, absolute <= prior.upper
+                )
+                terms.append(
+                    xp.where(
+                        inside,
+                        -xp.log(absolute)
+                        - math.log(math.log(prior.upper) - math.log(prior.lower)),
+                        -xp.inf,
+                    )
+                )
+            elif prior.family == "truncated_normal":
+                zi = (di - prior.mean) / prior.std
+                alpha = (prior.lower - prior.mean) / prior.std
+                beta = (prior.upper - prior.mean) / prior.std
+                z_norm = _standard_normal_cdf(beta, xp) - _standard_normal_cdf(
+                    alpha, xp
+                )
+                inside = xp.logical_and(di >= prior.lower, di <= prior.upper)
+                terms.append(
+                    xp.where(
+                        inside,
+                        _standard_normal_logpdf(zi, xp)
+                        - math.log(prior.std)
+                        - xp.log(z_norm),
+                        -xp.inf,
+                    )
+                )
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.sum(xp.stack(terms))
@@ -155,6 +227,22 @@ class PriorBijector:
                     xp.asarray(math.log(prior.upper - prior.lower))
                     + _standard_normal_logpdf(zi, xp)
                 )
+            elif prior.family == "log_uniform":
+                u = _standard_normal_cdf(zi, xp)
+                log_lower = math.log(prior.lower)
+                log_width = math.log(prior.upper) - log_lower
+                absolute = xp.exp(log_lower + log_width * u)
+                terms.append(
+                    xp.log(absolute)
+                    + math.log(log_width)
+                    + _standard_normal_logpdf(zi, xp)
+                )
+            elif prior.family == "truncated_normal":
+                delta = self.delta_from_z(z, xp)[idx]
+                logpdf = PriorBijector((self.names[idx],), (prior,)).logprior_physical(
+                    xp.stack([delta]), xp
+                )
+                terms.append(_standard_normal_logpdf(zi, xp) - logpdf)
             else:
                 raise ValueError(f"Unsupported prior family: {prior.family}")
         return xp.sum(xp.stack(terms))

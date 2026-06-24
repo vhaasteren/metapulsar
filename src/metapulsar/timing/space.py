@@ -226,6 +226,7 @@ class ParameterSpace:
                     "upper": p.upper,
                     "mean": p.mean,
                     "std": p.std,
+                    "offset": p.offset,
                 }
             )
         payload = self.metadata() | {"priors": prior_payload}
