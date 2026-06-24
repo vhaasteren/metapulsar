@@ -72,6 +72,8 @@ class MetaPulsar:
         )
         self.add_dm_derivatives = add_dm_derivatives
         self._sort = sort
+        self._timing_backend_cache = {}
+        self._pint_model_cache = None
 
         # Elegant initialization flow
         self._create_enterprise_pulsars()
@@ -631,6 +633,212 @@ class MetaPulsar:
 
         return pulsar_names
 
+    def _invalidate_timing_caches(self) -> None:
+        """Invalidate timing API caches after host-state mutations."""
+        self._timing_backend_cache.clear()
+        self._pint_model_cache = None
+
+    def _reference_pta_name(self) -> str:
+        """Return deterministic reference PTA key for host-level metadata."""
+        if not self._epulsars:
+            raise ValueError("No PTA sessions are available on this MetaPulsar")
+        return next(iter(self._epulsars.keys()))
+
+    @staticmethod
+    def _stringify_par_value(value) -> str:
+        """Convert parfile values to stable decimal-like strings when possible."""
+        if value is None:
+            return "0.0"
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "value"):
+            return str(getattr(value, "value"))
+        if isinstance(value, (list, tuple)) and value:
+            return str(value[0])
+        return str(value)
+
+    def _session_theta_exact(
+        self, pta_name: str, session_fitpars: tuple[str, ...]
+    ) -> dict[str, str]:
+        """Build reference-theta exact mapping for one session using parfile metadata."""
+        from .pint_helpers import resolve_parameter_alias
+
+        par_source = self._parfile_dicts.get(pta_name, {})
+        pint_model = None
+        if not isinstance(par_source, dict):
+            from .pint_helpers import create_pint_model
+
+            pint_model = create_pint_model(par_source)
+            par_source = {}
+
+        exact: dict[str, str] = {}
+        for name in session_fitpars:
+            mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
+            # Prefer exact key, then canonical alias of mapped name.
+            if mapped_name in par_source:
+                exact[name] = self._stringify_par_value(par_source[mapped_name])
+            else:
+                alias = resolve_parameter_alias(mapped_name)
+                if alias in par_source:
+                    exact[name] = self._stringify_par_value(par_source[alias])
+                elif pint_model is not None and hasattr(pint_model, alias):
+                    param = getattr(pint_model, alias)
+                    exact[name] = self._stringify_par_value(
+                        getattr(param, "value", param)
+                    )
+                elif pint_model is not None and hasattr(pint_model, mapped_name):
+                    param = getattr(pint_model, mapped_name)
+                    exact[name] = self._stringify_par_value(
+                        getattr(param, "value", param)
+                    )
+                elif mapped_name.lower() in {"offset", "phoff"}:
+                    exact[name] = "0.0"
+                else:
+                    raise ValueError(
+                        "Missing reference theta for "
+                        f"pta={pta_name!r}, canonical_fitpar={name!r}, "
+                        f"mapped_fitpar={mapped_name!r}"
+                    )
+        return exact
+
+    def pint_model(self):
+        """Return canonical reference-PTA PINT model for timing-space discovery."""
+        if self._pint_model_cache is not None:
+            return self._pint_model_cache
+
+        ref_pta = self._reference_pta_name()
+        source = self._pulsars.get(ref_pta)
+        if isinstance(source, tuple) and len(source) == 2:
+            model = source[0]
+            if isinstance(model, TimingModel):
+                self._pint_model_cache = model
+                return model
+
+        # Fallback: reconstruct from reference parfile metadata.
+        from .pint_helpers import create_pint_model
+
+        par_source = self._parfile_dicts.get(ref_pta)
+        self._pint_model_cache = create_pint_model(par_source)
+        return self._pint_model_cache
+
+    def has_timing_backend(self, name: str, *, linearized: bool = False) -> bool:
+        """Return whether every session can honor the requested backend family."""
+        if name not in {"jug", "pint", "tempo2"}:
+            return False
+        if not linearized:
+            # Native backend adapters are intentionally not advertised until
+            # PINT/tempo2/JUG session reconstruction is wired.
+            return False
+        if name == "jug":
+            return True
+
+        for psr in self._epulsars.values():
+            if self._get_timing_package(psr) != name:
+                return False
+        return True
+
+    def timing_backend(
+        self,
+        name: str = "jug",
+        *,
+        missing_param_policy: str = "linear_fallback",
+        jug_compatibility: str = "auto",
+        linearized: bool = False,
+    ):
+        """Return composite TimingBackend in canonical host row order."""
+        if name not in {"jug", "pint", "tempo2"}:
+            raise ValueError(f"Unsupported backend name: {name}")
+        if not linearized:
+            raise NotImplementedError(
+                f"Native backend '{name}' requires Slice 3b native session wiring; "
+                "use linearized=True only for conformance tests"
+            )
+        if not self.has_timing_backend(name, linearized=True):
+            raise ValueError(
+                f"Backend '{name}' cannot be honored by all sessions for host '{self.name}'"
+            )
+
+        cache_key = (
+            name,
+            missing_param_policy,
+            jug_compatibility,
+            linearized,
+            self.cache_token(),
+        )
+        if cache_key in self._timing_backend_cache:
+            return self._timing_backend_cache[cache_key]
+
+        from .timing.backends import (
+            BackendSession,
+            LinearizedJugTimingBackend,
+            LinearizedPintTimingBackend,
+            LinearizedTempo2TimingBackend,
+            build_backend,
+        )
+        from .timing.backends.base import LinearModel, validate_backend_against_host
+
+        pta_slices = self._get_pta_slices()
+        fitpars = tuple(self.fitpars)
+        global_index = {par: i for i, par in enumerate(fitpars)}
+        sessions: list[BackendSession] = []
+
+        for pta_name, psr in self._epulsars.items():
+            slc = pta_slices[pta_name]
+            rows = np.arange(slc.start, slc.stop, dtype=int)
+            session_fitpars = tuple(
+                par for par in fitpars if pta_name in self._fitparameters.get(par, {})
+            )
+            session_cols = [global_index[par] for par in session_fitpars]
+            session_design = self._designmatrix[rows][:, session_cols]
+            theta_exact = self._session_theta_exact(pta_name, session_fitpars)
+            linear_model = LinearModel.from_host(
+                fitpars=session_fitpars,
+                design=session_design,
+                theta_exact=theta_exact,
+            )
+
+            if name == "pint":
+                backend = LinearizedPintTimingBackend.from_linear_model(linear_model)
+            elif name == "tempo2":
+                backend = LinearizedTempo2TimingBackend.from_linear_model(linear_model)
+            else:
+                backend = LinearizedJugTimingBackend.from_linear_model(
+                    linear_model, compatibility=jug_compatibility
+                )
+
+            sessions.append(
+                BackendSession(
+                    name=pta_name,
+                    row_indices=rows,
+                    backend=backend,
+                )
+            )
+
+        backend = build_backend(
+            name=name,
+            fitpars=fitpars,
+            nrows=len(self._toas),
+            sessions=sessions,
+            missing_param_policy=missing_param_policy,
+            host_design=self._designmatrix,
+        )
+        validate_backend_against_host(backend, self)
+        self._timing_backend_cache[cache_key] = backend
+        return backend
+
+    def cache_token(self) -> str:
+        """Return stable token for host-tied cache invalidation."""
+        pta_tags = [
+            f"{pta}:{self._get_timing_package(psr)}"
+            for pta, psr in self._epulsars.items()
+        ]
+        dm_checksum = float(np.sum(np.abs(self._designmatrix)))
+        return (
+            f"{self.name}|ntoa={len(self._toas)}|nfit={len(self.fitpars)}|"
+            f"fitpars={','.join(self.fitpars)}|pta={','.join(pta_tags)}|"
+            f"dmabs={dm_checksum:.12e}"
+        )
+
     def sort_data(self):
         """Sort data by time when requested; otherwise preserve storage order."""
         if self._sort:
@@ -672,6 +880,7 @@ class MetaPulsar:
                 self._flags[key] = self._flags[key][mask]
 
         self.sort_data()
+        self._invalidate_timing_caches()
 
     @property
     def isort(self):

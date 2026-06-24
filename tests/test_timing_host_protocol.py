@@ -1,7 +1,10 @@
 """Slice-3 tests for host protocol and backend conformance helpers."""
 
 import numpy as np
+import pytest
 
+from metapulsar.metapulsar import MetaPulsar
+from metapulsar.mockpulsar import create_mock_libstempo
 from metapulsar.timing.backends.base import (
     validate_backend_against_host,
     validate_enterprise_host,
@@ -121,7 +124,73 @@ def test_backend_validator_rejects_design_row_mismatch(fake_timing_host):
             design[0, 0] = 1.0
             return design
 
-    import pytest
-
     with pytest.raises(ValueError, match="canonical row order"):
         validate_backend_against_host(BadBackend(), fake_timing_host)
+
+
+def _build_real_host():
+    pulsars = {
+        "pta_a": create_mock_libstempo(
+            n_toas=20, name="J1857+0943", telescope="pta_a", seed=11
+        ),
+        "pta_b": create_mock_libstempo(
+            n_toas=20, name="J1857+0943", telescope="pta_b", seed=22
+        ),
+    }
+    return MetaPulsar(pulsars, combination_strategy="composite")
+
+
+def test_metapulsar_timing_host_surface_and_backend_roundtrip():
+    host = _build_real_host()
+    assert isinstance(host, TimingHost)
+    validate_enterprise_host(host)
+
+    # Native adapters are not advertised until engine-session reconstruction is wired.
+    assert not host.has_timing_backend("tempo2")
+    assert not host.has_timing_backend("jug")
+    assert not host.has_timing_backend("pint")
+    assert host.has_timing_backend("tempo2", linearized=True)
+    assert host.has_timing_backend("jug", linearized=True)
+    assert not host.has_timing_backend("pint", linearized=True)
+
+    with pytest.raises(NotImplementedError, match="Native backend"):
+        host.timing_backend("tempo2")
+
+    backend = host.timing_backend("tempo2", linearized=True)
+    assert tuple(host.fitpars) == backend.fitpars
+    validate_backend_against_host(backend, host)
+
+    # cache_token should be stable across repeated reads in unchanged state.
+    assert host.cache_token() == host.cache_token()
+
+
+def test_metapulsar_pint_model_and_backend_error_paths():
+    host = _build_real_host()
+    model = host.pint_model()
+    assert model is not None
+
+    with pytest.raises(ValueError, match="cannot be honored"):
+        host.timing_backend("pint", linearized=True)
+
+
+def test_metapulsar_reference_theta_missing_values_raise():
+    host = _build_real_host()
+    pta = next(iter(host._epulsars))
+    host._parfile_dicts[pta] = {}
+    host._invalidate_timing_caches()
+
+    with pytest.raises(ValueError, match="Missing reference theta"):
+        host.timing_backend("tempo2", linearized=True)
+
+
+def test_metapulsar_timing_backend_cache_tracks_host_state():
+    host = _build_real_host()
+    backend = host.timing_backend("tempo2", linearized=True)
+    token = host.cache_token()
+
+    host._designmatrix = host._designmatrix.copy()
+    host._designmatrix[0, 0] += 1.0
+    changed = host.timing_backend("tempo2", linearized=True)
+
+    assert host.cache_token() != token
+    assert changed is not backend
