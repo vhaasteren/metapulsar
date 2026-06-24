@@ -81,6 +81,14 @@ class FakeTimingBackend:
 
     def __init__(self, fitpars: list[str]):
         self.fitpars = tuple(fitpars)
+        self.native_units = {name: "native" for name in self.fitpars}
+        self._theta_exact = {name: "0.0" for name in self.fitpars}
+
+    def reference_theta(self) -> np.ndarray:
+        return np.zeros(len(self.fitpars), dtype=float)
+
+    def reference_theta_exact(self) -> dict[str, str]:
+        return dict(self._theta_exact)
 
     def residual_delta(self, delta_theta: np.ndarray) -> np.ndarray:
         return np.zeros(4, dtype=float)
@@ -136,6 +144,9 @@ class FakeTimingHost:
 
     def timing_backend(self, name: str) -> FakeTimingBackend:
         return FakeTimingBackend(self.fitpars)
+
+    def has_timing_backend(self, name: str) -> bool:
+        return name in {"jug", "pint", "tempo2"}
 
     def cache_token(self) -> str:
         return "fake-host-v1"
