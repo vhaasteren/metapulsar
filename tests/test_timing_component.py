@@ -1,46 +1,52 @@
-"""Slice-4 adapter tests for nonlinear timing frontends."""
+"""Slice-5 tests for NonLinearTimingModel component behavior."""
 
 import numpy as np
 import pytest
 
+import jax.random as jr
+from numpyro import handlers
+
+from metapulsar.timing.backends.base import LinearModel
 from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
 from metapulsar.timing.backends.pint import LinearizedPintTimingBackend
-from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.frontends.discovery import discovery_signals
-from metapulsar.timing.frontends.enterprise import enterprise_signal
-from metapulsar.timing.partition import PartitionResult
-from metapulsar.timing.space import ParameterSpace
+from metapulsar.timing.component import NonLinearTimingModel
 
 
-class _FrontendHost:
-    def __init__(self) -> None:
+class _Host:
+    def __init__(self):
         self.name = "J0000+0000"
         self.fitpars = ("F0", "F1", "DM")
-        self._toas = np.linspace(0.0, 1.0, 6)
-        self._residuals = np.zeros(6, dtype=float)
-        self._toaerrs = np.full(6, 1.0e-6, dtype=float)
-        self._freqs = np.full(6, 1400.0, dtype=float)
-        self._flags = {"pta": np.array(["demo"] * 6, dtype="U8")}
-        self._backend_flags = np.array(["demo"] * 6, dtype="U8")
-        self._design = np.array(
+        self._toas = np.linspace(0.0, 1.0, 8)
+        self._residuals = np.linspace(-2e-6, 2e-6, 8)
+        self._toaerrs = np.full(8, 1.0e-6, dtype=float)
+        self._freqs = np.full(8, 1400.0, dtype=float)
+        self._flags = {"pta": np.array(["demo"] * 8, dtype="U8")}
+        self._backend_flags = np.array(["demo"] * 8, dtype="U8")
+        self._cache_token = "token-v1"
+        self.backend_calls = []
+        self.default_marginalize = ["F0", "DM"]
+
+        design = np.array(
             [
                 [1.0, 0.0, 0.2],
-                [1.0, 0.5, 0.1],
-                [1.0, 1.0, -0.1],
-                [1.0, -0.2, 0.4],
-                [1.0, 0.1, -0.3],
-                [1.0, -0.5, 0.2],
+                [1.0, 0.1, 0.3],
+                [1.0, 0.2, -0.1],
+                [1.0, -0.3, 0.4],
+                [1.0, 0.4, -0.2],
+                [1.0, -0.5, 0.1],
+                [1.0, 0.6, -0.2],
+                [1.0, -0.7, 0.3],
             ],
             dtype=float,
         )
+        self._design = design
         model = LinearModel.from_host(
             fitpars=self.fitpars,
-            design=self._design,
-            theta_exact={name: "0.0" for name in self.fitpars},
+            design=design,
+            theta_exact={"F0": "10.0", "F1": "1.0", "DM": "5.0"},
         )
         self._jug_backend = LinearizedJugTimingBackend.from_linear_model(model)
         self._pint_backend = LinearizedPintTimingBackend.from_linear_model(model)
-        self.backend_calls = []
 
     @property
     def toas(self):
@@ -70,8 +76,14 @@ class _FrontendHost:
     def backend_flags(self):
         return self._backend_flags
 
-    def timing_backend(self, name: str, linearized=None):
-        self.backend_calls.append((name, linearized))
+    def cache_token(self):
+        return self._cache_token
+
+    def pint_model(self):
+        return object()
+
+    def timing_backend(self, name: str, **kwargs):
+        self.backend_calls.append((name, dict(kwargs)))
         if name == "jug":
             return self._jug_backend
         if name == "pint":
@@ -80,196 +92,237 @@ class _FrontendHost:
 
 
 @pytest.fixture
-def frontend_host():
-    return _FrontendHost()
+def host():
+    return _Host()
 
 
-@pytest.fixture
-def partition_with_sampled():
-    return PartitionResult(
-        fitpars=("F0", "F1", "DM"),
-        marginalized=("F0", "DM"),
-        sampled=("F1",),
-        idx_marginalized=(0, 2),
-        idx_sampled=(1,),
-    )
+def _monkeypatch_numpyro(monkeypatch, sample_value):
+    calls = {"sample": [], "factor": [], "deterministic": []}
+
+    def _sample(name, dist):
+        calls["sample"].append((name, dist))
+        return sample_value
+
+    def _factor(name, value):
+        calls["factor"].append((name, value))
+
+    def _deterministic(name, value):
+        calls["deterministic"].append((name, value))
+
+    monkeypatch.setattr("numpyro.sample", _sample)
+    monkeypatch.setattr("numpyro.factor", _factor)
+    monkeypatch.setattr("numpyro.deterministic", _deterministic)
+    return calls
 
 
-@pytest.fixture
-def sampled_space_delta():
-    return ParameterSpace.build({"F1": "0.0"}, transform="none")
-
-
-def test_discovery_frontend_emits_gp_and_delay(
-    frontend_host, partition_with_sampled, sampled_space_delta
-):
-    backend = frontend_host.timing_backend("jug", linearized=True)
-    signals = discovery_signals(
-        host=frontend_host,
-        space=sampled_space_delta,
-        backend=backend,
-        partition=partition_with_sampled,
-        name="timing",
-    )
-
-    assert len(signals) == 2
-    gp, delay = signals
-    assert gp.F.shape == (
-        len(frontend_host.toas),
-        len(partition_with_sampled.marginalized),
-    )
-    assert delay.params == [f"{frontend_host.name}_timing_F1"]
-
-    probe = {delay.params[0]: 0.25}
-    actual = np.asarray(delay(probe), dtype=float)
-    expected = -backend.residual_delta(np.array([0.0, 0.25, 0.0]))
-    np.testing.assert_allclose(actual, expected)
-
-
-def test_discovery_frontend_delay_consumes_injected_delta_without_transform(
-    frontend_host, partition_with_sampled
-):
-    backend = frontend_host.timing_backend("jug")
-    standardized_space = ParameterSpace.build({"F1": "0.0"}, transform="standardized")
-    signals = discovery_signals(
-        host=frontend_host,
-        space=standardized_space,
-        backend=backend,
-        partition=partition_with_sampled,
-        name="timing",
-    )
-    delay = signals[-1]
-
-    actual = np.asarray(delay({delay.params[0]: 0.25}), dtype=float)
-    expected = -backend.residual_delta(np.array([0.0, 0.25, 0.0]))
-    np.testing.assert_allclose(actual, expected)
-
-
-def test_discovery_frontend_rejects_non_jax_backend_with_sampled_delay(
-    frontend_host, partition_with_sampled, sampled_space_delta
-):
-    backend = frontend_host.timing_backend("pint", linearized=True)
-    with pytest.raises(ValueError, match="JAX-capable backend"):
-        discovery_signals(
-            host=frontend_host,
-            space=sampled_space_delta,
-            backend=backend,
-            partition=partition_with_sampled,
-            name="timing",
-        )
-
-
-def test_discovery_frontend_returns_only_gp_when_all_marginalized(frontend_host):
-    partition = PartitionResult(
-        fitpars=("F0", "F1", "DM"),
-        marginalized=("F0", "F1", "DM"),
-        sampled=tuple(),
-        idx_marginalized=(0, 1, 2),
-        idx_sampled=tuple(),
-    )
-    space = ParameterSpace.build({}, transform="none")
-    backend = frontend_host.timing_backend("pint", linearized=True)
-    signals = discovery_signals(
-        host=frontend_host,
-        space=space,
-        backend=backend,
-        partition=partition,
-        name="timing",
-    )
-    assert len(signals) == 1
-
-
-def test_enterprise_frontend_is_deferred_and_uses_sampled_exclusion(
-    frontend_host, partition_with_sampled, sampled_space_delta
-):
-    signal = enterprise_signal(
-        space_fn=lambda _host: sampled_space_delta,
-        backend_name="jug",
-        partition_spec=lambda _host: partition_with_sampled,
-        name="timing",
-        transform="none",
-    )
-    bound = signal(frontend_host)
-    params = {f"{frontend_host.name}_timing_F1": 0.4}
-
-    delay = np.asarray(bound.get_delay(params), dtype=float)
-    expected = -frontend_host.timing_backend("jug", linearized=True).residual_delta(
-        np.array([0.0, 0.4, 0.0], dtype=float)
-    )
-    np.testing.assert_allclose(delay, expected)
-    assert ("jug", None) in frontend_host.backend_calls
-
-    basis = bound.get_basis(params={})
-    assert basis is not None
-    assert basis.shape == (len(frontend_host.toas), 2)
-
-
-def test_enterprise_frontend_whitening_uses_joint_x_parameter(frontend_host):
-    partition = PartitionResult(
-        fitpars=("F0", "F1", "DM"),
-        marginalized=("F0", "DM"),
-        sampled=("F1",),
-        idx_marginalized=(0, 2),
-        idx_sampled=(1,),
-    )
-    sampled_space_x = ParameterSpace.build({"F1": "0.0"}, transform="whitening")
-    signal = enterprise_signal(
-        space_fn=lambda _host: sampled_space_x,
-        backend_name="jug",
-        partition_spec=lambda _host: partition,
-        name="timing",
+def test_component_config_only_build_and_with_backend():
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        jug_compatibility="tempo2",
         transform="whitening",
-    )
-    bound = signal(frontend_host)
-
-    assert f"{frontend_host.name}_timing_x_0" in bound.param_names
-
-
-def test_enterprise_frontend_all_marginalized_skips_delay_and_backend(frontend_host):
-    partition = PartitionResult(
-        fitpars=("F0", "F1", "DM"),
-        marginalized=("F0", "F1", "DM"),
-        sampled=tuple(),
-        idx_marginalized=(0, 1, 2),
-        idx_sampled=tuple(),
-    )
-    signal = enterprise_signal(
-        space_fn=lambda _host: ParameterSpace.build({}, transform="none"),
-        backend_name="jug",
-        partition_spec=lambda _host: partition,
+        marginalize=["F0"],
+        prior_policy="fallback",
+        whitening_config={"name": "diagonal_white"},
         name="timing",
-        transform="none",
     )
+    swapped = ntm.with_backend("pint")
 
-    bound = signal(frontend_host)
+    assert ntm.backend == "jug"
+    assert ntm.jug_compatibility == "tempo2"
+    assert swapped.backend == "pint"
+    assert swapped.transform == ntm.transform
+    assert swapped.marginalize == ntm.marginalize
+    assert swapped.prior_policy == ntm.prior_policy
+    assert swapped.whitening_config == ntm.whitening_config
 
-    assert bound.signal_type == "basis"
-    assert frontend_host.backend_calls == []
 
-
-def test_enterprise_scalar_prior_composes_without_overcount(frontend_host):
-    partition = PartitionResult(
-        fitpars=("F0", "F1", "DM"),
-        marginalized=("F0",),
-        sampled=("F1", "DM"),
-        idx_marginalized=(0,),
-        idx_sampled=(1, 2),
-    )
-    space = ParameterSpace.build({"F1": "0.0", "DM": "0.0"}, transform="standardized")
-    signal = enterprise_signal(
-        space_fn=lambda _host: space,
-        backend_name="jug",
-        partition_spec=lambda _host: partition,
-        name="timing",
+def test_space_cached_and_invalidated_by_cache_token(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
         transform="standardized",
+        marginalize=["F0", "DM"],
+        name="timing",
     )
-    bound = signal(frontend_host)
-    values = {
-        f"{frontend_host.name}_timing_F1": 0.2,
-        f"{frontend_host.name}_timing_DM": -0.3,
-    }
+    first = ntm.space(host)
+    second = ntm.space(host)
+    assert first is second
 
-    logprior = sum(param.get_logpdf(params=values) for param in bound.params)
-    expected = space.logprior_coord(np.array([0.2, -0.3]), np, coord="z")
+    host._cache_token = "token-v2"
+    third = ntm.space(host)
+    assert third is not first
 
-    np.testing.assert_allclose(logprior, expected)
+
+def test_whitening_named_builders_bind_from_serializable_configs(host):
+    ntm_default = NonLinearTimingModel(
+        backend="jug",
+        transform="whitening",
+        marginalize=["F0", "DM"],
+    )
+    ntm_fixed = NonLinearTimingModel(
+        backend="jug",
+        transform="whitening",
+        marginalize=["F0", "DM"],
+        whitening_config={
+            "name": "fixed_hyperparameters",
+            "hyperparameters": {"efac": {"demo": 1.2}, "equad": {"demo": 1.0e-7}},
+        },
+    )
+    sp_default = ntm_default.space(host)
+    sp_fixed = ntm_fixed.space(host)
+
+    assert sp_default.linear.C.shape == (1, 1)
+    assert sp_fixed.linear.C.shape == (1, 1)
+    assert float(sp_default.linear.C[0, 0]) != float(sp_fixed.linear.C[0, 0])
+
+
+def test_discovery_signals_delta_only_and_jax_gate(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    signals = ntm.discovery_signals(host)
+    delay = signals[-1]
+    output = np.asarray(delay({f"{host.name}_timing_F1": 0.25}), dtype=float)
+    expected = -host._jug_backend.residual_delta(np.array([0.0, 0.25, 0.0]))
+    np.testing.assert_allclose(output, expected)
+
+    ntm_nonjax = NonLinearTimingModel(
+        backend="pint",
+        transform="none",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    with pytest.raises(ValueError, match="JAX-capable backend"):
+        ntm_nonjax.discovery_signals(host)
+
+
+def test_all_marginalized_paths(host):
+    ntm = NonLinearTimingModel(
+        backend="pint",
+        transform="none",
+        marginalize=["F0", "F1", "DM"],
+        name="timing",
+    )
+    assert len(ntm.discovery_signals(host)) == 1
+    ent = ntm.enterprise_signal()
+    bound = ent(host)
+    assert bound.signal_type == "basis"
+    assert ntm.timing_param_keys(host) == ()
+
+
+def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="whitening",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    keys = ntm.timing_param_keys(host)
+    assert keys[0] == f"{host.name}_timing_x"
+    assert keys[1:] == (f"{host.name}_timing_F1",)
+    params = ("efac", keys[0], "gamma", keys[1], "log10_A")
+    assert ntm.non_timing_params(host, params) == ("efac", "gamma", "log10_A")
+
+    ntm_all_marg = NonLinearTimingModel(
+        backend="jug",
+        transform="none",
+        marginalize=["F0", "F1", "DM"],
+        name="timing",
+    )
+    plain = ("efac", "gamma", "log10_A")
+    assert ntm_all_marg.timing_param_keys(host) == ()
+    assert ntm_all_marg.non_timing_params(host, plain) == plain
+
+
+def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
+    host, monkeypatch
+):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([0.2]))
+
+    out = ntm.contribute_timing(host, {"efac": 1.0})
+
+    assert f"{host.name}_timing_F1" in out
+    assert out["efac"] == 1.0
+    assert calls["sample"][0][0] == f"{host.name}_timing_z"
+    assert calls["factor"][0][0] == f"{host.name}_timing_z_logprior"
+
+
+def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="none",
+        marginalize=["F0", "F1", "DM"],
+        name="timing",
+    )
+    calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([]))
+    params = {"efac": 1.0}
+    out = ntm.contribute_timing(host, params)
+    assert out is params
+    assert calls["sample"] == []
+    assert calls["factor"] == []
+
+
+def test_set_prior_validated_against_sampled_partition(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="none",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    ntm.set_prior("F0", "uniform", lower=-1.0, upper=1.0)
+    with pytest.raises(ValueError, match="non-sampled"):
+        ntm.space(host)
+
+
+def test_set_prior_unknown_name_raises(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="none",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    ntm.set_prior("F11", "uniform", lower=-1.0, upper=1.0)
+    with pytest.raises(ValueError, match="unknown fit parameters"):
+        ntm.space(host)
+
+
+def test_enterprise_signal_forwards_jug_compatibility(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        jug_compatibility="tempo2",
+        transform="none",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+    ent = ntm.enterprise_signal()
+    _ = ent(host)
+    assert ("jug", {"jug_compatibility": "tempo2"}) in host.backend_calls
+
+
+def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=["F0", "DM"],
+        name="timing",
+    )
+
+    def model():
+        ntm.contribute_timing(host, {})
+
+    substituted = handlers.substitute(
+        model,
+        data={f"{host.name}_timing_z": np.array([0.0])},
+    )
+    trace = handlers.trace(handlers.seed(substituted, jr.PRNGKey(0))).get_trace()
+    site = trace[f"{host.name}_timing_z"]
+    assert tuple(site["fn"].batch_shape) == ()
+    assert tuple(site["fn"].event_shape) == (1,)

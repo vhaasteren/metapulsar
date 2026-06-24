@@ -31,8 +31,9 @@ def _coord_from_transform(transform: str) -> str:
     raise ValueError(f"Unsupported transform: {transform}")
 
 
-def _get_backend(host, backend_name: str):
-    return host.timing_backend(backend_name)
+def _get_backend(host, backend_name: str, backend_kwargs: dict | None = None):
+    kwargs = {} if backend_kwargs is None else dict(backend_kwargs)
+    return host.timing_backend(backend_name, **kwargs)
 
 
 def _axis_bijector(*, space, idx: int) -> PriorBijector:
@@ -113,7 +114,12 @@ def _explicit_scalar_delay_function(sampled_names: tuple[str, ...], evaluator):
 
 
 def _make_waveform(
-    *, space_fn: Callable, backend_name: str, partition_spec, coord: str
+    *,
+    space_fn: Callable,
+    backend_name: str,
+    backend_kwargs: dict | None,
+    partition_spec,
+    coord: str,
 ):
     from enterprise.signals import parameter
 
@@ -124,7 +130,7 @@ def _make_waveform(
         partition = _resolve_partition(psr, partition_spec)
         sampled_names = tuple(partition.sampled)
         sampled_indices = tuple(partition.idx_sampled)
-        backend = _get_backend(psr, backend_name)
+        backend = _get_backend(psr, backend_name, backend_kwargs=backend_kwargs)
         ndim = len(partition.fitpars)
 
         if coord in {"delta", "z"}:
@@ -214,7 +220,13 @@ def _make_marginalizing_signal(*, partition_spec, name: str):
 
 
 def enterprise_signal(
-    *, space_fn, backend_name: str, partition_spec, name: str, transform: str
+    *,
+    space_fn,
+    backend_name: str,
+    backend_kwargs: dict | None = None,
+    partition_spec,
+    name: str,
+    transform: str,
 ):
     """Return deferred Enterprise signal with deterministic delay + timing GP."""
     from enterprise.signals import deterministic_signals, signal_base
@@ -223,6 +235,7 @@ def enterprise_signal(
     waveform = _make_waveform(
         space_fn=space_fn,
         backend_name=backend_name,
+        backend_kwargs=backend_kwargs,
         partition_spec=partition_spec,
         coord=coord,
     )
