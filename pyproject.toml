@@ -137,6 +137,7 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "legacy_comparison: marks tests that compare legacy vs new implementation",
+    "legacy_sorted_row_order: marks legacy row-order identity checks that intentionally xfail after PR-A",
     "real_data: marks tests that require real data files",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",

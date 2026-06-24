@@ -19,12 +19,12 @@ from .parameter_manager import ParameterManager
 from .position_helpers import bj_name_from_pulsar
 
 
-class MetaPulsar(ep.BasePulsar):
+class MetaPulsar:
     """Elegant composite pulsar for multi-PTA data combination.
 
     This class combines pulsar timing data from multiple PTA collaborations
     into a unified object suitable for gravitational wave detection analysis.
-    Inherits from enterprise.pulsar.BasePulsar for full Enterprise compatibility.
+    This class implements the EnterprisePulsar-like surface directly.
 
     Supports two combination strategies:
     - "consistent": Astrophysical consistency (modifies par files for consistency)
@@ -43,7 +43,7 @@ class MetaPulsar(ep.BasePulsar):
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
-        sort=True,
+        sort=False,
     ):
         """Create MetaPulsar from multiple PTA pulsars.
 
@@ -71,7 +71,7 @@ class MetaPulsar(ep.BasePulsar):
             combine_components if combination_strategy == "consistent" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
-        self._sort = sort  # BasePulsar handles sorting
+        self._sort = sort
 
         # Elegant initialization flow
         self._create_enterprise_pulsars()
@@ -81,7 +81,6 @@ class MetaPulsar(ep.BasePulsar):
         self._remove_nonidentifiable_parameters()
         self._setup_position_and_planets()
 
-        # BasePulsar handles sorting automatically
         self.sort_data()
 
         # Calculate canonical name from pulsar data using B-name preference logic
@@ -126,7 +125,7 @@ class MetaPulsar(ep.BasePulsar):
             ):
                 try:
                     self._epulsars[pta] = ep.PintPulsar(
-                        ptoas, pmodel
+                        ptoas, pmodel, sort=False
                     )  # Use default planets=True
                 except Exception as e:
                     logger.error(f"Failed to create PintPulsar for PTA {pta}: {e}")
@@ -135,7 +134,9 @@ class MetaPulsar(ep.BasePulsar):
             # Create Enterprise Pulsars from raw Tempo2 objects
             for pta, lt_psr in lt_pulsars.items():
                 try:
-                    self._epulsars[pta] = ep.Tempo2Pulsar(lt_psr, planets=True)
+                    self._epulsars[pta] = ep.Tempo2Pulsar(
+                        lt_psr, sort=False, planets=True
+                    )
                 except Exception as e:
                     logger.error(f"Failed to create Tempo2Pulsar for PTA {pta}: {e}")
                     raise
@@ -630,5 +631,175 @@ class MetaPulsar(ep.BasePulsar):
 
         return pulsar_names
 
+    def sort_data(self):
+        """Sort data by time when requested; otherwise preserve storage order."""
+        if self._sort:
+            self._isort = np.argsort(self._toas, kind="mergesort")
+            self._iisort = np.zeros(len(self._isort), dtype=int)
+            for ii, p in enumerate(self._isort):
+                self._iisort[p] = ii
+        else:
+            self._isort = slice(None, None, None)
+            self._iisort = slice(None, None, None)
 
-# We don't need to implement custom sorting since we inherit from BasePulsar
+    def filter_data(self, mask=None, start_time=None, end_time=None):
+        """Filter TOAs by mask and/or time range."""
+        start_time = (
+            start_time * 86400 if start_time is not None else np.min(self._toas)
+        )
+        end_time = end_time * 86400 if end_time is not None else np.max(self._toas)
+        mask_times = np.logical_and(self._toas >= start_time, self._toas <= end_time)
+        mask = np.logical_and(mask, mask_times) if mask is not None else mask_times
+
+        self._toas = self._toas[mask]
+        self._stoas = self._stoas[mask]
+        self._toaerrs = self._toaerrs[mask]
+        self._residuals = self._residuals[mask]
+        self._ssbfreqs = self._ssbfreqs[mask]
+        self._telescope = self._telescope[mask]
+        self._designmatrix = self._designmatrix[mask, :]
+        self._pos_t = self._pos_t[mask, :]
+        self._planetssb = self._planetssb[mask, :, :]
+        self._sunssb = self._sunssb[mask, :]
+
+        dmx_mask = np.sum(self._designmatrix, axis=0) != 0.0
+        self._designmatrix = self._designmatrix[:, dmx_mask]
+
+        if isinstance(self._flags, np.ndarray):
+            self._flags = self._flags[mask]
+        else:
+            for key in self._flags:
+                self._flags[key] = self._flags[key][mask]
+
+        self.sort_data()
+
+    @property
+    def isort(self):
+        """Return sorting indices."""
+        return self._isort
+
+    @property
+    def iisort(self):
+        """Return inverse sorting indices."""
+        return self._iisort
+
+    @property
+    def toas(self):
+        """Return array of TOAs in seconds."""
+        return self._toas[self._isort]
+
+    @property
+    def stoas(self):
+        """Return array of observatory TOAs in seconds."""
+        return self._stoas[self._isort]
+
+    @property
+    def residuals(self):
+        """Return array of residuals in seconds."""
+        return self._residuals[self._isort]
+
+    @property
+    def toaerrs(self):
+        """Return array of TOA errors in seconds."""
+        return self._toaerrs[self._isort]
+
+    @property
+    def freqs(self):
+        """Return array of radio frequencies in MHz."""
+        return self._ssbfreqs[self._isort]
+
+    @property
+    def Mmat(self):
+        """Return ntoa x npar design matrix."""
+        return self._designmatrix[self._isort, :]
+
+    @property
+    def pdist(self):
+        """Return tuple of pulsar distance and uncertainty in kpc."""
+        return self._pdist
+
+    @property
+    def dm(self):
+        """Return DM parameter from parfile."""
+        return self._dm
+
+    @property
+    def dmx(self):
+        """Return DMX parameter dictionary from parfile."""
+        return self._dmx
+
+    @property
+    def flags(self):
+        """Return a dictionary of tim-file flags."""
+        flagnames = (
+            self._flags.dtype.names
+            if isinstance(self._flags, np.ndarray)
+            else self._flags.keys()
+        )
+        return {flag: self._flags[flag][self._isort] for flag in flagnames}
+
+    def set_flags(self, flagname, values):
+        """Set value of existing or new flags."""
+        if isinstance(self._flags, np.ndarray):
+            raise NotImplementedError("Cannot set flags when stored as numpy.ndarray.")
+        self._flags[flagname] = values[self._iisort]
+
+    @property
+    def backend_flags(self):
+        """Return array of backend flags."""
+        flagnames = (
+            self._flags.dtype.names
+            if isinstance(self._flags, np.ndarray)
+            else list(self._flags.keys())
+        )
+        ret = np.zeros(
+            len(self._toas),
+            dtype=max([self._flags[name].dtype for name in flagnames]),
+        )
+
+        if "fe" in flagnames and "be" in flagnames:
+            ret[:] = [
+                (a + "_" + b if (a and b) else "")
+                for a, b in zip(self._flags["fe"], self._flags["be"])
+            ]
+
+        for flag in ["f", "i", "sys", "g", "group"]:
+            if flag in flagnames:
+                ret[:] = np.where(self._flags[flag] == "", ret, self._flags[flag])
+
+        return ret[self._isort]
+
+    @property
+    def theta(self):
+        """Return polar angle of pulsar in radians."""
+        return np.pi / 2 - self._decj
+
+    @property
+    def phi(self):
+        """Return azimuthal angle of pulsar in radians."""
+        return self._raj
+
+    @property
+    def pos(self):
+        """Return unit vector from SSB to pulsar at fiducial POSEPOCH."""
+        return self._pos
+
+    @property
+    def pos_t(self):
+        """Return unit vector from SSB to pulsar as function of time."""
+        return self._pos_t[self._isort, :]
+
+    @property
+    def planetssb(self):
+        """Return planetary position vectors at all timestamps."""
+        return self._planetssb[self._isort, :, :]
+
+    @property
+    def sunssb(self):
+        """Return sun position vectors at all timestamps."""
+        return self._sunssb[self._isort, :]
+
+    @property
+    def telescope(self):
+        """Return telescope names at all timestamps."""
+        return self._telescope[self._isort]
