@@ -2,7 +2,12 @@
 
 import numpy as np
 
-from metapulsar.timing.units import display_unit, to_display, to_native
+from metapulsar.timing.units import (
+    display_unit,
+    native_physical_bounds,
+    to_display,
+    to_native,
+)
 
 
 def test_raj_hourangle_roundtrip():
@@ -34,3 +39,16 @@ def test_unknown_param_passthrough():
     np.testing.assert_allclose(to_native("F0", values), values)
     np.testing.assert_allclose(to_display("F0", values), values)
     assert display_unit("F0") == "native"
+
+
+def test_native_physical_bounds():
+    assert native_physical_bounds("ECC") == (0.0, 1.0)
+    assert native_physical_bounds("SINI") == (0.0, 1.0)
+    assert native_physical_bounds("KIN") == (0.0, 180.0)
+    assert native_physical_bounds("M2") == (0.0, None)
+    assert native_physical_bounds("A1") == (0.0, None)
+    # Qualified names resolve to the trailing canonical token.
+    assert native_physical_bounds("J1640+2224_timing_M2") == (0.0, None)
+    # Unbounded parameters report no constraints.
+    assert native_physical_bounds("RAJ") == (None, None)
+    assert native_physical_bounds("F0") == (None, None)

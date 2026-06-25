@@ -267,7 +267,7 @@ def test_standardized_builder_uses_z_space_marginal_scales(host):
     )
 
 
-def test_cheat_wls_prior_widths_are_data_derived(host):
+def test_cheat_wls_prior_is_wide_uniform_box(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
@@ -283,10 +283,56 @@ def test_cheat_wls_prior_widths_are_data_derived(host):
     expected_stds = np.sqrt(np.diag(np.linalg.inv(fisher)))
 
     assert set(block.sources.values()) == {"cheat_wls"}
-    np.testing.assert_allclose(
-        [prior.std for prior in block.priors],
-        expected_stds,
+    assert all(prior.family == "uniform" for prior in block.priors)
+    # Flat box of half-width scale * sigma, centered on the par-file value
+    # (F0/F1/DM are physically unbounded here, so no clipping occurs).
+    half_widths = np.array(
+        [(prior.upper - prior.lower) / 2.0 for prior in block.priors], dtype=float
     )
+    centers = np.array(
+        [(prior.upper + prior.lower) / 2.0 for prior in block.priors], dtype=float
+    )
+    np.testing.assert_allclose(
+        half_widths, ntm.cheat_prior_scale * expected_stds, rtol=1e-6
+    )
+    np.testing.assert_allclose(centers, 0.0, atol=1e-12)
+
+
+def test_cheat_prior_box_clipped_to_physical_bounds():
+    class _BoundedHost(_Host):
+        def __init__(self):
+            super().__init__()
+            self.fitpars = ("ECC", "F1", "DM")
+            self._ecc_ref = 1.0e-5
+            model = LinearModel.from_host(
+                fitpars=self.fitpars,
+                design=self._design,
+                theta_exact={"ECC": repr(self._ecc_ref), "F1": "1.0", "DM": "5.0"},
+            )
+            self._jug_backend = LinearizedJugTimingBackend.from_linear_model(model)
+
+    bounded = _BoundedHost()
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        marginalize=["F1", "DM"],
+        name="timing",
+    )
+    block = ntm.priors(bounded)
+    fisher = _schur_fisher(
+        bounded,
+        marginalize=["F1", "DM"],
+        variance=np.asarray(bounded.toaerrs, dtype=float) ** 2,
+    )
+    sigma_ecc = float(np.sqrt(np.linalg.inv(fisher)[0, 0]))
+    half = ntm.cheat_prior_scale * sigma_ecc
+
+    ecc_prior = block.priors[block.names.index("ECC")]
+    assert ecc_prior.family == "uniform"
+    # 50 sigma extends below 0, so the lower edge is clipped to ECC >= 0.
+    assert half > bounded._ecc_ref
+    np.testing.assert_allclose(ecc_prior.lower, -bounded._ecc_ref, rtol=1e-9)
+    np.testing.assert_allclose(ecc_prior.upper, half, rtol=1e-6)
 
 
 def test_discovery_signals_delta_only_and_jax_gate(host):

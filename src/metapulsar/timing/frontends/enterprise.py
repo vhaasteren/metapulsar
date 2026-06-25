@@ -1,4 +1,27 @@
-"""Enterprise frontend adapter for nonlinear timing."""
+"""Enterprise frontend adapter for nonlinear timing.
+
+This module wires ``NonLinearTimingModel`` into Enterprise's signal graph:
+a deterministic nonlinear delay for sampled fit parameters and an optional
+``TimingModel`` GP basis for marginalized linear nuisances.
+
+Priors
+------
+Sampled-parameter priors come from the bound ``ParameterSpace`` and are
+evaluated through Enterprise ``UserParameter`` hooks that call
+``PriorBijector.logprior_physical`` / ``ParameterSpace.logprior_coord``,
+including the PIT Jacobian for bounded families (``uniform``, truncated
+normal, etc.).
+
+With ``prior_policy="fallback"``, unresolved sampled priors use Vela-style
+*cheat* boxes—not Gaussians at the WLS scale. Each axis is a flat
+``uniform`` on ``[center ± cheat_prior_scale · σ]`` in delta space
+(``center`` = par-file reference, ``σ`` = par-file uncertainty with WLS
+fallback), clipped to ``native_physical_bounds`` (e.g. ``ECC ∈ [0, 1]``,
+``M2 ≥ 0``). Over the typical posterior support these boxes are
+effectively flat, so Enterprise posteriors track the likelihood the same
+way Vela does. The whitening/standardized coordinate map is for sampler
+preconditioning only and does not alter the physical prior density.
+"""
 
 from __future__ import annotations
 
@@ -243,7 +266,42 @@ def enterprise_signal(
     name: str,
     transform: str,
 ):
-    """Return deferred Enterprise signal with deterministic delay + timing GP."""
+    """Return a deferred Enterprise signal with deterministic delay + timing GP.
+
+    Parameters
+    ----------
+    space_fn
+        Callable ``host -> ParameterSpace`` (typically ``NonLinearTimingModel.space``).
+        Supplies per-axis priors and the whitening/standardized linear map used
+        by ``UserParameter`` log-prior and PPF hooks.
+    backend_name
+        Host timing backend identifier (``"jug"``, ``"pint"``, ``"tempo2"``).
+    backend_kwargs
+        Optional kwargs forwarded to ``host.timing_backend`` (e.g.
+        ``jug_compatibility``).
+    partition_spec
+        ``PartitionResult``, marginalize spec, or callable ``host -> PartitionResult``.
+    name
+        Enterprise signal / component name prefix.
+    transform
+        ``NonLinearTimingModel`` transform mode: ``"none"``, ``"standardized"``,
+        or ``"whitening"``. Selects the Enterprise sampling coordinate
+        (``delta``, per-axis standardized, or joint ``x``).
+
+    Returns
+    -------
+    type
+        ``MetaSignal`` subclass that materializes on ``(psr)`` into either
+        ``Deterministic(delay)``, ``TimingModel`` GP, or their sum.
+
+    Notes
+    -----
+    Delay parameters are mapped from the sampling coordinate back to native
+    ``delta_theta`` via ``space.delta_from_coord`` before calling
+    ``backend.residual_delta``. Prior terms follow ``space`` exactly, so
+    fallback cheat priors are the wide uniform boxes described in the module
+    docstring—not informative Gaussians tied to the WLS covariance.
+    """
     from enterprise.signals import deterministic_signals, signal_base
 
     coord = _coord_from_transform(transform)

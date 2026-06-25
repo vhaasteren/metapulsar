@@ -13,6 +13,7 @@ from .bijectors import AxisPrior, WhiteningLinear
 from .partition import PartitionResult, resolve_partition
 from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
 from .space import ParameterSpace
+from .units import native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 
 _BACKENDS = {"jug", "pint", "tempo2"}
@@ -44,6 +45,7 @@ class NonLinearTimingModel:
         transform: str = "whitening",
         marginalize: str | Sequence[str] | None = "default",
         prior_policy: PriorPolicy = "fallback",
+        cheat_prior_scale: float = 50.0,
         whitening_config: Mapping[str, Any] | None = None,
         name: str = "nonlinear_timing_model",
     ):
@@ -51,11 +53,14 @@ class NonLinearTimingModel:
             raise ValueError(f"Unsupported backend: {backend}")
         if transform not in _TRANSFORMS:
             raise ValueError(f"Unsupported transform: {transform}")
+        if not (float(cheat_prior_scale) > 0.0):
+            raise ValueError("cheat_prior_scale must be positive")
         self.backend = backend
         self.jug_compatibility = jug_compatibility
         self.transform = transform
         self.marginalize = marginalize
         self.prior_policy = validate_prior_policy(prior_policy)
+        self.cheat_prior_scale = float(cheat_prior_scale)
         self.whitening_config = (
             None if whitening_config is None else dict(whitening_config)
         )
@@ -104,6 +109,7 @@ class NonLinearTimingModel:
             transform=self.transform,
             marginalize=self.marginalize,
             prior_policy=self.prior_policy,
+            cheat_prior_scale=self.cheat_prior_scale,
             whitening_config=self.whitening_config,
             name=self.name,
         )
@@ -119,6 +125,7 @@ class NonLinearTimingModel:
             "transform": self.transform,
             "marginalize": self.marginalize,
             "prior_policy": self.prior_policy,
+            "cheat_prior_scale": self.cheat_prior_scale,
             "whitening_config": self.whitening_config,
             "name": self.name,
             "prior_overrides": {
@@ -191,7 +198,34 @@ class NonLinearTimingModel:
             theta_ref=sampled_refs,
             pint_model=host.pint_model(),
         )
-        return self._fill_wls_cheat_priors(host=host, partition=partition, block=block)
+        theta_ref_native = {name: float(value) for name, value in sampled_refs.items()}
+        return self._fill_wls_cheat_priors(
+            host=host,
+            partition=partition,
+            block=block,
+            theta_ref_native=theta_ref_native,
+        )
+
+    def _parfile_cheat_stds(self, host, names) -> dict[str, float]:
+        """Per-parameter par-file frequentist uncertainties in native units."""
+        out: dict[str, float] = {}
+        pint_model = host.pint_model()
+        if pint_model is None:
+            return out
+        for name in names:
+            if not hasattr(pint_model, name):
+                continue
+            param = getattr(pint_model, name)
+            unc = getattr(param, "uncertainty_value", None)
+            if unc is None:
+                continue
+            unc = float(unc)
+            if not np.isfinite(unc) or unc <= 0.0:
+                continue
+            # ``uncertainty_value`` is a magnitude in the parameter's display
+            # unit; the same linear scaling maps it to native delta units.
+            out[name] = float(np.abs(to_native(name, unc)))
+        return out
 
     def _fill_wls_cheat_priors(
         self,
@@ -199,22 +233,44 @@ class NonLinearTimingModel:
         host,
         partition: PartitionResult,
         block: PriorBlock,
+        theta_ref_native: dict[str, float] | None = None,
     ) -> PriorBlock:
         if not partition.sampled or "cheat_wls" not in block.sources.values():
             return block
+        theta_ref_native = theta_ref_native or {}
         variance = np.asarray(host.toaerrs, dtype=float) ** 2
         wls = schur_delta_wls(host=host, partition=partition, variance=variance)
-        stds = np.sqrt(np.diag(wls.covariance))
+        wls_stds = np.sqrt(np.diag(wls.covariance))
+        parfile_stds = self._parfile_cheat_stds(host, block.names)
+        scale = self.cheat_prior_scale
         priors = []
         for idx, (name, prior) in enumerate(
             zip(block.names, block.priors, strict=True)
         ):
-            if block.sources.get(name) == "cheat_wls":
-                priors.append(
-                    AxisPrior(family="normal", mean=0.0, std=float(stds[idx]))
-                )
-            else:
+            if block.sources.get(name) != "cheat_wls":
                 priors.append(prior)
+                continue
+            # Prefer the par-file frequentist uncertainty; fall back to the
+            # recomputed WLS marginal sigma when it is unavailable.
+            sigma = parfile_stds.get(name)
+            if sigma is None or not np.isfinite(sigma) or sigma <= 0.0:
+                sigma = float(wls_stds[idx])
+            half = scale * sigma
+            # Flat box in delta units centered on the par-file value (delta=0),
+            # matching Vela's cheat prior, then clipped to physical bounds.
+            lower, upper = -half, half
+            ref = theta_ref_native.get(name)
+            bound_lo, bound_hi = native_physical_bounds(name)
+            if ref is not None:
+                if bound_lo is not None:
+                    lower = max(lower, bound_lo - ref)
+                if bound_hi is not None:
+                    upper = min(upper, bound_hi - ref)
+            if not (upper > lower):
+                lower, upper = -half, half
+            priors.append(
+                AxisPrior(family="uniform", lower=float(lower), upper=float(upper))
+            )
         return PriorBlock(
             names=block.names, priors=tuple(priors), sources=block.sources
         )

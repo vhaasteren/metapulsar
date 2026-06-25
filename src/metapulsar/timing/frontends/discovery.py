@@ -1,4 +1,25 @@
-"""Discovery frontend adapter for nonlinear timing."""
+"""Discovery frontend adapter for nonlinear timing.
+
+This module builds Discovery-native likelihood signals from a bound
+``NonLinearTimingModel`` host: an optional improper GP for analytically
+marginalized linear fit parameters, plus a JAX nonlinear delay for the
+sampled block.
+
+Priors
+------
+Discovery delay keys carry backend-native ``delta_theta`` values; this module
+does **not** attach timing priors to the likelihood. Sampled-parameter priors
+live in ``ParameterSpace`` (from ``NonLinearTimingModel.space``) and are
+added separately—for example via ``contribute_timing``, which evaluates
+``space.logprior_coord`` as a NumPyro factor.
+
+With ``prior_policy="fallback"``, unresolved sampled priors become Vela-style
+*cheat* boxes: a flat ``uniform`` on ``[center ± cheat_prior_scale · σ]`` in
+delta space (center = par-file reference, ``σ`` = par-file uncertainty with
+WLS fallback), clipped to ``native_physical_bounds`` when applicable. The
+whitening/standardized linear layer is a sampling reparameterization only; it
+does not change the physical prior measure.
+"""
 
 from __future__ import annotations
 
@@ -49,7 +70,39 @@ def _build_delay_callable(
 def discovery_signals(
     *, host, space, backend, partition: PartitionResult, name: str
 ) -> list:
-    """Return Discovery-native timing signals: GP (optional) + nonlinear delay."""
+    """Return Discovery-native timing signals: GP (optional) + nonlinear delay.
+
+    Parameters
+    ----------
+    host
+        Timing host with residuals, design matrix, and TOA metadata.
+    space
+        ``ParameterSpace`` for the sampled block. Passed for API symmetry with
+        ``NonLinearTimingModel.discovery_signals``; delay keys already use
+        backend-native ``delta_theta``, so the likelihood path here does not
+        consume ``space`` directly. Priors from ``space`` are applied outside
+        this builder (see module docstring).
+    backend
+        JAX-capable timing backend used to evaluate ``residual_delta_jax``.
+    partition
+        Sampled vs marginalized fit-parameter partition in host column order.
+    name
+        Component name prefix for emitted signal keys.
+
+    Returns
+    -------
+    list
+        Discovery signal factories: ``makegp_improper`` for marginalized
+        columns (when present) and a delay callable keyed by
+        ``{host.name}_{name}_{fitpar}`` for each sampled parameter.
+
+    Notes
+    -----
+    Discovery uses ``detres = residuals - delay``, so the emitted delay is
+    ``-residual_delta(full_delta)``. Marginalized linear parameters are
+    represented with a flat improper GP (``constant=1e40``), matching the
+    Woodbury/Schur analytic-marginalization used elsewhere in the stack.
+    """
     from discovery import signals as discovery_signals
 
     _ = space  # Discovery delay keys are already backend-facing delta_theta values.
