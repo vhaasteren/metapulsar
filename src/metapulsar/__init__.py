@@ -5,6 +5,7 @@ collaborations (EPTA, PPTA, NANOGrav, MPTA, etc.) into unified "metapulsar"
 objects for gravitational wave detection.
 """
 
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 
 try:
@@ -52,6 +53,23 @@ from .selection_utils import create_staggered_selection
 # Exceptions
 from .pint_helpers import PINTDiscoveryError
 
+_TIMING_LAZY_EXPORTS = {
+    "NonLinearTimingModel": ("metapulsar.timing.component", "NonLinearTimingModel"),
+    "ParameterSpace": ("metapulsar.timing.space", "ParameterSpace"),
+    "EnterprisePulsarLike": ("metapulsar.timing.protocols", "EnterprisePulsarLike"),
+    "EphemerisExtras": ("metapulsar.timing.protocols", "EphemerisExtras"),
+    "TimingBackend": ("metapulsar.timing.protocols", "TimingBackend"),
+    "JaxTimingBackend": ("metapulsar.timing.protocols", "JaxTimingBackend"),
+    "TimingHost": ("metapulsar.timing.protocols", "TimingHost"),
+}
+
+
+def __getattr__(name: str):
+    if name in _TIMING_LAZY_EXPORTS:
+        module_name, attr = _TIMING_LAZY_EXPORTS[name]
+        return getattr(import_module(module_name), attr)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __author__ = "Rutger van Haasteren, Wangwei Yu, David Wright"
 __email__ = "rutger@vhaasteren.com"
@@ -86,4 +104,16 @@ __all__ = [
     "pta_summary",
     "get_pulsar_names_from_file_data",
     "filter_file_data_by_pulsars",
+    # Nonlinear timing (lazy; see metapulsar.timing)
+    "NonLinearTimingModel",
+    "ParameterSpace",
+    "EnterprisePulsarLike",
+    "EphemerisExtras",
+    "TimingBackend",
+    "JaxTimingBackend",
+    "TimingHost",
 ]
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__) | set(_TIMING_LAZY_EXPORTS))

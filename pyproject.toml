@@ -56,6 +56,12 @@ docs = [
 libstempo = [
     "libstempo>=2.0.0",
 ]
+timing = [
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+    "numpyro>=0.13.0",
+    "discovery>=0.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/vhaasteren/metapulsar"

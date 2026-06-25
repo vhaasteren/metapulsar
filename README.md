@@ -17,6 +17,7 @@ A framework for combining pulsar timing data from multiple PTA collaborations in
 
 - **Multi-PTA Data Combination**: Combine data from EPTA, PPTA, NANOGrav, MPTA, and other PTAs
 - **Enterprise Integration**: Full compatibility with the Enterprise pulsar timing analysis package
+- **Nonlinear Timing**: `NonLinearTimingModel` component for Discovery/NumPyro and Enterprise samplers
 - **Dual Timing Package Support**: Works with both PINT and libstempo/tempo2
 - **Flexible Parameter Management**: Support for "consistent" and "composite" combination strategies
 
@@ -30,7 +31,7 @@ Install the latest release from PyPI:
 pip install metapulsar
 
 # With optional extras
-pip install "metapulsar[dev,libstempo]"
+pip install "metapulsar[dev,libstempo,timing]"
 ```
 
 Or install from source for development:
@@ -41,7 +42,7 @@ cd metapulsar
 pip install -e .
 
 # With optional dependencies
-pip install -e ".[dev,libstempo]"
+pip install -e ".[dev,libstempo,timing]"
 ```
 
 ### Basic Usage
@@ -79,6 +80,55 @@ longer accepted.
 | `"overwrite"` | Always re-derive `-pn` from the original coherent `par` + `tim`. |
 
 Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`.
+
+### Nonlinear timing (`NonLinearTimingModel`)
+
+For sampler-facing nonlinear timing on a `MetaPulsar` host, build a config-only
+`NonLinearTimingModel` and drop it into Discovery or Enterprise models:
+
+```python
+import discovery as ds
+import numpyro
+import numpyro.distributions as dist
+from discovery import prior as ds_prior
+from metapulsar import create_metapulsar
+from metapulsar.timing import NonLinearTimingModel
+
+mp = create_metapulsar(...)  # MetaPulsar host (TimingHost)
+
+ntm = NonLinearTimingModel(
+    backend="jug",
+    jug_compatibility="auto",
+    transform="whitening",  # or "standardized" | "none"
+)
+
+likelihood = ds.PulsarLikelihood([
+    mp.residuals,
+    ds.makenoise_measurement(mp, noisedict, ecorr=True, enterprise=True),
+    ds.makegp_fourier(mp, ds.powerlaw, components=30, name="red_noise"),
+    *ntm.discovery_signals(mp),
+])
+
+def model():
+    params = {
+        par: numpyro.sample(
+            par, dist.Uniform(*ds_prior.getprior_uniform(par, noisedict))
+        )
+        for par in ntm.non_timing_params(mp, likelihood.logL.params)
+    }
+    params = ntm.contribute_timing(mp, params)
+    numpyro.factor("ll", likelihood.logL(params))
+
+# Post-processing: convert sampled coordinates to physical timing parameters
+# physical = ntm.space(mp).to_physical(samples, units="display")
+```
+
+Install timing extras with `pip install "metapulsar[timing]"`.
+`jug-timing` is intentionally not included in `pyproject.toml` extras for now.
+If you use the default `backend="jug"` path, install `jug-timing` separately
+(typically from source in development environments).
+
+Dev walkthrough notebooks live under `examples/notebooks-dev/` (local-only).
 
 ## Documentation
 
