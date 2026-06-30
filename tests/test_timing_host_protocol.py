@@ -145,16 +145,17 @@ def test_metapulsar_timing_host_surface_and_backend_roundtrip():
     assert isinstance(host, TimingHost)
     validate_enterprise_host(host)
 
-    # Native adapters are not advertised until engine-session reconstruction is wired.
-    assert not host.has_timing_backend("tempo2")
+    # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
+    assert host.has_timing_backend("tempo2")
     assert not host.has_timing_backend("jug")
     assert not host.has_timing_backend("pint")
     assert host.has_timing_backend("tempo2", linearized=True)
     assert host.has_timing_backend("jug", linearized=True)
     assert not host.has_timing_backend("pint", linearized=True)
 
-    with pytest.raises(NotImplementedError, match="Native backend"):
-        host.timing_backend("tempo2")
+    native_backend = host.timing_backend("tempo2")
+    assert tuple(host.fitpars) == native_backend.fitpars
+    validate_backend_against_host(native_backend, host)
 
     backend = host.timing_backend("tempo2", linearized=True)
     assert tuple(host.fitpars) == backend.fitpars

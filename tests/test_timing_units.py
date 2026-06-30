@@ -52,3 +52,16 @@ def test_native_physical_bounds():
     # Unbounded parameters report no constraints.
     assert native_physical_bounds("RAJ") == (None, None)
     assert native_physical_bounds("F0") == (None, None)
+
+
+def test_suffixed_metapulsar_names_use_canonical_units_and_bounds():
+    assert display_unit("RAJ_ng5") == "hourangle"
+    np.testing.assert_allclose(to_display("RAJ_ng5", np.pi), 12.0)
+    assert display_unit("DECJ_ng5") == "deg"
+    assert native_physical_bounds("ECC_ng5") == (0.0, 1.0)
+    assert native_physical_bounds("M2_ng5") == (0.0, None)
+
+
+def test_prefixed_and_suffixed_names_prefer_timing_parameter_key():
+    assert display_unit("J1640+2224_timing_RAJ_ng5") == "hourangle"
+    assert native_physical_bounds("J1640+2224_timing_M2_ng5") == (0.0, None)

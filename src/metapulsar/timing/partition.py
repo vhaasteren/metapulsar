@@ -21,30 +21,89 @@ class PartitionResult:
     idx_sampled: tuple[int, ...]
 
 
-def _discover_dispersion_dmx_params(pint_model) -> set[str]:
+# Component categories whose fit parameters are linear timing nuisances that
+# marginalize="default" peels off. Anything outside this set (most importantly
+# the binary "pulsar_system" parameters) is sampled nonlinearly. JUMP/FD/DMX
+# delays are exactly linear in the design matrix, so marginalizing them is exact
+# and avoids the near-degenerate sampled blocks that wreck NUTS conditioning.
+_MARGINALIZED_CATEGORIES = (
+    # "astrometry",
+    # "spindown",
+    "dispersion_constant",
+    "dispersion_dmx",
+    "phase_jump",
+    "fd",
+    "frequency_dependent",
+)
+
+
+def _discover_category_params(pint_model, categories) -> set[str]:
+    wanted = set(categories)
     discovered: set[str] = set()
     for comp in getattr(pint_model, "components", {}).values():
-        if getattr(comp, "category", None) != "dispersion_dmx":
+        if getattr(comp, "category", None) not in wanted:
             continue
         for name in getattr(comp, "params", []):
+            discovered.add(name)
             discovered.add(resolve_parameter_alias(name))
     return discovered
 
 
+# Linear nuisance families that marginalize="default" must always peel off when
+# present. Used only as a sanity guard against silent partition failures (e.g. a
+# host whose fitpar names carry a PTA suffix that breaks canonical name matching).
+_LINEAR_FAMILY_PREFIXES = ("DMX", "JUMP", "FD")
+
+
+def _base_param_candidates(host, name: str) -> set[str]:
+    """Return the canonical base-name candidates for a (possibly suffixed) fitpar.
+
+    Composite hosts expose PTA-suffixed fitpars (e.g. ``RAJ_ng5``) while PINT
+    category discovery yields unsuffixed canonical names (e.g. ``RAJ``). The host
+    carries the suffixed -> per-PTA base mapping in ``_fitparameters``; use it so
+    membership tests resolve to the underlying PINT parameter names.
+    """
+    candidates: set[str] = {name, resolve_parameter_alias(name)}
+    mapping = getattr(host, "_fitparameters", None) or {}
+    for base in mapping.get(name, {}).values():
+        candidates.add(base)
+        candidates.add(resolve_parameter_alias(base))
+    return candidates
+
+
 def default_marginalized_fitpars(host) -> tuple[str, ...]:
     """Default policy: astrometry + spindown + dispersion(+dmx) categories."""
-    fitpars = [resolve_parameter_alias(p) for p in host.fitpars]
     model = host.pint_model()
     if model is None:
         raise ValueError("host.pint_model() is required for marginalize='default'")
 
     discovered: set[str] = set()
-    for category in ("astrometry", "spindown", "dispersion"):
+    # for category in ("astrometry", "spindown", "dispersion"):
+    for category in ("spindown", "dispersion"):
         names = get_parameters_by_type_from_models(category, {"ref": model})
-        discovered.update(resolve_parameter_alias(name) for name in names)
-    discovered.update(_discover_dispersion_dmx_params(model))
+        for name in names:
+            discovered.add(name)
+            discovered.add(resolve_parameter_alias(name))
+    discovered.update(_discover_category_params(model, _MARGINALIZED_CATEGORIES))
 
-    return tuple(name for name in fitpars if name in discovered)
+    marginalized: list[str] = []
+    has_linear_family = False
+    for raw in host.fitpars:
+        candidates = _base_param_candidates(host, raw)
+        if any(c.startswith(_LINEAR_FAMILY_PREFIXES) for c in candidates):
+            has_linear_family = True
+        if candidates & discovered:
+            marginalized.append(resolve_parameter_alias(raw))
+
+    if has_linear_family and not marginalized:
+        raise ValueError(
+            "marginalize='default' resolved to an empty marginalized set even though "
+            "the host carries linear nuisance families (DMX/JUMP/FD). This usually "
+            "means fitpar name matching against PINT categories failed (e.g. an "
+            "unmapped PTA suffix). Refusing to silently sample every timing parameter."
+        )
+
+    return tuple(marginalized)
 
 
 def resolve_partition(

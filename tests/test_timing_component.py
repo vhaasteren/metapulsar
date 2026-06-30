@@ -368,7 +368,7 @@ def test_all_marginalized_paths(host):
     assert len(ntm.discovery_signals(host)) == 1
     ent = ntm.enterprise_signal()
     bound = ent(host)
-    assert bound.signal_type == "basis"
+    assert hasattr(bound, "get_basis")
     assert ntm.timing_param_keys(host) == ()
 
 

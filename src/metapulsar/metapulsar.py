@@ -1,6 +1,8 @@
 """Main MetaPulsar class for combining multi-PTA pulsar timing data."""
 
+from dataclasses import dataclass
 from itertools import groupby
+from pathlib import Path
 from typing import List
 import numpy as np
 from loguru import logger
@@ -17,6 +19,15 @@ from pint.toa import TOAs
 # Import our supporting infrastructure
 from .parameter_manager import ParameterManager
 from .position_helpers import bj_name_from_pulsar
+
+
+@dataclass(frozen=True)
+class SessionFiles:
+    """Durable timing-package input files for one PTA session."""
+
+    par_path: Path
+    tim_path: Path
+    timing_package: str
 
 
 class MetaPulsar:
@@ -43,6 +54,8 @@ class MetaPulsar:
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
+        session_files: dict[str, dict] | None = None,
+        clock_dir: str | Path | None = None,
         sort=False,
     ):
         """Create MetaPulsar from multiple PTA pulsars.
@@ -71,6 +84,8 @@ class MetaPulsar:
             combine_components if combination_strategy == "consistent" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
+        self._session_files = self._normalize_session_files(session_files)
+        self._clock_dir = None if clock_dir is None else Path(clock_dir)
         self._sort = sort
         self._timing_backend_cache = {}
         self._pint_model_cache = None
@@ -87,6 +102,21 @@ class MetaPulsar:
 
         # Calculate canonical name from pulsar data using B-name preference logic
         self.name = self._get_pulsar_name(pulsars)
+
+    @staticmethod
+    def _normalize_session_files(
+        session_files: dict[str, dict] | None,
+    ) -> dict[str, SessionFiles]:
+        if session_files is None:
+            return {}
+        normalized: dict[str, SessionFiles] = {}
+        for pta_name, files in session_files.items():
+            normalized[pta_name] = SessionFiles(
+                par_path=Path(files["par_path"]),
+                tim_path=Path(files["tim_path"]),
+                timing_package=str(files["timing_package"]),
+            )
+        return normalized
 
     def validate_consistency(self):
         """Validate that all PTAs contain the same pulsar.
@@ -725,17 +755,84 @@ class MetaPulsar:
         """Return whether every session can honor the requested backend family."""
         if name not in {"jug", "pint", "tempo2"}:
             return False
-        if not linearized:
-            # Native backend adapters are intentionally not advertised until
-            # PINT/tempo2/JUG session reconstruction is wired.
-            return False
-        if name == "jug":
+        if linearized:
+            if name == "jug":
+                return True
+            for psr in self._epulsars.values():
+                if self._get_timing_package(psr) != name:
+                    return False
             return True
 
-        for psr in self._epulsars.values():
+        if name == "jug":
+            if not self._can_import_jug():
+                return False
+            return all(self._session_files_available(pta) for pta in self._epulsars)
+
+        for pta_name, psr in self._epulsars.items():
             if self._get_timing_package(psr) != name:
                 return False
+            if pta_name not in self._pulsars:
+                return False
         return True
+
+    @staticmethod
+    def _can_import_jug() -> bool:
+        try:
+            import jug.engine.session  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    def _session_files_available(self, pta_name: str) -> bool:
+        files = self._session_files.get(pta_name)
+        if files is None:
+            return False
+        if not files.par_path.is_file() or not files.tim_path.is_file():
+            return False
+        if self._clock_dir is not None and not self._clock_dir.exists():
+            return False
+        return True
+
+    def _ensure_clock_aliases(self) -> None:
+        if self._clock_dir is None:
+            return
+        clock_dir = Path(self._clock_dir)
+        anchor = clock_dir / "tai2tt_bipm2017.clk"
+        if not anchor.is_file():
+            return
+        for alias in ("tai2tt_bipm2011.clk", "tai2tt_bipm2024.clk"):
+            link = clock_dir / alias
+            if link.exists():
+                continue
+            try:
+                link.symlink_to(anchor.name)
+            except FileExistsError:
+                pass
+
+    def _jug_compatibility_for_session(self, pta_name: str, requested: str) -> str:
+        if requested != "auto":
+            return requested
+        files = self._session_files.get(pta_name)
+        if files is not None and files.timing_package in {"pint", "tempo2"}:
+            return files.timing_package
+        return self._get_timing_package(self._epulsars[pta_name])
+
+    def _build_jug_session(self, pta_name: str, compatibility: str):
+        if not self._session_files_available(pta_name):
+            raise ValueError(
+                f"Cannot build JUG timing session for '{pta_name}': missing par/tim inputs"
+            )
+        from jug.engine.session import TimingSession
+
+        self._ensure_clock_aliases()
+        files = self._session_files[pta_name]
+        return TimingSession(
+            par_file=str(files.par_path),
+            tim_file=str(files.tim_path),
+            clock_dir=None if self._clock_dir is None else str(self._clock_dir),
+            verbose=False,
+            compatibility=compatibility,
+        )
 
     def timing_backend(
         self,
@@ -748,12 +845,7 @@ class MetaPulsar:
         """Return composite TimingBackend in canonical host row order."""
         if name not in {"jug", "pint", "tempo2"}:
             raise ValueError(f"Unsupported backend name: {name}")
-        if not linearized:
-            raise NotImplementedError(
-                f"Native backend '{name}' requires Slice 3b native session wiring; "
-                "use linearized=True only for conformance tests"
-            )
-        if not self.has_timing_backend(name, linearized=True):
+        if not self.has_timing_backend(name, linearized=linearized):
             raise ValueError(
                 f"Backend '{name}' cannot be honored by all sessions for host '{self.name}'"
             )
@@ -770,9 +862,12 @@ class MetaPulsar:
 
         from .timing.backends import (
             BackendSession,
+            JugTimingBackend,
             LinearizedJugTimingBackend,
             LinearizedPintTimingBackend,
             LinearizedTempo2TimingBackend,
+            PintTimingBackend,
+            Tempo2TimingBackend,
             build_backend,
         )
         from .timing.backends.base import LinearModel, validate_backend_against_host
@@ -797,13 +892,52 @@ class MetaPulsar:
                 theta_exact=theta_exact,
             )
 
-            if name == "pint":
+            if linearized and name == "pint":
                 backend = LinearizedPintTimingBackend.from_linear_model(linear_model)
-            elif name == "tempo2":
+            elif linearized and name == "tempo2":
                 backend = LinearizedTempo2TimingBackend.from_linear_model(linear_model)
-            else:
+            elif linearized:
                 backend = LinearizedJugTimingBackend.from_linear_model(
                     linear_model, compatibility=jug_compatibility
+                )
+            elif name == "pint":
+                source = self._pulsars[pta_name]
+                if not (isinstance(source, tuple) and len(source) == 2):
+                    raise ValueError(f"PTA '{pta_name}' does not have PINT inputs")
+                backend = PintTimingBackend.from_session(
+                    source[0],
+                    source[1],
+                    linear_model=linear_model,
+                )
+            elif name == "tempo2":
+                backend = Tempo2TimingBackend.from_session(
+                    self._pulsars[pta_name],
+                    linear_model=linear_model,
+                )
+            else:
+                compatibility = self._jug_compatibility_for_session(
+                    pta_name, jug_compatibility
+                )
+                jug_session = self._build_jug_session(pta_name, compatibility)
+                from .timing.backends.engines import infer_jug_param_mapping
+
+                session_mapping = {
+                    name: self._fitparameters.get(name, {}).get(pta_name, name)
+                    for name in session_fitpars
+                }
+                alias_mapping = infer_jug_param_mapping(
+                    tuple(session_mapping.values()),
+                    set(jug_session.params.keys()),
+                )
+                param_mapping = {
+                    host_name: alias_mapping.get(mapped, mapped)
+                    for host_name, mapped in session_mapping.items()
+                }
+                backend = JugTimingBackend.from_session(
+                    jug_session,
+                    linear_model=linear_model,
+                    compatibility=compatibility,
+                    param_mapping=param_mapping,
                 )
 
             sessions.append(
@@ -822,7 +956,7 @@ class MetaPulsar:
             missing_param_policy=missing_param_policy,
             host_design=self._designmatrix,
         )
-        validate_backend_against_host(backend, self)
+        validate_backend_against_host(backend, self, tol=1e-9)
         self._timing_backend_cache[cache_key] = backend
         return backend
 

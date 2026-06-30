@@ -6,6 +6,8 @@ creating Enterprise Pulsars, and wrapping them with metadata.
 
 from typing import Dict, List, Tuple, Any
 from pathlib import Path
+import shutil
+import tempfile
 from loguru import logger
 
 # Import Enterprise Pulsar classes
@@ -146,6 +148,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -219,6 +222,9 @@ class MetaPulsarFactory:
         if parfile_output_dir:
             parfile_output_dir = Path(parfile_output_dir).resolve()
             parfile_output_dir.mkdir(parents=True, exist_ok=True)
+        session_file_dir = Path(
+            tempfile.mkdtemp(prefix="metapulsar_session_files_")
+        ).resolve()
 
         # Process par files based on strategy
         if combination_strategy == "consistent":
@@ -247,17 +253,25 @@ class MetaPulsarFactory:
             )
 
         # Create PINT/Tempo2 objects from file pairs using file data
-        pulsars = self._create_pulsar_objects(
+        created = self._create_pulsar_objects(
             file_pairs=file_pairs,
             file_data=single_file_data,
             use_pulse_numbers=pulse_mode,
+            session_file_dir=session_file_dir,
+            return_session_files=True,
         )
+        if isinstance(created, tuple) and len(created) == 2:
+            pulsars, session_files = created
+        else:
+            pulsars, session_files = created, {}
 
         return MetaPulsar(
             pulsars=pulsars,
             combination_strategy=combination_strategy,
             combine_components=combine_components,
             add_dm_derivatives=add_dm_derivatives,
+            session_files=session_files,
+            clock_dir=clock_dir,
         )
 
     def _validate_single_pulsar_data(
@@ -444,6 +458,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all available pulsars using file data.
 
@@ -490,6 +505,7 @@ class MetaPulsarFactory:
                     add_dm_derivatives=add_dm_derivatives,
                     parfile_output_dir=parfile_output_dir,
                     use_pulse_numbers=pulse_mode,
+                    clock_dir=clock_dir,
                 )
 
                 # Canonical name is automatically calculated from pulsar data
@@ -668,7 +684,9 @@ class MetaPulsarFactory:
         file_pairs: Dict[str, Tuple[Path, Path]],
         file_data: Dict[str, Dict[str, Any]],
         use_pulse_numbers: PulseNumberMode = "yes",
-    ) -> Dict[str, Any]:
+        session_file_dir: Path | None = None,
+        return_session_files: bool = False,
+    ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
         """Create PINT/Tempo2 objects from file pairs using file data.
 
         Args:
@@ -681,13 +699,21 @@ class MetaPulsarFactory:
             Dictionary mapping PTA names to PINT/Tempo2 objects
         """
         pulsar_objects = {}
+        session_files: Dict[str, Dict[str, Any]] = {}
         track_pn = pulse_number_tracking_enabled(use_pulse_numbers)
+        if session_file_dir is None:
+            session_file_dir = Path(
+                tempfile.mkdtemp(prefix="metapulsar_session_files_")
+            ).resolve()
+        session_file_dir.mkdir(parents=True, exist_ok=True)
 
         for pta_name, (parfile, timfile) in file_pairs.items():
             # Get timing package info from file data
             timing_package = file_data[pta_name]["timing_package"]
             original_par_text = file_data[pta_name]["par_content"]
             tim_metadata = file_data[pta_name].get("tim_metadata")
+            parfile = Path(parfile)
+            timfile = Path(timfile)
 
             try:
                 if timing_package == "pint":
@@ -710,6 +736,14 @@ class MetaPulsarFactory:
                         )
                         if track_pn:
                             ensure_pint_track_minus_2(model)
+                        if return_session_files:
+                            session_files[pta_name] = self._retain_session_files(
+                                pta_name=pta_name,
+                                timing_package=timing_package,
+                                par_path=parfile,
+                                tim_path=Path(tim_path),
+                                session_file_dir=session_file_dir,
+                            )
                     pulsar_objects[pta_name] = (model, toas)
 
                 else:  # tempo2
@@ -730,12 +764,30 @@ class MetaPulsarFactory:
                                     timfile=tim_path,
                                     dofit=False,
                                 )
+                                if return_session_files:
+                                    session_files[pta_name] = (
+                                        self._retain_session_files(
+                                            pta_name=pta_name,
+                                            timing_package=timing_package,
+                                            par_path=Path(par_for_tempo2),
+                                            tim_path=Path(tim_path),
+                                            session_file_dir=session_file_dir,
+                                        )
+                                    )
                         else:
                             t2_psr = tempopulsar(
                                 parfile=str(parfile),
                                 timfile=tim_path,
                                 dofit=False,
                             )
+                            if return_session_files:
+                                session_files[pta_name] = self._retain_session_files(
+                                    pta_name=pta_name,
+                                    timing_package=timing_package,
+                                    par_path=parfile,
+                                    tim_path=Path(tim_path),
+                                    session_file_dir=session_file_dir,
+                                )
                     pulsar_objects[pta_name] = t2_psr
 
                 self.logger.debug(f"Created {timing_package} object for {pta_name}")
@@ -744,7 +796,39 @@ class MetaPulsarFactory:
                 self.logger.error(f"Failed to create pulsar for {pta_name}: {e}")
                 raise RuntimeError(f"Failed to create pulsar for {pta_name}: {e}")
 
+        if return_session_files:
+            return pulsar_objects, session_files
         return pulsar_objects
+
+    def _retain_session_files(
+        self,
+        *,
+        pta_name: str,
+        timing_package: str,
+        par_path: Path,
+        tim_path: Path,
+        session_file_dir: Path,
+    ) -> Dict[str, Any]:
+        """Copy exact timing-package input files into durable host-owned paths."""
+        pta_safe = "".join(
+            ch if ch.isalnum() or ch in "._-" else "_" for ch in pta_name
+        )
+        par_src = Path(par_path).resolve()
+        tim_src = Path(tim_path).resolve()
+        if not par_src.is_file():
+            raise FileNotFoundError(f"Session par file does not exist: {par_src}")
+        if not tim_src.is_file():
+            raise FileNotFoundError(f"Session tim file does not exist: {tim_src}")
+        session_file_dir.mkdir(parents=True, exist_ok=True)
+        par_dst = session_file_dir / f"{pta_safe}.par"
+        tim_dst = session_file_dir / f"{pta_safe}.tim"
+        shutil.copy2(par_src, par_dst)
+        shutil.copy2(tim_src, tim_dst)
+        return {
+            "par_path": par_dst,
+            "tim_path": tim_dst,
+            "timing_package": timing_package,
+        }
 
     def _create_parfile_dicts_from_files(
         self, parfile_files: Dict[str, Path]
@@ -868,6 +952,7 @@ def create_metapulsar(
     add_dm_derivatives: bool = True,
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -901,6 +986,7 @@ def create_metapulsar(
         add_dm_derivatives=add_dm_derivatives,
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
+        clock_dir=clock_dir,
     )
 
 
@@ -912,6 +998,7 @@ def create_all_metapulsars(
     add_dm_derivatives: bool = True,
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all available pulsars using file data.
 
@@ -938,6 +1025,7 @@ def create_all_metapulsars(
         add_dm_derivatives=add_dm_derivatives,
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
+        clock_dir=clock_dir,
     )
 
 

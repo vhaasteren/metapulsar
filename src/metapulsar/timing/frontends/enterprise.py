@@ -302,7 +302,7 @@ def enterprise_signal(
     fallback cheat priors are the wide uniform boxes described in the module
     docstring—not informative Gaussians tied to the WLS covariance.
     """
-    from enterprise.signals import deterministic_signals, signal_base
+    from enterprise.signals import deterministic_signals
 
     coord = _coord_from_transform(transform)
     waveform = _make_waveform(
@@ -314,22 +314,4 @@ def enterprise_signal(
     )
     delay_signal = deterministic_signals.Deterministic(waveform, name=name)
     timing_model = _make_marginalizing_signal(partition_spec=partition_spec, name=name)
-
-    class NonlinearTimingEnterpriseSignal(metaclass=signal_base.MetaSignal):
-        signal_id = name
-        signal_name = name
-        signal_type = "nonlinear timing"
-
-        def __new__(cls, psr):
-            partition = _resolve_partition(psr, partition_spec)
-            if partition.sampled and partition.idx_marginalized:
-                return (delay_signal + timing_model)(psr)
-            if partition.sampled:
-                return delay_signal(psr)
-            if partition.idx_marginalized:
-                return timing_model(psr)
-            raise ValueError(
-                "enterprise_signal requires sampled or marginalized fitpars"
-            )
-
-    return NonlinearTimingEnterpriseSignal
+    return delay_signal + timing_model
