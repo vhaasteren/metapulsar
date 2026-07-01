@@ -1,7 +1,6 @@
 """Protocols for timing hosts and timing-backend adapters.
 
-Stack layering (NONLINREFACTOR-SPEC §1.3a):
-
+Stack layering:
 - **Timing backend / timing engine** — residuals and design matrix (JUG, PINT, tempo2).
 - **Likelihood frontend** — Enterprise / Discovery signal assembly (``frontends/*``).
 - **Sampler** — user-owned posterior driver (PTMCMC, NumPyro NUTS, …); not imported here.
