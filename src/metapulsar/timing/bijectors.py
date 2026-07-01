@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
+import scipy.linalg as sl
 
 
 def _is_jax_xp(xp) -> bool:
@@ -311,7 +312,11 @@ class WhiteningLinear:
 
     def x_from_z(self, z, xp):
         z = xp.asarray(z)
-        return xp.linalg.solve(xp.asarray(self.C), z - xp.asarray(self.z0))
+        delta = z - xp.asarray(self.z0)
+        C = xp.asarray(self.C)
+        if xp is np:
+            return sl.solve_triangular(C, delta, lower=True)
+        return xp.linalg.solve(C, delta)
 
 
 class Chain:

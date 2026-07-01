@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
+import scipy.linalg as sl
 
 from .bijectors import WhiteningLinear
 
@@ -41,12 +43,23 @@ def _weighted_cross(
     return left.T @ (weights[:, None] * right)
 
 
+def _cho_factor_pd(matrix: np.ndarray, *, context: str) -> tuple[np.ndarray, bool]:
+    """Cholesky factorization with a clear error when the matrix is not PD."""
+    try:
+        return sl.cho_factor(matrix)
+    except sl.LinAlgError as exc:
+        raise ValueError(
+            f"{context} is not numerically positive definite. This usually indicates "
+            "collinear timing parameters, invalid TOA weights, or an ill-posed "
+            "partition/model."
+        ) from exc
+
+
 def schur_delta_wls(
     *,
     host,
     partition,
     variance: np.ndarray,
-    jitter: float = 1e-12,
 ) -> DeltaWLS:
     """Return sampled-block Fisher, covariance, and WLS mean in delta units."""
     mmat = np.asarray(host.Mmat, dtype=float)
@@ -75,15 +88,15 @@ def schur_delta_wls(
             analytically_marginalized_cols, weights, analytically_marginalized_cols
         )
         rhs_m = analytically_marginalized_cols.T @ (weights * residuals)
-        fisher_mm_inv_fms = np.linalg.solve(fisher_mm, fisher_sm.T)
-        fisher_ss = fisher_ss - fisher_sm @ fisher_mm_inv_fms
-        rhs_s = rhs_s - fisher_sm @ np.linalg.solve(fisher_mm, rhs_m)
+        cf_mm = _cho_factor_pd(
+            fisher_mm, context="Analytically marginalized timing Fisher block"
+        )
+        fisher_ss = fisher_ss - fisher_sm @ sl.cho_solve(cf_mm, fisher_sm.T)
+        rhs_s = rhs_s - fisher_sm @ sl.cho_solve(cf_mm, rhs_m)
 
-    fisher_ss = 0.5 * (fisher_ss + fisher_ss.T)
-    fisher_ss = fisher_ss + jitter * np.eye(ndim, dtype=float)
-    covariance = np.linalg.inv(fisher_ss)
-    covariance = 0.5 * (covariance + covariance.T)
-    mean_delta = np.linalg.solve(fisher_ss, rhs_s)
+    cf_ss = _cho_factor_pd(fisher_ss, context="Sampled-block Schur Fisher")
+    mean_delta = sl.cho_solve(cf_ss, rhs_s)
+    covariance = sl.cho_solve(cf_ss, np.eye(ndim, dtype=float))
     return DeltaWLS(fisher=fisher_ss, covariance=covariance, mean=mean_delta)
 
 
@@ -99,7 +112,6 @@ def _z_space_wls(wls: DeltaWLS, prior_bijector) -> tuple[np.ndarray, np.ndarray]
         )
     inv_jac = np.diag(1.0 / jac)
     covariance_z = inv_jac @ wls.covariance @ inv_jac
-    covariance_z = 0.5 * (covariance_z + covariance_z.T)
     return mean_z, covariance_z
 
 
@@ -107,7 +119,13 @@ def _linear_from_z_covariance(covariance_z: np.ndarray, *, mode: str) -> np.ndar
     if mode == "standardized":
         return np.diag(np.sqrt(np.diag(covariance_z)))
     if mode == "whitening":
-        return np.linalg.cholesky(covariance_z)
+        try:
+            return sl.cholesky(covariance_z, lower=True)
+        except sl.LinAlgError as exc:
+            raise ValueError(
+                "Timing covariance in z coordinates is not numerically positive "
+                "definite while building the whitening transform."
+            ) from exc
     raise ValueError(f"Unsupported transform mode for WLS linear layer: {mode}")
 
 
@@ -133,7 +151,6 @@ def diagonal_white(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
-    jitter: float = 1e-12,
 ) -> LinearTransform:
     """Default diagonal-white Fisher/WLS preconditioner."""
     if host is None or partition is None:
@@ -150,7 +167,6 @@ def diagonal_white(
         host=host,
         partition=partition,
         variance=variance,
-        jitter=jitter,
     )
     return _linear_transform_from_wls(
         wls,
@@ -178,7 +194,6 @@ def fixed_hyperparameters(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
-    jitter: float = 1e-12,
 ) -> LinearTransform:
     """Deterministic linear transform from fixed hyperparameter snapshot.
 
@@ -217,7 +232,6 @@ def fixed_hyperparameters(
         host=host,
         partition=partition,
         variance=variance,
-        jitter=jitter,
     )
     return _linear_transform_from_wls(
         wls,

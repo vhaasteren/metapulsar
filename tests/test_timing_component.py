@@ -11,6 +11,7 @@ from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
 from metapulsar.timing.backends.pint import LinearizedPintTimingBackend
 from metapulsar.timing.component import NonLinearTimingModel
 from metapulsar.timing.partition import resolve_partition
+from metapulsar.timing.whitening import schur_delta_wls
 
 
 class _Host:
@@ -118,18 +119,14 @@ def _monkeypatch_numpyro(monkeypatch, sample_value):
 
 def _schur_fisher(host, *, analytically_marginalize, variance):
     part = resolve_partition(host, analytically_marginalize=analytically_marginalize)
-    mmat = np.asarray(host.Mmat, dtype=float)
-    weights = 1.0 / np.asarray(variance, dtype=float)
-    sampled = mmat[:, part.idx_sampled]
-    analytically_marginalized_cols = mmat[:, part.idx_analytically_marginalized]
-    fisher = sampled.T @ (weights[:, None] * sampled)
-    if analytically_marginalized_cols.shape[1]:
-        fisher_sm = sampled.T @ (weights[:, None] * analytically_marginalized_cols)
-        fisher_mm = analytically_marginalized_cols.T @ (
-            weights[:, None] * analytically_marginalized_cols
-        )
-        fisher = fisher - fisher_sm @ np.linalg.solve(fisher_mm, fisher_sm.T)
-    return 0.5 * (fisher + fisher.T) + 1.0e-12 * np.eye(sampled.shape[1])
+    return schur_delta_wls(host=host, partition=part, variance=variance).fisher
+
+
+def _covariance_from_fisher(fisher: np.ndarray) -> np.ndarray:
+    import scipy.linalg as sl
+
+    cf = sl.cho_factor(fisher)
+    return sl.cho_solve(cf, np.eye(fisher.shape[0], dtype=float))
 
 
 def _z_space_fisher(space, delta_fisher):
@@ -259,8 +256,7 @@ def test_standardized_builder_uses_z_space_marginal_scales(host):
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
     )
     fisher_z = _z_space_fisher(space, fisher)
-    covariance_z = np.linalg.inv(fisher_z)
-    covariance_z = 0.5 * (covariance_z + covariance_z.T)
+    covariance_z = _covariance_from_fisher(fisher_z)
 
     assert np.allclose(space.linear.C, np.diag(np.diag(space.linear.C)))
     np.testing.assert_allclose(
@@ -282,7 +278,7 @@ def test_cheat_wls_prior_is_wide_uniform_box(host):
         analytically_marginalize=None,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
     )
-    expected_stds = np.sqrt(np.diag(np.linalg.inv(fisher)))
+    expected_stds = np.sqrt(np.diag(_covariance_from_fisher(fisher)))
 
     assert set(block.sources.values()) == {"cheat_wls"}
     assert all(prior.family == "uniform" for prior in block.priors)
@@ -326,7 +322,7 @@ def test_cheat_prior_box_clipped_to_physical_bounds():
         analytically_marginalize=["F1", "DM"],
         variance=np.asarray(bounded.toaerrs, dtype=float) ** 2,
     )
-    sigma_ecc = float(np.sqrt(np.linalg.inv(fisher)[0, 0]))
+    sigma_ecc = float(np.sqrt(_covariance_from_fisher(fisher)[0, 0]))
     half = ntm.cheat_prior_scale * sigma_ecc
 
     ecc_prior = block.priors[block.names.index("ECC")]

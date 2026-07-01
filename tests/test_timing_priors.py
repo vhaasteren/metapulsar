@@ -7,7 +7,11 @@ from metapulsar.timing.bijectors import AxisPrior
 from metapulsar.timing.priors import PriorBlock, set_prior
 from metapulsar.timing.partition import PartitionResult
 from metapulsar.timing.space import ParameterSpace
-from metapulsar.timing.whitening import diagonal_white, fixed_hyperparameters
+from metapulsar.timing.whitening import (
+    diagonal_white,
+    fixed_hyperparameters,
+    schur_delta_wls,
+)
 
 
 def test_prior_block_fallback_builds_default_normals():
@@ -181,3 +185,36 @@ def test_fixed_hyperparameters_uses_serialized_white_noise_values():
 
     assert fixed.C.shape == (2, 2)
     assert not np.allclose(fixed.C, default.C)
+
+
+class _DegenerateWhiteningHost:
+    fitpars = ("P1", "P2")
+
+    @property
+    def Mmat(self):
+        return np.ones((3, 2), dtype=float)
+
+    @property
+    def residuals(self):
+        return np.zeros(3, dtype=float)
+
+    @property
+    def toaerrs(self):
+        return np.ones(3, dtype=float)
+
+
+def test_schur_delta_wls_raises_on_degenerate_fisher():
+    host = _DegenerateWhiteningHost()
+    partition = PartitionResult(
+        fitpars=("P1", "P2"),
+        analytically_marginalized=(),
+        sampled=("P1", "P2"),
+        idx_analytically_marginalized=(),
+        idx_sampled=(0, 1),
+    )
+    with pytest.raises(ValueError, match="positive definite"):
+        schur_delta_wls(
+            host=host,
+            partition=partition,
+            variance=np.ones(3, dtype=float),
+        )
