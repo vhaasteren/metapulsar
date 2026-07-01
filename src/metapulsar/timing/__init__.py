@@ -1,4 +1,4 @@
-"""Nonlinear timing transforms, backends, and sampler frontends."""
+"""Nonlinear timing transforms, timing backends, and likelihood-frontend adapters."""
 
 from .component import NonLinearTimingModel
 from .protocols import (

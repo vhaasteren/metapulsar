@@ -1,23 +1,23 @@
-"""Discovery frontend adapter for nonlinear timing.
+"""Discovery likelihood-frontend adapter for nonlinear timing.
 
 This module builds Discovery-native likelihood signals from a bound
 ``NonLinearTimingModel`` host: an optional improper GP for analytically
 marginalized linear fit parameters, plus a JAX nonlinear delay for the
-sampled block.
+numerically sampled block.
 
 Priors
 ------
-Discovery delay keys carry backend-native ``delta_theta`` values; this module
+Discovery delay keys carry timing-backend-native ``delta_theta`` values; this module
 does **not** attach timing priors to the likelihood. Sampled-parameter priors
 live in ``ParameterSpace`` (from ``NonLinearTimingModel.space``) and are
 added separately—for example via ``contribute_timing``, which evaluates
 ``space.logprior_coord`` as a NumPyro factor.
 
-With ``prior_policy="fallback"``, unresolved sampled priors become Vela-style
-*cheat* boxes: a flat ``uniform`` on ``[center ± cheat_prior_scale · σ]`` in
+With ``prior_policy="fallback"``, unresolved sampled priors use the reference-stack
+*cheat* prior convention: a flat ``uniform`` on ``[center ± cheat_prior_scale · σ]`` in
 delta space (center = par-file reference, ``σ`` = par-file uncertainty with
 WLS fallback), clipped to ``native_physical_bounds`` when applicable. The
-whitening/standardized linear layer is a sampling reparameterization only; it
+whitening/standardized linear layer is a sampler reparameterization only; it
 does not change the physical prior measure.
 """
 
@@ -52,7 +52,7 @@ def _build_delay_callable(
             import jax.numpy as jnp
         except Exception as exc:  # pragma: no cover - environment-specific import path
             raise RuntimeError(
-                "Discovery timing delay requires JAX (jax.numpy) for nonlinear path"
+                "Discovery timing delay requires JAX (jax.numpy) on the NumPyro NUTS tier"
             ) from exc
 
         delta_sampled = jnp.asarray([params[key] for key in keys], dtype=float)
@@ -85,23 +85,24 @@ def discovery_signals(
     backend
         JAX-capable timing backend used to evaluate ``residual_delta_jax``.
     partition
-        Sampled vs marginalized fit-parameter partition in host column order.
+        Numerically sampled vs analytically marginalized fit-parameter partition in host
+        column order.
     name
         Component name prefix for emitted signal keys.
 
     Returns
     -------
     list
-        Discovery signal factories: ``makegp_improper`` for marginalized
+        Discovery signal factories: ``makegp_improper`` for analytically marginalized
         columns (when present) and a delay callable keyed by
         ``{host.name}_{name}_{fitpar}`` for each sampled parameter.
 
     Notes
     -----
     Discovery uses ``detres = residuals - delay``, so the emitted delay is
-    ``-residual_delta(full_delta)``. Marginalized linear parameters are
+    ``-residual_delta(full_delta)``. Analytically marginalized linear parameters are
     represented with a flat improper GP (``constant=1e40``), matching the
-    Woodbury/Schur analytic-marginalization used elsewhere in the stack.
+    Woodbury/Schur analytical-marginalization path used elsewhere in the stack.
     """
     from discovery import signals as discovery_signals
 
@@ -111,8 +112,10 @@ def discovery_signals(
         raise ValueError("partition.fitpars must match host.fitpars in canonical order")
 
     signals: list = []
-    if partition.idx_marginalized:
-        basis = np.asarray(host.Mmat[:, list(partition.idx_marginalized)], dtype=float)
+    if partition.idx_analytically_marginalized:
+        basis = np.asarray(
+            host.Mmat[:, list(partition.idx_analytically_marginalized)], dtype=float
+        )
         signals.append(
             discovery_signals.makegp_improper(
                 host,

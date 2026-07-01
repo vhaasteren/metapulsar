@@ -16,7 +16,7 @@ class JugTimingBackend:
     The nonlinear residuals are evaluated by a frozen JUG ``JaxTimingState``.
     ``design_matrix`` and reference theta metadata are intentionally served from
     the host-derived ``LinearModel`` so the composite backend uses the same
-    canonical columns and marginalized basis as ``MetaPulsar.Mmat``.
+    canonical columns and analytically marginalized basis as ``MetaPulsar.Mmat``.
     """
 
     backend_name = "jug"

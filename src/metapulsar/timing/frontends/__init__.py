@@ -1,8 +1,8 @@
-"""Thin frontend adapters for Discovery and Enterprise.
+"""Thin likelihood-frontend adapters for Discovery and Enterprise.
 
 ``discovery_signals`` and ``enterprise_signal`` translate a bound
-``NonLinearTimingModel`` (likelihood partition, ``ParameterSpace``, priors)
-into framework-native signal objects. Timing priors are owned by
+``NonLinearTimingModel`` (partition, ``ParameterSpace``, priors) into
+Enterprise/Discovery signal objects. Timing priors are owned by
 ``ParameterSpace``; see the module docstrings in ``discovery`` and
 ``enterprise`` for how fallback cheat priors and PIT bounds are handled.
 """

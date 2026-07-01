@@ -35,7 +35,11 @@ def _stable_json(value: object) -> str:
 
 
 class NonLinearTimingModel:
-    """Stateless timing config that binds to a host at call time."""
+    """Config-only nonlinear timing component (timing backend + likelihood-frontend glue).
+
+    Binds to a ``TimingHost`` at call time. Does not own noise models or samplers; the user
+    assembles Enterprise/Discovery likelihood frontends and runs their chosen sampler.
+    """
 
     def __init__(
         self,
@@ -43,7 +47,7 @@ class NonLinearTimingModel:
         backend: str = "jug",
         jug_compatibility: str = "auto",
         transform: str = "whitening",
-        marginalize: str | Sequence[str] | None = "default",
+        analytically_marginalize: str | Sequence[str] | None = "default",
         prior_policy: PriorPolicy = "fallback",
         cheat_prior_scale: float = 50.0,
         whitening_config: Mapping[str, Any] | None = None,
@@ -58,7 +62,7 @@ class NonLinearTimingModel:
         self.backend = backend
         self.jug_compatibility = jug_compatibility
         self.transform = transform
-        self.marginalize = marginalize
+        self.analytically_marginalize = analytically_marginalize
         self.prior_policy = validate_prior_policy(prior_policy)
         self.cheat_prior_scale = float(cheat_prior_scale)
         self.whitening_config = (
@@ -102,12 +106,12 @@ class NonLinearTimingModel:
         self._space_cache.clear()
 
     def with_backend(self, backend: str) -> "NonLinearTimingModel":
-        """Return a new component config with a different backend family."""
+        """Return a new component config with a different timing backend family."""
         other = NonLinearTimingModel(
             backend=backend,
             jug_compatibility=self.jug_compatibility,
             transform=self.transform,
-            marginalize=self.marginalize,
+            analytically_marginalize=self.analytically_marginalize,
             prior_policy=self.prior_policy,
             cheat_prior_scale=self.cheat_prior_scale,
             whitening_config=self.whitening_config,
@@ -123,7 +127,7 @@ class NonLinearTimingModel:
                 self.jug_compatibility if self.backend == "jug" else None
             ),
             "transform": self.transform,
-            "marginalize": self.marginalize,
+            "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
             "cheat_prior_scale": self.cheat_prior_scale,
             "whitening_config": self.whitening_config,
@@ -150,7 +154,9 @@ class NonLinearTimingModel:
         return host.timing_backend(self.backend)
 
     def _partition(self, host) -> PartitionResult:
-        return resolve_partition(host, marginalize=self.marginalize)
+        return resolve_partition(
+            host, analytically_marginalize=self.analytically_marginalize
+        )
 
     def _effective_overrides(self, partition: PartitionResult) -> dict[str, AxisPrior]:
         sampled_set = set(partition.sampled)
@@ -257,7 +263,8 @@ class NonLinearTimingModel:
                 sigma = float(wls_stds[idx])
             half = scale * sigma
             # Flat box in delta units centered on the par-file value (delta=0),
-            # matching Vela's cheat prior, then clipped to physical bounds.
+            # matching the external reference-stack cheat-prior convention, then clipped
+            # to physical bounds.
             lower, upper = -half, half
             ref = theta_ref_native.get(name)
             bound_lo, bound_hi = native_physical_bounds(name)
@@ -340,8 +347,8 @@ class NonLinearTimingModel:
     def sampled(self, host) -> tuple[str, ...]:
         return self._partition(host).sampled
 
-    def marginalized(self, host) -> tuple[str, ...]:
-        return self._partition(host).marginalized
+    def analytically_marginalized(self, host) -> tuple[str, ...]:
+        return self._partition(host).analytically_marginalized
 
     def priors(self, host) -> PriorBlock:
         return self._prior_block(host)
@@ -514,7 +521,7 @@ class NonLinearTimingModel:
             q = np.asarray(params[site_name], dtype=float)
             return np.asarray(space.delta_from_coord(q, np, coord=coord), dtype=float)
 
-        # Enterprise standardized scalars reuse delay-key names for x axes.
+        # Enterprise standardized scalars reuse delay-key names for sampler x axes.
         if (
             coord == "x"
             and self.transform == "standardized"

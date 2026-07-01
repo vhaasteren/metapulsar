@@ -139,9 +139,9 @@ def test_diagonal_white_uses_host_partition_for_nonidentity_transform():
     host = _WhiteningHost()
     partition = PartitionResult(
         fitpars=("F0", "A1"),
-        marginalized=("F0",),
+        analytically_marginalized=("F0",),
         sampled=("A1",),
-        idx_marginalized=(0,),
+        idx_analytically_marginalized=(0,),
         idx_sampled=(1,),
     )
     block = PriorBlock.from_fitpars(
@@ -166,9 +166,9 @@ def test_fixed_hyperparameters_uses_serialized_white_noise_values():
     host = _WhiteningHost()
     partition = PartitionResult(
         fitpars=("F0", "A1"),
-        marginalized=(),
+        analytically_marginalized=(),
         sampled=("F0", "A1"),
-        idx_marginalized=(),
+        idx_analytically_marginalized=(),
         idx_sampled=(0, 1),
     )
 

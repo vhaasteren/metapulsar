@@ -25,7 +25,7 @@ class _Host:
         self._backend_flags = np.array(["demo"] * 8, dtype="U8")
         self._cache_token = "token-v1"
         self.backend_calls = []
-        self.default_marginalize = ["F0", "DM"]
+        self.default_analytically_marginalize = ["F0", "DM"]
 
         design = np.array(
             [
@@ -116,16 +116,18 @@ def _monkeypatch_numpyro(monkeypatch, sample_value):
     return calls
 
 
-def _schur_fisher(host, *, marginalize, variance):
-    part = resolve_partition(host, marginalize=marginalize)
+def _schur_fisher(host, *, analytically_marginalize, variance):
+    part = resolve_partition(host, analytically_marginalize=analytically_marginalize)
     mmat = np.asarray(host.Mmat, dtype=float)
     weights = 1.0 / np.asarray(variance, dtype=float)
     sampled = mmat[:, part.idx_sampled]
-    marginalized = mmat[:, part.idx_marginalized]
+    analytically_marginalized_cols = mmat[:, part.idx_analytically_marginalized]
     fisher = sampled.T @ (weights[:, None] * sampled)
-    if marginalized.shape[1]:
-        fisher_sm = sampled.T @ (weights[:, None] * marginalized)
-        fisher_mm = marginalized.T @ (weights[:, None] * marginalized)
+    if analytically_marginalized_cols.shape[1]:
+        fisher_sm = sampled.T @ (weights[:, None] * analytically_marginalized_cols)
+        fisher_mm = analytically_marginalized_cols.T @ (
+            weights[:, None] * analytically_marginalized_cols
+        )
         fisher = fisher - fisher_sm @ np.linalg.solve(fisher_mm, fisher_sm.T)
     return 0.5 * (fisher + fisher.T) + 1.0e-12 * np.eye(sampled.shape[1])
 
@@ -144,7 +146,7 @@ def test_component_config_only_build_and_with_backend():
         backend="jug",
         jug_compatibility="tempo2",
         transform="whitening",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         prior_policy="fallback",
         whitening_config={"name": "diagonal_white"},
         name="timing",
@@ -155,7 +157,7 @@ def test_component_config_only_build_and_with_backend():
     assert ntm.jug_compatibility == "tempo2"
     assert swapped.backend == "pint"
     assert swapped.transform == ntm.transform
-    assert swapped.marginalize == ntm.marginalize
+    assert swapped.analytically_marginalize == ntm.analytically_marginalize
     assert swapped.prior_policy == ntm.prior_policy
     assert swapped.whitening_config == ntm.whitening_config
 
@@ -164,7 +166,7 @@ def test_space_cached_and_invalidated_by_cache_token(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     first = ntm.space(host)
@@ -180,12 +182,12 @@ def test_whitening_named_builders_bind_from_serializable_configs(host):
     ntm_default = NonLinearTimingModel(
         backend="jug",
         transform="whitening",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
     )
     ntm_fixed = NonLinearTimingModel(
         backend="jug",
         transform="whitening",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         whitening_config={
             "name": "fixed_hyperparameters",
             "hyperparameters": {"efac": {"demo": 1.2}, "equad": {"demo": 1.0e-7}},
@@ -200,16 +202,16 @@ def test_whitening_named_builders_bind_from_serializable_configs(host):
 
 
 def test_whitening_builders_condition_fisher_to_unit_scale(host):
-    marginalize = None
+    analytically_marginalize_cfg = None
     ntm_default = NonLinearTimingModel(
         backend="jug",
         transform="whitening",
-        marginalize=marginalize,
+        analytically_marginalize=analytically_marginalize_cfg,
     )
     ntm_fixed = NonLinearTimingModel(
         backend="jug",
         transform="whitening",
-        marginalize=marginalize,
+        analytically_marginalize=analytically_marginalize_cfg,
         whitening_config={
             "name": "fixed_hyperparameters",
             "hyperparameters": {"efac": {"demo": 1.2}, "equad": {"demo": 1.0e-7}},
@@ -218,14 +220,14 @@ def test_whitening_builders_condition_fisher_to_unit_scale(host):
 
     default_fisher = _schur_fisher(
         host,
-        marginalize=marginalize,
+        analytically_marginalize=analytically_marginalize_cfg,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
     )
     labels = np.asarray(host.backend_flags)
     efac = np.asarray([1.2 if label == "demo" else 1.0 for label in labels])
     fixed_fisher = _schur_fisher(
         host,
-        marginalize=marginalize,
+        analytically_marginalize=analytically_marginalize_cfg,
         variance=(efac * np.asarray(host.toaerrs, dtype=float)) ** 2 + 1.0e-14,
     )
 
@@ -247,13 +249,13 @@ def test_standardized_builder_uses_z_space_marginal_scales(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=None,
+        analytically_marginalize=None,
         name="timing",
     )
     space = ntm.space(host)
     fisher = _schur_fisher(
         host,
-        marginalize=None,
+        analytically_marginalize=None,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
     )
     fisher_z = _z_space_fisher(space, fisher)
@@ -271,13 +273,13 @@ def test_cheat_wls_prior_is_wide_uniform_box(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=None,
+        analytically_marginalize=None,
         name="timing",
     )
     block = ntm.priors(host)
     fisher = _schur_fisher(
         host,
-        marginalize=None,
+        analytically_marginalize=None,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
     )
     expected_stds = np.sqrt(np.diag(np.linalg.inv(fisher)))
@@ -315,13 +317,13 @@ def test_cheat_prior_box_clipped_to_physical_bounds():
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F1", "DM"],
+        analytically_marginalize=["F1", "DM"],
         name="timing",
     )
     block = ntm.priors(bounded)
     fisher = _schur_fisher(
         bounded,
-        marginalize=["F1", "DM"],
+        analytically_marginalize=["F1", "DM"],
         variance=np.asarray(bounded.toaerrs, dtype=float) ** 2,
     )
     sigma_ecc = float(np.sqrt(np.linalg.inv(fisher)[0, 0]))
@@ -339,7 +341,7 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     signals = ntm.discovery_signals(host)
@@ -351,18 +353,18 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
     ntm_nonjax = NonLinearTimingModel(
         backend="pint",
         transform="none",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     with pytest.raises(ValueError, match="JAX-capable backend"):
         ntm_nonjax.discovery_signals(host)
 
 
-def test_all_marginalized_paths(host):
+def test_all_analytically_marginalized_paths(host):
     ntm = NonLinearTimingModel(
         backend="pint",
         transform="none",
-        marginalize=["F0", "F1", "DM"],
+        analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
     )
     assert len(ntm.discovery_signals(host)) == 1
@@ -376,7 +378,7 @@ def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host)
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="whitening",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     keys = ntm.timing_param_keys(host)
@@ -388,7 +390,7 @@ def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host)
     ntm_all_marg = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0", "F1", "DM"],
+        analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
     )
     plain = ("efac", "gamma", "log10_A")
@@ -402,7 +404,7 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([0.2]))
@@ -419,7 +421,7 @@ def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0", "F1", "DM"],
+        analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
     )
     calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([]))
@@ -434,7 +436,7 @@ def test_set_prior_validated_against_sampled_partition(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     ntm.set_prior("F0", "uniform", lower=-1.0, upper=1.0)
@@ -446,7 +448,7 @@ def test_set_prior_unknown_name_raises(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     ntm.set_prior("F11", "uniform", lower=-1.0, upper=1.0)
@@ -459,7 +461,7 @@ def test_enterprise_signal_forwards_jug_compatibility(host):
         backend="jug",
         jug_compatibility="tempo2",
         transform="none",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
     ent = ntm.enterprise_signal()
@@ -471,7 +473,7 @@ def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F0", "DM"],
+        analytically_marginalize=["F0", "DM"],
         name="timing",
     )
 

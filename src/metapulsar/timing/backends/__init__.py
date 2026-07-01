@@ -1,4 +1,4 @@
-"""Timing backend builders and public backend classes."""
+"""Timing-backend builders and public timing-engine adapter classes."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Frozen JUG timing state and JAX residual evaluators for MetaPulsar/Discovery."""
+"""Frozen JUG timing state and JAX residual evaluators for traced timing backends."""
 
 from __future__ import annotations
 
@@ -479,7 +479,7 @@ def export_jax_timing_state(
     # Match the residual convention: the host ``_compute_full_model_residuals``
     # always removes the *weighted* prefit mean (``compute_phase_residuals`` with
     # its default ``mean_mode="weighted"``), which is equivalent to the timing
-    # offset/phase parameter being marginalized in the GLS likelihood. Centering
+    # offset/phase parameter being analytically marginalized in the GLS likelihood. Centering
     # each column the same way makes ``design_matrix @ delta`` tangent to the
     # mean-subtracted nonlinear residual delta. Done once here, in setup
     # (pre-isort) row order so the weights line up with the residual computation.

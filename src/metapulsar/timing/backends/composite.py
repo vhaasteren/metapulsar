@@ -1,4 +1,4 @@
-"""Composite backend that assembles per-session adapters in host order."""
+"""Composite timing backend that assembles per-session adapters in host order."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _to_exact_str(value: str) -> str:
 
 
 class CompositeTimingBackend:
-    """Canonical-row-order composite over per-session timing backends."""
+    """Canonical-row-order composite over per-session timing-backend adapters."""
 
     def __init__(
         self,

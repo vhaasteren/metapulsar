@@ -23,7 +23,7 @@ class TimingDeltaEngine(Protocol):
 
 @runtime_checkable
 class JaxTimingDeltaEngine(Protocol):
-    """JAX-native timing residual engine for Discovery/NUTS."""
+    """JAX-native timing engine for traced residuals on the NumPyro NUTS tier."""
 
     param_names: list[str]
     fitpars: list[str]

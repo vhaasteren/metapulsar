@@ -1,4 +1,11 @@
-"""Protocols for timing hosts and backend adapters."""
+"""Protocols for timing hosts and timing-backend adapters.
+
+Stack layering (NONLINREFACTOR-SPEC §1.3a):
+
+- **Timing backend / timing engine** — residuals and design matrix (JUG, PINT, tempo2).
+- **Likelihood frontend** — Enterprise / Discovery signal assembly (``frontends/*``).
+- **Sampler** — user-owned posterior driver (PTMCMC, NumPyro NUTS, …); not imported here.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +48,7 @@ class EphemerisExtras(Protocol):
 
 @runtime_checkable
 class EnterprisePulsarLike(Protocol):
-    """Duck-typed host surface consumed by Enterprise/Discovery signals."""
+    """Duck-typed host surface consumed by likelihood frontends (Enterprise/Discovery)."""
 
     name: str
     fitpars: list[str] | tuple[str, ...]
@@ -70,7 +77,7 @@ class EnterprisePulsarLike(Protocol):
 
 @runtime_checkable
 class TimingBackend(Protocol):
-    """Adapter around theta-native timing engines in canonical host ordering."""
+    """Timing-backend adapter around theta-native timing engines in canonical host order."""
 
     fitpars: tuple[str, ...]
     native_units: Mapping[str, str]
@@ -86,7 +93,7 @@ class TimingBackend(Protocol):
 
 @runtime_checkable
 class JaxTimingBackend(TimingBackend, Protocol):
-    """JAX-capable backend tier for Discovery/NumPyro paths."""
+    """JAX-capable timing backend for traced residuals on the NumPyro NUTS tier."""
 
     def residual_delta_jax(self, delta_theta: Any) -> Any: ...
 
@@ -95,7 +102,7 @@ class JaxTimingBackend(TimingBackend, Protocol):
 
 @runtime_checkable
 class TimingHost(EnterprisePulsarLike, Protocol):
-    """Host protocol: frozen arrays plus timing-engine accessors."""
+    """Host protocol: frozen arrays plus timing-engine / timing-backend accessors."""
 
     def pint_model(self) -> Any: ...
 

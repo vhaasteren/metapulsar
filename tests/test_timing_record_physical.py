@@ -94,7 +94,7 @@ def test_record_physical_timing_scope_emits_prefixed_theta_sites(host, monkeypat
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.25]))
@@ -113,7 +113,7 @@ def test_record_physical_scope_all_raises(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
     with pytest.raises(NotImplementedError, match="scope='all'"):
@@ -124,7 +124,7 @@ def test_record_physical_does_not_change_density_calls(host, monkeypatch):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.1]))
@@ -145,7 +145,7 @@ def test_record_physical_explicit_coord_handles_standardized_scalar_params(
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="standardized",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.0]))
@@ -165,7 +165,7 @@ def test_record_physical_invalid_coord_raises(host):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
     with pytest.raises(ValueError, match="coord must be one of"):

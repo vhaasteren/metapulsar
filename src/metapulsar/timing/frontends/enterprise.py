@@ -1,8 +1,8 @@
-"""Enterprise frontend adapter for nonlinear timing.
+"""Enterprise likelihood-frontend adapter for nonlinear timing.
 
 This module wires ``NonLinearTimingModel`` into Enterprise's signal graph:
-a deterministic nonlinear delay for sampled fit parameters and an optional
-``TimingModel`` GP basis for marginalized linear nuisances.
+a deterministic nonlinear delay for numerically sampled fit parameters and an optional
+``TimingModel`` GP basis for analytically marginalized linear nuisances.
 
 Priors
 ------
@@ -12,14 +12,13 @@ evaluated through Enterprise ``UserParameter`` hooks that call
 including the PIT Jacobian for bounded families (``uniform``, truncated
 normal, etc.).
 
-With ``prior_policy="fallback"``, unresolved sampled priors use Vela-style
-*cheat* boxes—not Gaussians at the WLS scale. Each axis is a flat
+With ``prior_policy="fallback"``, unresolved sampled priors use the reference-stack
+*cheat* prior convention—not Gaussians at the WLS scale. Each axis is a flat
 ``uniform`` on ``[center ± cheat_prior_scale · σ]`` in delta space
 (``center`` = par-file reference, ``σ`` = par-file uncertainty with WLS
 fallback), clipped to ``native_physical_bounds`` (e.g. ``ECC ∈ [0, 1]``,
 ``M2 ≥ 0``). Over the typical posterior support these boxes are
-effectively flat, so Enterprise posteriors track the likelihood the same
-way Vela does. The whitening/standardized coordinate map is for sampler
+effectively flat. The whitening/standardized coordinate map is for sampler
 preconditioning only and does not alter the physical prior density.
 """
 
@@ -41,7 +40,7 @@ def _resolve_partition(host, partition_spec) -> PartitionResult:
         if not isinstance(resolved, PartitionResult):
             raise TypeError("partition_spec(host) must return PartitionResult")
         return resolved
-    return resolve_partition(host, marginalize=partition_spec)
+    return resolve_partition(host, analytically_marginalize=partition_spec)
 
 
 def _coord_from_transform(transform: str) -> str:
@@ -280,7 +279,8 @@ def enterprise_signal(
         Optional kwargs forwarded to ``host.timing_backend`` (e.g.
         ``jug_compatibility``).
     partition_spec
-        ``PartitionResult``, marginalize spec, or callable ``host -> PartitionResult``.
+        ``PartitionResult``, ``analytically_marginalize`` spec, or callable
+        ``host -> PartitionResult``.
     name
         Enterprise signal / component name prefix.
     transform

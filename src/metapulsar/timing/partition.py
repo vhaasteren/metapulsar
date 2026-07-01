@@ -1,4 +1,4 @@
-"""Timing fit-parameter partition and default marginalization policy."""
+"""Timing fit-parameter partition and default analytical-marginalization policy."""
 
 from __future__ import annotations
 
@@ -12,21 +12,21 @@ from metapulsar.pint_helpers import (
 
 @dataclass(frozen=True)
 class PartitionResult:
-    """Resolved sampled/marginalized fit-parameter partition."""
+    """Resolved numerically sampled vs analytically marginalized fit-parameter partition."""
 
     fitpars: tuple[str, ...]
-    marginalized: tuple[str, ...]
+    analytically_marginalized: tuple[str, ...]
     sampled: tuple[str, ...]
-    idx_marginalized: tuple[int, ...]
+    idx_analytically_marginalized: tuple[int, ...]
     idx_sampled: tuple[int, ...]
 
 
-# Component categories whose fit parameters are linear timing nuisances that
-# marginalize="default" peels off. Anything outside this set (most importantly
-# the binary "pulsar_system" parameters) is sampled nonlinearly. JUMP/FD/DMX
-# delays are exactly linear in the design matrix, so marginalizing them is exact
+# Component categories whose fit parameters are identically linear timing nuisances that
+# analytically_marginalize="default" integrates out analytically. Anything outside this set
+# (most importantly the binary "pulsar_system" parameters) is numerically sampled. JUMP/FD/DMX
+# delays are exactly linear in the design matrix, so analytical marginalization is exact
 # and avoids the near-degenerate sampled blocks that wreck NUTS conditioning.
-_MARGINALIZED_CATEGORIES = (
+_ANALYTICALLY_MARGINALIZED_CATEGORIES = (
     # "astrometry",
     # "spindown",
     "dispersion_constant",
@@ -49,7 +49,7 @@ def _discover_category_params(pint_model, categories) -> set[str]:
     return discovered
 
 
-# Linear nuisance families that marginalize="default" must always peel off when
+# Linear nuisance families that analytically_marginalize="default" must always peel off when
 # present. Used only as a sanity guard against silent partition failures (e.g. a
 # host whose fitpar names carry a PTA suffix that breaks canonical name matching).
 _LINEAR_FAMILY_PREFIXES = ("DMX", "JUMP", "FD")
@@ -71,11 +71,13 @@ def _base_param_candidates(host, name: str) -> set[str]:
     return candidates
 
 
-def default_marginalized_fitpars(host) -> tuple[str, ...]:
+def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
     """Default policy: astrometry + spindown + dispersion(+dmx) categories."""
     model = host.pint_model()
     if model is None:
-        raise ValueError("host.pint_model() is required for marginalize='default'")
+        raise ValueError(
+            "host.pint_model() is required for analytically_marginalize='default'"
+        )
 
     discovered: set[str] = set()
     # for category in ("astrometry", "spindown", "dispersion"):
@@ -84,64 +86,73 @@ def default_marginalized_fitpars(host) -> tuple[str, ...]:
         for name in names:
             discovered.add(name)
             discovered.add(resolve_parameter_alias(name))
-    discovered.update(_discover_category_params(model, _MARGINALIZED_CATEGORIES))
+    discovered.update(
+        _discover_category_params(model, _ANALYTICALLY_MARGINALIZED_CATEGORIES)
+    )
 
-    marginalized: list[str] = []
+    analytically_marginalized: list[str] = []
     has_linear_family = False
     for raw in host.fitpars:
         candidates = _base_param_candidates(host, raw)
         if any(c.startswith(_LINEAR_FAMILY_PREFIXES) for c in candidates):
             has_linear_family = True
         if candidates & discovered:
-            marginalized.append(resolve_parameter_alias(raw))
+            analytically_marginalized.append(resolve_parameter_alias(raw))
 
-    if has_linear_family and not marginalized:
+    if has_linear_family and not analytically_marginalized:
         raise ValueError(
-            "marginalize='default' resolved to an empty marginalized set even though "
-            "the host carries linear nuisance families (DMX/JUMP/FD). This usually "
-            "means fitpar name matching against PINT categories failed (e.g. an "
-            "unmapped PTA suffix). Refusing to silently sample every timing parameter."
+            "analytically_marginalize='default' resolved to an empty "
+            "analytically marginalized set even though the host carries linear nuisance "
+            "families (DMX/JUMP/FD). This usually means fitpar name matching against PINT "
+            "categories failed (e.g. an unmapped PTA suffix). Refusing to silently sample "
+            "every timing parameter."
         )
 
-    return tuple(marginalized)
+    return tuple(analytically_marginalized)
 
 
 def resolve_partition(
     host,
-    marginalize: str | list[str] | tuple[str, ...] | None = "default",
+    analytically_marginalize: str | list[str] | tuple[str, ...] | None = "default",
 ) -> PartitionResult:
-    """Resolve sampled/marginalized names and canonical index mappings."""
+    """Resolve numerically sampled vs analytically marginalized names and index mappings."""
     fitpars = tuple(resolve_parameter_alias(p) for p in host.fitpars)
     if len(set(fitpars)) != len(fitpars):
         raise ValueError("Duplicate fit parameters after alias normalization")
 
-    if marginalize == "default":
-        marginalized = default_marginalized_fitpars(host)
-    elif marginalize is None:
-        marginalized = tuple()
-    elif isinstance(marginalize, str):
+    if analytically_marginalize == "default":
+        analytically_marginalized = default_analytically_marginalized_fitpars(host)
+    elif analytically_marginalize is None:
+        analytically_marginalized = tuple()
+    elif isinstance(analytically_marginalize, str):
         raise ValueError(
-            "marginalize must be 'default', None, or a sequence of fitpars"
+            "analytically_marginalize must be 'default', None, or a sequence of fitpars"
         )
     else:
-        normalized = tuple(resolve_parameter_alias(p) for p in marginalize)
+        normalized = tuple(resolve_parameter_alias(p) for p in analytically_marginalize)
         if len(set(normalized)) != len(normalized):
-            raise ValueError("Duplicate entries in marginalize list")
+            raise ValueError("Duplicate entries in analytically_marginalize list")
         unknown = [p for p in normalized if p not in fitpars]
         if unknown:
-            raise ValueError(f"Unknown fit parameters in marginalize list: {unknown}")
-        marginalized = normalized
+            raise ValueError(
+                f"Unknown fit parameters in analytically_marginalize list: {unknown}"
+            )
+        analytically_marginalized = normalized
 
-    marginalized_set = set(marginalized)
-    sampled = tuple(p for p in fitpars if p not in marginalized_set)
+    analytically_marginalized_set = set(analytically_marginalized)
+    sampled = tuple(p for p in fitpars if p not in analytically_marginalized_set)
 
-    idx_marginalized = tuple(i for i, p in enumerate(fitpars) if p in marginalized_set)
-    idx_sampled = tuple(i for i, p in enumerate(fitpars) if p not in marginalized_set)
+    idx_analytically_marginalized = tuple(
+        i for i, p in enumerate(fitpars) if p in analytically_marginalized_set
+    )
+    idx_sampled = tuple(
+        i for i, p in enumerate(fitpars) if p not in analytically_marginalized_set
+    )
 
     return PartitionResult(
         fitpars=fitpars,
-        marginalized=marginalized,
+        analytically_marginalized=analytically_marginalized,
         sampled=sampled,
-        idx_marginalized=idx_marginalized,
+        idx_analytically_marginalized=idx_analytically_marginalized,
         idx_sampled=idx_sampled,
     )

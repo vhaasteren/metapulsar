@@ -71,7 +71,7 @@ def test_multi_host_prefixes_and_cache_independence(monkeypatch):
     ntm = NonLinearTimingModel(
         backend="jug",
         transform="none",
-        marginalize=["F0"],
+        analytically_marginalize=["F0"],
         name="timing",
     )
 

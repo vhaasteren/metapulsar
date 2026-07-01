@@ -54,7 +54,9 @@ def schur_delta_wls(
     weights = 1.0 / np.asarray(variance, dtype=float)
 
     sampled = _as_columns(mmat, tuple(partition.idx_sampled))
-    marginalized = _as_columns(mmat, tuple(partition.idx_marginalized))
+    analytically_marginalized_cols = _as_columns(
+        mmat, tuple(partition.idx_analytically_marginalized)
+    )
     ndim = sampled.shape[1]
     if ndim == 0:
         empty = np.eye(0, dtype=float)
@@ -67,10 +69,12 @@ def schur_delta_wls(
     fisher_ss = _weighted_cross(sampled, weights, sampled)
     rhs_s = sampled.T @ (weights * residuals)
 
-    if marginalized.shape[1]:
-        fisher_sm = _weighted_cross(sampled, weights, marginalized)
-        fisher_mm = _weighted_cross(marginalized, weights, marginalized)
-        rhs_m = marginalized.T @ (weights * residuals)
+    if analytically_marginalized_cols.shape[1]:
+        fisher_sm = _weighted_cross(sampled, weights, analytically_marginalized_cols)
+        fisher_mm = _weighted_cross(
+            analytically_marginalized_cols, weights, analytically_marginalized_cols
+        )
+        rhs_m = analytically_marginalized_cols.T @ (weights * residuals)
         fisher_mm_inv_fms = np.linalg.solve(fisher_mm, fisher_sm.T)
         fisher_ss = fisher_ss - fisher_sm @ fisher_mm_inv_fms
         rhs_s = rhs_s - fisher_sm @ np.linalg.solve(fisher_mm, rhs_m)
