@@ -317,19 +317,3 @@ class WhiteningLinear:
         if xp is np:
             return sl.solve_triangular(C, delta, lower=True)
         return xp.linalg.solve(C, delta)
-
-
-class Chain:
-    """Convenience chain implementing x -> z -> delta composition."""
-
-    def __init__(self, prior_bijector: PriorBijector, linear: WhiteningLinear):
-        self.prior_bijector = prior_bijector
-        self.linear = linear
-
-    def delta_from_x(self, x, xp):
-        z = self.linear.z_from_x(x, xp)
-        return self.prior_bijector.delta_from_z(z, xp)
-
-    def x_from_delta(self, delta, xp):
-        z = self.prior_bijector.z_from_delta(delta, xp)
-        return self.linear.x_from_z(z, xp)

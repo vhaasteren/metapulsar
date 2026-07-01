@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Literal
 
-import numpy as np
-
 from metapulsar.pint_helpers import resolve_parameter_alias
 
 from .bijectors import AxisPrior, PriorBijector
@@ -213,8 +211,9 @@ class PriorBlock:
                     f"No proper PINT prior, override, or named default for strict policy parameter '{name}'"
                 )
 
-            # WLS-cheat fallback placeholder: Slice 5 will replace scale from host WLS.
-            priors.append(AxisPrior(family="normal", mean=0.0, std=1.0))
+            # Host-bound component resolution replaces this sentinel with the final wide
+            # uniform cheat-prior box before any bijector is built.
+            priors.append(AxisPrior(family="cheat_wls"))
             sources[name] = "cheat_wls"
 
         return cls(names=tuple(names), priors=tuple(priors), sources=sources)
@@ -227,6 +226,11 @@ class PriorBlock:
             resolve_parameter_alias(name) for name in precision_critical_fitpars
         }
         for name, prior in zip(self.names, self.priors, strict=True):
+            if prior.family == "cheat_wls":
+                raise ValueError(
+                    "cheat_wls fallback priors require host-bound resolution before "
+                    "building a PriorBijector"
+                )
             if name in critical and prior.family in ABSOLUTE_FORMING_FAMILIES:
                 raise ValueError(
                     f"Prior family '{prior.family}' forms absolute values for precision-critical "
@@ -236,16 +240,3 @@ class PriorBlock:
 
     def source_labels(self) -> dict[str, str]:
         return dict(self.sources)
-
-    def as_arrays(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return normal-family means/stds for simple diagnostics."""
-        means = []
-        stds = []
-        for prior in self.priors:
-            if prior.family != "normal":
-                raise ValueError(
-                    "as_arrays currently supports normal-family priors only"
-                )
-            means.append(prior.mean)
-            stds.append(prior.std)
-        return np.asarray(means, dtype=float), np.asarray(stds, dtype=float)

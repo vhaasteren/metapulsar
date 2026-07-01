@@ -23,12 +23,10 @@ class PartitionResult:
 
 # Component categories whose fit parameters are identically linear timing nuisances that
 # analytically_marginalize="default" integrates out analytically. Anything outside this set
-# (most importantly the binary "pulsar_system" parameters) is numerically sampled. JUMP/FD/DMX
-# delays are exactly linear in the design matrix, so analytical marginalization is exact
-# and avoids the near-degenerate sampled blocks that wreck NUTS conditioning.
+# (most importantly astrometric kinematics and binary "pulsar_system" parameters) is
+# numerically sampled. Astrometry is handled by explicit position-only registries below
+# because PINT's astrometry category also includes proper motion and parallax.
 _ANALYTICALLY_MARGINALIZED_CATEGORIES = (
-    # "astrometry",
-    # "spindown",
     "dispersion_constant",
     "dispersion_dmx",
     "phase_jump",
@@ -53,6 +51,11 @@ def _discover_category_params(pint_model, categories) -> set[str]:
 # present. Used only as a sanity guard against silent partition failures (e.g. a
 # host whose fitpar names carry a PTA suffix that breaks canonical name matching).
 _LINEAR_FAMILY_PREFIXES = ("DMX", "JUMP", "FD")
+_LINEAR_EXACT = frozenset({"DM", "DM1", "DM2", "OFFSET", "PHOFF"})
+_ASTROMETRY_POSITION_ONLY = frozenset(
+    {"RAJ", "DECJ", "ELONG", "ELAT", "RA", "DEC", "LAMBDA", "BETA"}
+)
+_ASTROMETRY_SAMPLED_BY_DEFAULT = frozenset({"PMRA", "PMDEC", "PMELONG", "PMELAT", "PX"})
 
 
 def _base_param_candidates(host, name: str) -> set[str]:
@@ -71,8 +74,26 @@ def _base_param_candidates(host, name: str) -> set[str]:
     return candidates
 
 
+def _fallback_policy_candidates(host, name: str) -> set[str]:
+    """Return candidates eligible for exact/prefix fallback registries.
+
+    Composite hosts with PTA-suffixed names must provide ``_fitparameters`` mappings.
+    Without that mapping, broad prefix fallback would silently treat ``DMX_0001_ng5`` as a
+    valid DMX parameter instead of surfacing the broken suffix resolution.
+    """
+    mapping = getattr(host, "_fitparameters", None)
+    if mapping is not None:
+        bases = mapping.get(name, {})
+        candidates: set[str] = set()
+        for base in bases.values():
+            candidates.add(base)
+            candidates.add(resolve_parameter_alias(base))
+        return candidates
+    return {name, resolve_parameter_alias(name)}
+
+
 def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
-    """Default policy: astrometry + spindown + dispersion(+dmx) categories."""
+    """Default policy: linear timing nuisances plus astrometry positions."""
     model = host.pint_model()
     if model is None:
         raise ValueError(
@@ -94,9 +115,23 @@ def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
     has_linear_family = False
     for raw in host.fitpars:
         candidates = _base_param_candidates(host, raw)
-        if any(c.startswith(_LINEAR_FAMILY_PREFIXES) for c in candidates):
+        fallback_candidates = _fallback_policy_candidates(host, raw)
+        canonical_candidates = {resolve_parameter_alias(c).upper() for c in candidates}
+        canonical_fallbacks = {
+            resolve_parameter_alias(c).upper() for c in fallback_candidates
+        }
+        if canonical_candidates & _LINEAR_EXACT or any(
+            c.startswith(_LINEAR_FAMILY_PREFIXES) for c in canonical_candidates
+        ):
             has_linear_family = True
-        if candidates & discovered:
+        if canonical_candidates & _ASTROMETRY_SAMPLED_BY_DEFAULT:
+            continue
+        if (
+            candidates & discovered
+            or canonical_candidates & _ASTROMETRY_POSITION_ONLY
+            or canonical_fallbacks & _LINEAR_EXACT
+            or any(c.startswith(_LINEAR_FAMILY_PREFIXES) for c in canonical_fallbacks)
+        ):
             analytically_marginalized.append(resolve_parameter_alias(raw))
 
     if has_linear_family and not analytically_marginalized:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -12,7 +12,7 @@ import numpy as np
 from .bijectors import AxisPrior, WhiteningLinear
 from .partition import PartitionResult, resolve_partition
 from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
-from .space import ParameterSpace
+from .space import ParameterSpace, default_coord_for_transform
 from .units import native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 
@@ -20,18 +20,21 @@ _BACKENDS = {"jug", "pint", "tempo2"}
 _TRANSFORMS = {"none", "standardized", "whitening"}
 
 
-def _default_coord_for_transform(transform: str) -> str:
-    if transform == "none":
-        return "delta"
-    if transform == "standardized":
-        return "x"
-    if transform == "whitening":
-        return "x"
-    raise ValueError(f"Unsupported transform: {transform}")
-
-
 def _stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class ResolvedTiming:
+    """Host-bound nonlinear timing context resolved from component config."""
+
+    backend: object
+    partition: PartitionResult
+    prior_block: PriorBlock
+    space: ParameterSpace
+    coord: str
+    site_name: str
+    delay_keys: tuple[str, ...]
 
 
 class NonLinearTimingModel:
@@ -70,7 +73,7 @@ class NonLinearTimingModel:
         )
         self.name = name
         self._prior_overrides: dict[str, AxisPrior] = {}
-        self._space_cache: dict[str, ParameterSpace] = {}
+        self._resolved_cache: dict[str, ResolvedTiming] = {}
 
     def set_prior(self, name: str, kind: str, **bounds) -> None:
         """Set or override one sampled-parameter prior."""
@@ -103,7 +106,7 @@ class NonLinearTimingModel:
         else:
             raise ValueError(f"Unsupported prior kind: {kind}")
         self._prior_overrides = set_prior(self._prior_overrides, name, prior)
-        self._space_cache.clear()
+        self._resolved_cache.clear()
 
     def with_backend(self, backend: str) -> "NonLinearTimingModel":
         """Return a new component config with a different timing backend family."""
@@ -141,17 +144,10 @@ class NonLinearTimingModel:
     def _backend_for_host(self, host):
         if self.backend != "jug":
             return host.timing_backend(self.backend)
-        signature = inspect.signature(host.timing_backend)
-        params = signature.parameters
-        accepts_jug_compat = "jug_compatibility" in params or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        return host.timing_backend(
+            self.backend,
+            jug_compatibility=self.jug_compatibility,
         )
-        if accepts_jug_compat:
-            return host.timing_backend(
-                self.backend,
-                jug_compatibility=self.jug_compatibility,
-            )
-        return host.timing_backend(self.backend)
 
     def _partition(self, host) -> PartitionResult:
         return resolve_partition(
@@ -185,9 +181,9 @@ class NonLinearTimingModel:
             if name in sampled_set
         }
 
-    def _prior_block(self, host, backend=None) -> PriorBlock:
-        partition = self._partition(host)
-        backend = self._backend_for_host(host) if backend is None else backend
+    def _build_prior_block(
+        self, *, host, backend, partition: PartitionResult
+    ) -> PriorBlock:
         ref_exact = backend.reference_theta_exact()
         sampled_refs = {
             name: ref_exact[name] for name in partition.sampled if name in ref_exact
@@ -294,7 +290,7 @@ class NonLinearTimingModel:
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
-            ).to_whitening_linear()
+            )
 
         cfg = dict(cfg)
         builder = cfg.pop("name", "diagonal_white")
@@ -305,7 +301,7 @@ class NonLinearTimingModel:
                 prior_bijector=prior_bijector,
                 mode=self.transform,
                 **cfg,
-            ).to_whitening_linear()
+            )
         if builder == "fixed_hyperparameters":
             return fixed_hyperparameters(
                 host=host,
@@ -313,7 +309,7 @@ class NonLinearTimingModel:
                 prior_bijector=prior_bijector,
                 mode=self.transform,
                 **cfg,
-            ).to_whitening_linear()
+            )
         raise ValueError(f"Unsupported whitening builder: {builder}")
 
     def _host_state_fingerprint(self, host, backend) -> str:
@@ -334,7 +330,7 @@ class NonLinearTimingModel:
         }
         return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
 
-    def _space_cache_key(self, host, backend) -> str:
+    def _resolved_cache_key(self, host, backend) -> str:
         host_id = f"{id(host)}:{getattr(host, 'name', 'unknown')}"
         return "|".join(
             [
@@ -344,23 +340,16 @@ class NonLinearTimingModel:
             ]
         )
 
-    def sampled(self, host) -> tuple[str, ...]:
-        return self._partition(host).sampled
-
-    def analytically_marginalized(self, host) -> tuple[str, ...]:
-        return self._partition(host).analytically_marginalized
-
-    def priors(self, host) -> PriorBlock:
-        return self._prior_block(host)
-
-    def space(self, host) -> ParameterSpace:
+    def _resolve(self, host) -> ResolvedTiming:
         backend = self._backend_for_host(host)
-        key = self._space_cache_key(host, backend)
-        if key in self._space_cache:
-            return self._space_cache[key]
+        key = self._resolved_cache_key(host, backend)
+        if key in self._resolved_cache:
+            return self._resolved_cache[key]
 
         partition = self._partition(host)
-        prior_block = self._prior_block(host, backend=backend)
+        prior_block = self._build_prior_block(
+            host=host, backend=backend, partition=partition
+        )
         prior_bijector = prior_block.to_bijector(
             precision_critical_fitpars=getattr(
                 backend, "precision_critical_fitpars", lambda: frozenset()
@@ -379,19 +368,42 @@ class NonLinearTimingModel:
             transform=self.transform,
             linear_transform=linear,
         )
-        self._space_cache[key] = space
-        return space
+        coord = default_coord_for_transform(self.transform)
+        resolved = ResolvedTiming(
+            backend=backend,
+            partition=partition,
+            prior_block=prior_block,
+            space=space,
+            coord=coord,
+            site_name=f"{host.name}_{self.name}_{coord}",
+            delay_keys=tuple(
+                f"{host.name}_{self.name}_{name}" for name in partition.sampled
+            ),
+        )
+        self._resolved_cache[key] = resolved
+        return resolved
+
+    def sampled(self, host) -> tuple[str, ...]:
+        return self._resolve(host).partition.sampled
+
+    def analytically_marginalized(self, host) -> tuple[str, ...]:
+        return self._resolve(host).partition.analytically_marginalized
+
+    def priors(self, host) -> PriorBlock:
+        return self._resolve(host).prior_block
+
+    def space(self, host) -> ParameterSpace:
+        return self._resolve(host).space
 
     def discovery_signals(self, host) -> list:
         from .frontends.discovery import discovery_signals
 
-        partition = self._partition(host)
-        backend = self._backend_for_host(host)
+        resolved = self._resolve(host)
         return discovery_signals(
             host=host,
-            space=self.space(host),
-            backend=backend,
-            partition=partition,
+            space=resolved.space,
+            backend=resolved.backend,
+            partition=resolved.partition,
             name=self.name,
         )
 
@@ -413,18 +425,21 @@ class NonLinearTimingModel:
         )
 
     def _coord_site_name(self, host, coord: str | None = None) -> str:
-        coord = _default_coord_for_transform(self.transform) if coord is None else coord
+        coord = default_coord_for_transform(self.transform) if coord is None else coord
         if coord not in {"delta", "z", "x"}:
             raise ValueError(f"Unsupported coord: {coord}")
+        if coord == default_coord_for_transform(self.transform):
+            return self._resolve(host).site_name
         return f"{host.name}_{self.name}_{coord}"
 
     def _delay_keys(self, host) -> tuple[str, ...]:
-        return tuple(f"{host.name}_{self.name}_{name}" for name in self.sampled(host))
+        return self._resolve(host).delay_keys
 
     def timing_param_keys(self, host) -> tuple[str, ...]:
-        if not self.sampled(host):
+        resolved = self._resolve(host)
+        if not resolved.partition.sampled:
             return tuple()
-        keys = [self._coord_site_name(host), *self._delay_keys(host)]
+        keys = [resolved.site_name, *resolved.delay_keys]
         return tuple(keys)
 
     def non_timing_params(self, host, params: Sequence[str]) -> tuple[str, ...]:
@@ -438,11 +453,12 @@ class NonLinearTimingModel:
         *,
         coord: str | None = None,
     ) -> Mapping[str, Any]:
-        sampled = self.sampled(host)
+        resolved = self._resolve(host)
+        sampled = resolved.partition.sampled
         if not sampled:
             return params
 
-        coord = _default_coord_for_transform(self.transform) if coord is None else coord
+        coord = resolved.coord if coord is None else coord
         if coord not in {"delta", "z", "x"}:
             raise ValueError(f"Unsupported coord: {coord}")
 
@@ -451,7 +467,7 @@ class NonLinearTimingModel:
         from numpyro import distributions as dist
         from numpyro.distributions import constraints
 
-        space = self.space(host)
+        space = resolved.space
         site_name = self._coord_site_name(host, coord=coord)
         q = numpyro.sample(
             site_name,
@@ -473,53 +489,32 @@ class NonLinearTimingModel:
         params: Mapping[str, Any],
         *,
         coord: str | None = None,
+        coord_explicit: bool = False,
     ) -> np.ndarray:
-        sampled = self.sampled(host)
+        resolved = self._resolve(host)
+        sampled = resolved.partition.sampled
         if not sampled:
             return np.zeros((0,), dtype=float)
 
         if coord is not None and coord not in {"delta", "z", "x"}:
             raise ValueError("coord must be one of {'delta', 'z', 'x'}")
+        coord = resolved.coord if coord is None else coord
 
-        if coord is None:
-            # Backward-compatible inference.
-            delay_keys = self._delay_keys(host)
-            if all(key in params for key in delay_keys):
-                return np.asarray([params[key] for key in delay_keys], dtype=float)
-
-            site_name = self._coord_site_name(host)
-            if site_name not in params:
-                raise ValueError(
-                    "Timing parameters missing from params mapping; call contribute_timing "
-                    "before record_physical or include injected delta keys"
-                )
-            resolved = _default_coord_for_transform(self.transform)
-            space = self.space(host)
-            q = np.asarray(params[site_name], dtype=float)
-            return np.asarray(
-                space.delta_from_coord(q, np, coord=resolved), dtype=float
-            )
-
-        delay_keys = self._delay_keys(host)
+        delay_keys = resolved.delay_keys
         site_name = self._coord_site_name(host, coord=coord)
-        space = self.space(host)
-
-        if coord == "delta":
-            if all(key in params for key in delay_keys):
-                return np.asarray([params[key] for key in delay_keys], dtype=float)
-            if site_name in params:
-                q = np.asarray(params[site_name], dtype=float)
-                return np.asarray(
-                    space.delta_from_coord(q, np, coord="delta"), dtype=float
-                )
-            raise ValueError(
-                "record_physical(coord='delta') requires injected delta keys "
-                "or a delta site"
-            )
+        space = resolved.space
 
         if site_name in params:
             q = np.asarray(params[site_name], dtype=float)
             return np.asarray(space.delta_from_coord(q, np, coord=coord), dtype=float)
+
+        if coord == "delta":
+            if all(key in params for key in delay_keys):
+                return np.asarray([params[key] for key in delay_keys], dtype=float)
+            raise ValueError(
+                "record_physical(coord='delta') requires injected delta keys "
+                "or a delta site"
+            )
 
         # Enterprise standardized scalars reuse delay-key names for sampler x axes.
         if (
@@ -527,8 +522,15 @@ class NonLinearTimingModel:
             and self.transform == "standardized"
             and all(key in params for key in delay_keys)
         ):
-            q = np.asarray([params[key] for key in delay_keys], dtype=float)
-            return np.asarray(space.delta_from_coord(q, np, coord="x"), dtype=float)
+            values = np.asarray([params[key] for key in delay_keys], dtype=float)
+            # Implicit default coord (record_physical called without coord) corresponds
+            # to contribute_timing outputs where delay keys already carry delta values.
+            if not coord_explicit:
+                return values
+            # Explicit coord="x" keeps Enterprise standardized-scalar semantics.
+            return np.asarray(
+                space.delta_from_coord(values, np, coord="x"), dtype=float
+            )
 
         raise ValueError(
             f"record_physical(coord={coord!r}) could not find matching timing coordinates"
@@ -542,25 +544,31 @@ class NonLinearTimingModel:
         scope: str = "timing",
         coord: str | None = None,
     ) -> None:
+        coord_was_explicit = coord is not None
         if coord is not None and coord not in {"delta", "z", "x"}:
             raise ValueError("coord must be one of {'delta', 'z', 'x'}")
         if coord is None:
-            coord = _default_coord_for_transform(self.transform)
+            coord = default_coord_for_transform(self.transform)
 
         if scope == "all":
             raise NotImplementedError("scope='all' is deferred")
         if scope != "timing":
             raise ValueError("scope must be one of {'timing', 'all'}")
 
-        sampled = self.sampled(host)
+        resolved = self._resolve(host)
+        sampled = resolved.partition.sampled
         if not sampled:
             return
 
         import numpyro
 
-        space = self.space(host)
-        delta = self._delta_from_params(host, params, coord=coord)
-        theta = space.theta_from_delta(delta)
+        delta = self._delta_from_params(
+            host,
+            params,
+            coord=coord,
+            coord_explicit=coord_was_explicit,
+        )
+        theta = resolved.space.theta_from_delta(delta)
         for i, name in enumerate(sampled):
             numpyro.deterministic(
                 f"{host.name}_{self.name}_{name}_theta",

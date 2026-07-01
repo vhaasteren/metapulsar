@@ -409,6 +409,7 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
 
     assert f"{host.name}_timing_F1" in out
     assert out["efac"] == 1.0
+    assert f"{host.name}_timing_x" not in out
     assert calls["sample"][0][0] == f"{host.name}_timing_x"
     assert calls["factor"][0][0] == f"{host.name}_timing_x_logprior"
 

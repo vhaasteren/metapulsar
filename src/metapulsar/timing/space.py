@@ -15,6 +15,15 @@ from .precision import ExactNativeRef
 from .units import to_display
 
 
+def default_coord_for_transform(transform: str) -> str:
+    """Return the vector coordinate sampled by a component transform mode."""
+    if transform == "none":
+        return "delta"
+    if transform in {"standardized", "whitening"}:
+        return "x"
+    raise ValueError(f"Unsupported transform: {transform}")
+
+
 DensityParts = namedtuple(
     "DensityParts",
     ["logprior_physical", "logjacobian", "logprior_coord", "loglike", "logpost"],
@@ -179,7 +188,7 @@ class ParameterSpace:
 
     def to_physical(self, samples, units: str = "display", coord: str | None = None):
         if coord is None:
-            coord = "delta" if self.transform == "none" else "x"
+            coord = default_coord_for_transform(self.transform)
         arr = np.asarray(samples, dtype=float)
         if arr.ndim == 1:
             arr = arr[None, :]

@@ -11,18 +11,6 @@ from .bijectors import WhiteningLinear
 
 
 @dataclass(frozen=True)
-class LinearTransform:
-    """Serializable linear transform representation."""
-
-    C: np.ndarray
-    z0: np.ndarray
-    name: str = "custom"
-
-    def to_whitening_linear(self) -> WhiteningLinear:
-        return WhiteningLinear(C=self.C, z0=self.z0)
-
-
-@dataclass(frozen=True)
 class DeltaWLS:
     """Schur-complement WLS approximation in sampled delta coordinates."""
 
@@ -134,13 +122,11 @@ def _linear_transform_from_wls(
     *,
     prior_bijector,
     mode: str,
-    name: str,
-) -> LinearTransform:
+) -> WhiteningLinear:
     z0, covariance_z = _z_space_wls(wls, prior_bijector)
-    return LinearTransform(
+    return WhiteningLinear(
         C=_linear_from_z_covariance(covariance_z, mode=mode),
         z0=z0,
-        name=name,
     )
 
 
@@ -151,15 +137,14 @@ def diagonal_white(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
-) -> LinearTransform:
+) -> WhiteningLinear:
     """Default diagonal-white Fisher/WLS preconditioner."""
     if host is None or partition is None:
         if ndim is None:
             raise ValueError("ndim is required when host/partition are not provided")
-        return LinearTransform(
+        return WhiteningLinear(
             C=np.eye(ndim, dtype=float),
             z0=np.zeros(ndim, dtype=float),
-            name="diagonal_white",
         )
 
     variance = np.asarray(host.toaerrs, dtype=float) ** 2
@@ -172,7 +157,6 @@ def diagonal_white(
         wls,
         prior_bijector=prior_bijector,
         mode=mode,
-        name="diagonal_white",
     )
 
 
@@ -194,7 +178,7 @@ def fixed_hyperparameters(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
-) -> LinearTransform:
+) -> WhiteningLinear:
     """Deterministic linear transform from fixed hyperparameter snapshot.
 
     This mirrors diagonal-white construction with serialized EFAC/EQUAD values.
@@ -213,9 +197,7 @@ def fixed_hyperparameters(
         )
         if z0.shape != (ndim,):
             raise ValueError("fixed_hyperparameters center must match ndim")
-        return LinearTransform(
-            C=np.eye(ndim, dtype=float), z0=z0, name="fixed_hyperparameters"
-        )
+        return WhiteningLinear(C=np.eye(ndim, dtype=float), z0=z0)
 
     red_noise = hyperparameters.get("red_noise", None)
     if red_noise is not None:
@@ -237,5 +219,4 @@ def fixed_hyperparameters(
         wls,
         prior_bijector=prior_bijector,
         mode=mode,
-        name="fixed_hyperparameters",
     )

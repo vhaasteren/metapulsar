@@ -19,7 +19,7 @@ class _FakeComponent:
 class _FakeModel:
     def __init__(self):
         self.components = {
-            "astro": _FakeComponent("astrometry", ("RAJ", "DECJ")),
+            "astro": _FakeComponent("astrometry", ("RAJ", "DECJ", "PMRA", "PX")),
             "spin": _FakeComponent("spindown", ("F0", "F1", "EDOT")),
             "disp": _FakeComponent("dispersion_constant", ("DM", "DM1")),
             "dmx": _FakeComponent("dispersion_dmx", ("DMX_0001",)),
@@ -32,6 +32,8 @@ class _FakeHost:
         self.fitpars = (
             "RAJ",
             "DECJ",
+            "PMRA",
+            "PX",
             "F0",
             "F1",
             "DM",
@@ -58,6 +60,7 @@ def test_default_partition_uses_pint_components():
         "DM",
         "DM1",
         "DMX_0001",
+        "JUMP1",
     )
 
 
@@ -72,17 +75,29 @@ def test_resolve_partition_default_and_indices():
         "DM",
         "DM1",
         "DMX_0001",
+        "JUMP1",
     )
-    assert part.sampled == ("A1", "PB", "JUMP1")
-    assert part.idx_analytically_marginalized == (0, 1, 2, 3, 4, 5, 6)
-    assert part.idx_sampled == (7, 8, 9)
+    assert part.sampled == ("PMRA", "PX", "A1", "PB")
+    assert part.idx_analytically_marginalized == (0, 1, 4, 5, 6, 7, 8, 11)
+    assert part.idx_sampled == (2, 3, 9, 10)
 
 
 def test_resolve_partition_explicit_list():
     host = _FakeHost()
     part = resolve_partition(host, analytically_marginalize=["F0", "PB"])
     assert part.analytically_marginalized == ("F0", "PB")
-    assert part.sampled == ("RAJ", "DECJ", "F1", "DM", "DM1", "DMX_0001", "A1", "JUMP1")
+    assert part.sampled == (
+        "RAJ",
+        "DECJ",
+        "PMRA",
+        "PX",
+        "F1",
+        "DM",
+        "DM1",
+        "DMX_0001",
+        "A1",
+        "JUMP1",
+    )
 
 
 def test_resolve_partition_none_analytically_marginalized():
@@ -155,12 +170,31 @@ def test_default_analytically_marginalizes_linear_block_on_suffixed_composite_ho
     """
     host = _FakeCompositeHost()
     part = resolve_partition(host, analytically_marginalize="default")
-    assert part.sampled == ("PB_ng5", "A1_ng5", "ECC_ng5", "T0_ng5", "Offset_ng5")
+    assert part.sampled == (
+        "PMRA_ng5",
+        "PMDEC_ng5",
+        "PB_ng5",
+        "A1_ng5",
+        "ECC_ng5",
+        "T0_ng5",
+    )
     assert "JUMP1_ng5" in part.analytically_marginalized
     assert "DMX_0001_ng5" in part.analytically_marginalized
     assert "RAJ_ng5" in part.analytically_marginalized
-    assert "Offset_ng5" not in part.analytically_marginalized
-    assert len(part.analytically_marginalized) == 11
+    assert "PMRA_ng5" not in part.analytically_marginalized
+    assert "PMDEC_ng5" not in part.analytically_marginalized
+    assert "Offset_ng5" in part.analytically_marginalized
+    assert len(part.analytically_marginalized) == 10
+
+
+def test_default_astrometry_samples_kinematics_and_marginalizes_position():
+    host = _FakeHost()
+    part = resolve_partition(host, analytically_marginalize="default")
+
+    assert "RAJ" in part.analytically_marginalized
+    assert "DECJ" in part.analytically_marginalized
+    assert "PMRA" in part.sampled
+    assert "PX" in part.sampled
 
 
 def test_default_guard_raises_when_suffix_mapping_unavailable():

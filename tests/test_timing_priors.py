@@ -14,13 +14,13 @@ from metapulsar.timing.whitening import (
 )
 
 
-def test_prior_block_fallback_builds_default_normals():
+def test_prior_block_fallback_marks_host_bound_cheat_priors():
     block = PriorBlock.from_fitpars(["F0", "F1"], policy="fallback")
     assert block.names == ("F0", "F1")
     assert block.source_labels()["F0"] == "cheat_wls"
-    means, stds = block.as_arrays()
-    np.testing.assert_allclose(means, np.zeros(2))
-    np.testing.assert_allclose(stds, np.ones(2))
+    assert [prior.family for prior in block.priors] == ["cheat_wls", "cheat_wls"]
+    with pytest.raises(ValueError, match="host-bound resolution"):
+        block.to_bijector()
 
 
 def test_prior_block_explicit_requires_overrides():
@@ -86,22 +86,28 @@ def test_log_uniform_roundtrip_and_precision_guard():
 
 def test_whitening_builders_change_coord_only_not_physical_prior():
     theta_ref = {"F0": "1.0", "F1": "2.0"}
-    block = PriorBlock.from_fitpars(["F0", "F1"], policy="fallback")
+    block = PriorBlock.from_fitpars(
+        ["F0", "F1"],
+        policy="explicit",
+        overrides={
+            "F0": AxisPrior(family="normal", mean=1.0, std=1.0),
+            "F1": AxisPrior(family="normal", mean=2.0, std=1.0),
+        },
+        theta_ref=theta_ref,
+    )
     bijector = block.to_bijector()
 
     default_space = ParameterSpace.build(
         theta_ref_mapping=theta_ref,
         prior_bijector=bijector,
         transform="whitening",
-        linear_transform=diagonal_white(2).to_whitening_linear(),
+        linear_transform=diagonal_white(2),
     )
     shifted_space = ParameterSpace.build(
         theta_ref_mapping=theta_ref,
         prior_bijector=bijector,
         transform="whitening",
-        linear_transform=fixed_hyperparameters(
-            2, {"center": [0.3, -0.2]}
-        ).to_whitening_linear(),
+        linear_transform=fixed_hyperparameters(2, {"center": [0.3, -0.2]}),
     )
 
     delta = np.array([0.2, -0.1], dtype=float)

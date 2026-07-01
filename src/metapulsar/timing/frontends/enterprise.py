@@ -30,6 +30,7 @@ import numpy as np
 
 from metapulsar.timing.bijectors import PriorBijector
 from metapulsar.timing.partition import PartitionResult, resolve_partition
+from metapulsar.timing.space import default_coord_for_transform
 
 
 def _resolve_partition(host, partition_spec) -> PartitionResult:
@@ -44,13 +45,9 @@ def _resolve_partition(host, partition_spec) -> PartitionResult:
 
 
 def _coord_from_transform(transform: str) -> str:
-    if transform == "none":
-        return "delta"
     if transform == "standardized":
         return "standardized"
-    if transform == "whitening":
-        return "x"
-    raise ValueError(f"Unsupported transform: {transform}")
+    return default_coord_for_transform(transform)
 
 
 def _get_backend(host, backend_name: str, backend_kwargs: dict | None = None):

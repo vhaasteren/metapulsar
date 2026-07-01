@@ -161,6 +161,29 @@ def test_record_physical_explicit_coord_handles_standardized_scalar_params(
     np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
 
 
+def test_record_physical_implicit_coord_handles_standardized_contribute_output(
+    host, monkeypatch
+):
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        transform="standardized",
+        analytically_marginalize=["F0"],
+        name="timing",
+    )
+    calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.2]))
+    params = ntm.contribute_timing(host, {})
+
+    ntm.record_physical(host, params, scope="timing")
+
+    # contribute_timing injects backend-facing delta keys; implicit standardized
+    # record_physical should interpret those as delta, not as standardized x.
+    expected_theta = ntm.space(host).theta_from_delta(
+        np.array([params[f"{host.name}_timing_F1"]], dtype=float)
+    )
+    assert calls["deterministic"][0][0] == f"{host.name}_timing_F1_theta"
+    np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
+
+
 def test_record_physical_invalid_coord_raises(host):
     ntm = NonLinearTimingModel(
         backend="jug",
