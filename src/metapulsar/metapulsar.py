@@ -598,22 +598,77 @@ class MetaPulsar:
         # Set pulsar sky position
         self._pos = ref_psr._pos
 
+    def _parfile_content_for_pta(self, pta_name: str) -> str:
+        """Return canonical parfile content for one PTA.
+
+        Priority:
+        1. Host-retained session par file (exact runtime input, possibly TRACK-modified)
+        2. In-memory PINT model as_parfile()
+        3. libstempo savepar() dump
+        """
+        session = getattr(self, "_session_files", {}).get(pta_name)
+        if session is not None and session.par_path.is_file():
+            return session.par_path.read_text(encoding="utf-8")
+
+        source = self._pulsars.get(pta_name)
+        if isinstance(source, tuple) and len(source) == 2:
+            model = source[0]
+            if isinstance(model, TimingModel):
+                return model.as_parfile()
+        if source is not None:
+            # Test doubles and legacy callers may surface dict-like par metadata
+            # via ``pulsar.parfile``; normalize that into valid parfile text.
+            parfile_attr = getattr(source, "parfile", None)
+            if isinstance(parfile_attr, dict):
+                from .pint_helpers import dict_to_parfile_string
+
+                return dict_to_parfile_string(parfile_attr, format="pint")
+            if isinstance(parfile_attr, str):
+                if "\n" in parfile_attr or parfile_attr.lstrip().startswith("PSR"):
+                    return parfile_attr
+                par_path = Path(parfile_attr)
+                if par_path.is_file():
+                    return par_path.read_text(encoding="utf-8")
+            return self._get_libstempo_parfile_content(source)
+
+        raise KeyError(f"No PTA source available for {pta_name!r}")
+
     def _get_parfile_data(self, pulsars):
-        """Extract parfile data from pulsar objects."""
+        """Extract per-PTA parfile dictionaries for reference-theta lookup."""
+        from .pint_helpers import create_pint_model
+
         parfile_dicts = {}
         for pta_name, pulsar in pulsars.items():
             try:
                 if isinstance(pulsar, tuple) and len(pulsar) == 2:
-                    # PINT tuple (model, toas) - extract from model
-                    model, toas = pulsar
+                    # PINT tuple (model, toas) - preserve direct metadata extraction.
+                    model, _ = pulsar
                     parfile_dicts[pta_name] = model.get_params_dict()
+                    continue
+
+                par_attr = getattr(pulsar, "parfile", None)
+                if isinstance(par_attr, dict):
+                    # Test doubles and legacy paths may expose dict-like metadata.
+                    parfile_dicts[pta_name] = par_attr
+                    continue
+
+                if isinstance(par_attr, str):
+                    if "\n" in par_attr or par_attr.lstrip().startswith("PSR"):
+                        par_content = par_attr
+                    else:
+                        par_path = Path(par_attr)
+                        if par_path.is_file():
+                            par_content = par_path.read_text(encoding="utf-8")
+                        else:
+                            par_content = par_attr
                 else:
-                    # Libstempo object - extract from parfile
-                    parfile_dicts[pta_name] = pulsar.parfile
+                    par_content = self._get_libstempo_parfile_content(pulsar)
+
+                parfile_dicts[pta_name] = create_pint_model(
+                    par_content
+                ).get_params_dict()
             except Exception as e:
-                self.logger.error(
-                    f"Failed to extract parfile data from {pta_name}: {e}"
-                )
+                logger.error(f"Failed to extract parfile data from {pta_name}: {e}")
                 parfile_dicts[pta_name] = {}
         return parfile_dicts
 
@@ -691,14 +746,12 @@ class MetaPulsar:
         self, pta_name: str, session_fitpars: tuple[str, ...]
     ) -> dict[str, str]:
         """Build reference-theta exact mapping for one session using parfile metadata."""
-        from .pint_helpers import resolve_parameter_alias
+        from .pint_helpers import create_pint_model, resolve_parameter_alias
 
         par_source = self._parfile_dicts.get(pta_name, {})
         pint_model = None
         if not isinstance(par_source, dict):
-            from .pint_helpers import create_pint_model
-
-            pint_model = create_pint_model(par_source)
+            pint_model = create_pint_model(self._parfile_content_for_pta(pta_name))
             par_source = {}
 
         exact: dict[str, str] = {}
@@ -737,18 +790,13 @@ class MetaPulsar:
             return self._pint_model_cache
 
         ref_pta = self._reference_pta_name()
-        source = self._pulsars.get(ref_pta)
-        if isinstance(source, tuple) and len(source) == 2:
-            model = source[0]
-            if isinstance(model, TimingModel):
-                self._pint_model_cache = model
-                return model
-
-        # Fallback: reconstruct from reference parfile metadata.
         from .pint_helpers import create_pint_model
 
-        par_source = self._parfile_dicts.get(ref_pta)
-        self._pint_model_cache = create_pint_model(par_source)
+        # Always build from retained session par content so the reference model
+        # matches runtime inputs (including any TRACK-modified session par file).
+        self._pint_model_cache = create_pint_model(
+            self._parfile_content_for_pta(ref_pta)
+        )
         return self._pint_model_cache
 
     def has_timing_backend(self, name: str, *, linearized: bool = False) -> bool:
