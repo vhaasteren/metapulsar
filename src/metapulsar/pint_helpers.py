@@ -94,6 +94,16 @@ def resolve_parameter_alias(param_name: str) -> str:
         return param_name
 
 
+def pint_parameter_name(param_name: str) -> str | None:
+    """Return the canonical PINT parameter name when ``param_name`` is recognized."""
+    lookup = "EDOT" if param_name == "ECCDOT" else param_name
+    try:
+        canonical, _ = _get_all_components().alias_to_pint_param(lookup)
+        return canonical
+    except Exception:
+        return None
+
+
 def get_aliases_for_parameter(canonical_param: str) -> List[str]:
     """Get all aliases for a canonical parameter name.
 

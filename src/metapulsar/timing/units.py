@@ -2,31 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import astropy.units as u
 import numpy as np
 
-from metapulsar.pint_helpers import resolve_parameter_alias
+from metapulsar.pint_helpers import (
+    get_aliases_for_parameter,
+    pint_parameter_name,
+    resolve_parameter_alias,
+)
 
-
-_RAD_PER_DEG = np.pi / 180.0
-_RAD_PER_HOUR = np.pi / 12.0
-_HOURANGLE_PARAMS = {"RAJ", "LAMBDA", "ELONG"}
-_DEGREE_PARAMS = {"DECJ", "BETA", "ELAT"}
-_IDENTITY_DISPLAY_PARAMS = {"T0", "TASC"}
+# Physical domains for prior clipping (not unit metadata).
 _NON_NEGATIVE = {"PB", "FB0", "A1", "M2", "MTOT", "MP", "H3", "PX", "PBDOT"}
 _UNIT_INTERVAL = {"ECC", "E", "SINI", "STIGMA"}
 _KIN_INTERVAL_DEG = (0.0, 180.0)
-_KNOWN_UNIT_KEYS = (
-    _HOURANGLE_PARAMS
-    | _DEGREE_PARAMS
-    | _IDENTITY_DISPLAY_PARAMS
-    | _NON_NEGATIVE
-    | _UNIT_INTERVAL
-    | {"KIN"}
-)
 
 
-def _normalize_name(name: str) -> str:
-    """Normalize parameter names for unit lookups."""
+def _qualified_name_candidates(name: str) -> list[str]:
     text = str(name)
     parts = text.split("_")
     candidates = [text]
@@ -39,62 +32,106 @@ def _normalize_name(name: str) -> str:
         for start in range(len(parts)):
             for stop in range(start + 1, len(parts) + 1):
                 candidates.append("_".join(parts[start:stop]))
+    return candidates
 
+
+def normalize_param_name(name: str) -> str:
+    """Normalize qualified fit-parameter names to a canonical timing token."""
     seen: set[str] = set()
-    for candidate in candidates:
-        key = resolve_parameter_alias(candidate).upper()
+    for candidate in _qualified_name_candidates(name):
+        resolved = resolve_parameter_alias(candidate)
+        key = resolved.upper()
         if key in seen:
             continue
         seen.add(key)
-        if key in _KNOWN_UNIT_KEYS:
-            return key
-    return resolve_parameter_alias(text).upper()
+        canonical = pint_parameter_name(resolved)
+        if canonical is not None:
+            return canonical.upper()
+    return resolve_parameter_alias(name).upper()
 
 
-def to_native(name: str, display_value):
-    """Convert display-unit values to native timing units."""
-    key = _normalize_name(name)
-    value = np.asarray(display_value)
-    if key in _HOURANGLE_PARAMS:
-        return value * _RAD_PER_HOUR
-    if key in _DEGREE_PARAMS:
-        return value * _RAD_PER_DEG
-    if key in _IDENTITY_DISPLAY_PARAMS:
-        # Keep native/storage convention in MJD days.
-        return value
-    return value
+def _lookup_pint_param(pint_model: Any | None, name: str):
+    if pint_model is None:
+        return None
+    canonical = normalize_param_name(name)
+    candidates: list[str] = []
+    for key in (name, canonical, resolve_parameter_alias(name)):
+        if key not in candidates:
+            candidates.append(key)
+    for alias in get_aliases_for_parameter(canonical):
+        if alias not in candidates:
+            candidates.append(alias)
+    for key in candidates:
+        if hasattr(pint_model, key):
+            return getattr(pint_model, key)
+    return None
 
 
-def to_display(name: str, native_value):
-    """Convert native timing-unit values to display units."""
-    key = _normalize_name(name)
-    value = np.asarray(native_value)
-    if key in _HOURANGLE_PARAMS:
-        return value / _RAD_PER_HOUR
-    if key in _DEGREE_PARAMS:
-        return value / _RAD_PER_DEG
-    if key in _IDENTITY_DISPLAY_PARAMS:
-        return value
-    return value
+def _coerce_unit(units: Any) -> u.Unit | None:
+    if units is None:
+        return None
+    if units == "":
+        return None
+    try:
+        unit = u.Unit(units)
+    except (TypeError, ValueError):
+        return None
+    if unit == u.dimensionless_unscaled:
+        return None
+    return unit
 
 
-def display_unit(name: str) -> str:
-    """Human-readable display unit label."""
-    key = _normalize_name(name)
-    if key in _HOURANGLE_PARAMS:
-        return "hourangle"
-    if key in _DEGREE_PARAMS:
+def lookup_pint_param(pint_model: Any | None, name: str):
+    """Return the PINT parameter object for a fit name, if available."""
+    return _lookup_pint_param(pint_model, name)
+
+
+def storage_unit(name: str, pint_model: Any | None = None) -> u.Unit | None:
+    """Return the timing-engine storage unit for a fit parameter from PINT."""
+    param = _lookup_pint_param(pint_model, name)
+    if param is None:
+        return None
+    return _coerce_unit(getattr(param, "units", None))
+
+
+def _unit_label(unit: u.Unit | None) -> str:
+    if unit is None:
+        return "native"
+    if unit == u.deg:
         return "deg"
-    if key in _IDENTITY_DISPLAY_PARAMS:
+    if unit == u.hourangle:
+        return "hourangle"
+    if unit == u.day:
         return "MJD"
-    return "native"
+    if unit.is_equivalent(u.deg):
+        return "deg"
+    if unit.is_equivalent(u.hourangle):
+        return "hourangle"
+    if unit.is_equivalent(u.day):
+        return "MJD"
+    return unit.to_string()
 
 
-# Hard physical domains in native units. Bounds here are interpreted in this
-# module's native convention (e.g. KIN in degrees).
+def display_unit(name: str, pint_model: Any | None = None) -> str:
+    """Human-readable display unit label."""
+    return _unit_label(storage_unit(name, pint_model))
+
+
+def to_native(name: str, display_value, pint_model: Any | None = None):
+    """Convert display-unit magnitudes to timing-engine storage units."""
+    _ = storage_unit(name, pint_model)
+    return np.asarray(display_value)
+
+
+def to_display(name: str, native_value, pint_model: Any | None = None):
+    """Convert timing-engine storage units to display-unit magnitudes."""
+    _ = storage_unit(name, pint_model)
+    return np.asarray(native_value)
+
+
 def native_physical_bounds(name: str) -> tuple[float | None, float | None]:
-    """Return ``(lower, upper)`` native physical bounds, ``None`` where unbounded."""
-    key = _normalize_name(name)
+    """Return ``(lower, upper)`` physical bounds in storage units, ``None`` if unbounded."""
+    key = normalize_param_name(name)
     if key == "KIN":
         return _KIN_INTERVAL_DEG
     if key in _UNIT_INTERVAL:

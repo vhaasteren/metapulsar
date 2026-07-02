@@ -6,7 +6,7 @@ from collections import namedtuple
 from decimal import Decimal, localcontext
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -41,6 +41,7 @@ class ParameterSpace:
         linear: WhiteningLinear,
         *,
         transform: str = "standardized",
+        pint_model: Any | None = None,
     ):
         if transform not in {"none", "standardized", "whitening"}:
             raise ValueError(f"Unknown transform mode: {transform}")
@@ -51,6 +52,7 @@ class ParameterSpace:
         self.prior_bijector = prior_bijector
         self.linear = linear
         self.transform = transform
+        self.pint_model = pint_model
         self.ndim = len(names)
         if self.linear.C.shape != (self.ndim, self.ndim):
             raise ValueError("linear transform dimension mismatch")
@@ -63,6 +65,7 @@ class ParameterSpace:
         *,
         transform: str = "standardized",
         linear_transform: WhiteningLinear | None = None,
+        pint_model: Any | None = None,
     ) -> "ParameterSpace":
         if all(isinstance(v, str) for v in theta_ref_mapping.values()):
             exact = ExactNativeRef.from_mapping(theta_ref_mapping)  # type: ignore[arg-type]
@@ -83,6 +86,7 @@ class ParameterSpace:
             prior_bijector=prior_bijector,
             linear=linear_transform,
             transform=transform,
+            pint_model=pint_model,
         )
 
     def z_from_x(self, x, xp):
@@ -202,7 +206,10 @@ class ParameterSpace:
             return {name: theta[:, i] for i, name in enumerate(self.names)}
         if units == "display":
             return {
-                name: np.asarray(to_display(name, theta[:, i]), dtype=float)
+                name: np.asarray(
+                    to_display(name, theta[:, i], pint_model=self.pint_model),
+                    dtype=float,
+                )
                 for i, name in enumerate(self.names)
             }
         raise ValueError(f"Unknown units mode: {units}")

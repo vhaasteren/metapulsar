@@ -13,7 +13,7 @@ from .bijectors import AxisPrior, WhiteningLinear
 from .partition import PartitionResult, resolve_partition
 from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
 from .space import ParameterSpace, default_coord_for_transform
-from .units import native_physical_bounds, to_native
+from .units import lookup_pint_param, native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 
 _BACKENDS = {"jug", "pint", "tempo2"}
@@ -215,9 +215,9 @@ class NonLinearTimingModel:
         if pint_model is None:
             return out
         for name in names:
-            if not hasattr(pint_model, name):
+            param = lookup_pint_param(pint_model, name)
+            if param is None:
                 continue
-            param = getattr(pint_model, name)
             unc = getattr(param, "uncertainty_value", None)
             if unc is None:
                 continue
@@ -226,7 +226,7 @@ class NonLinearTimingModel:
                 continue
             # ``uncertainty_value`` is a magnitude in the parameter's display
             # unit; the same linear scaling maps it to native delta units.
-            out[name] = float(np.abs(to_native(name, unc)))
+            out[name] = float(np.abs(to_native(name, unc, pint_model=pint_model)))
         return out
 
     def _fill_wls_cheat_priors(
@@ -367,6 +367,7 @@ class NonLinearTimingModel:
             prior_bijector=prior_bijector,
             transform=self.transform,
             linear_transform=linear,
+            pint_model=host.pint_model(),
         )
         coord = default_coord_for_transform(self.transform)
         resolved = ResolvedTiming(
