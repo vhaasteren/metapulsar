@@ -50,6 +50,7 @@ class JugTimingBackend:
         compatibility: str = "auto",
         param_mapping: Mapping[str, str] | None = None,
         subtract_tzr: bool = True,
+        design_matrix_method: str = "analytic",
     ) -> "JugTimingBackend":
         """Build a native JUG backend from an already-created JUG session."""
         from .jug_jax_state import export_jax_timing_state
@@ -90,6 +91,7 @@ class JugTimingBackend:
             compatibility=compatibility,
             param_mapping=mapping,
             isort=None,
+            design_matrix_method=design_matrix_method,
         )
         backend = cls(
             state=state,

@@ -841,6 +841,7 @@ class MetaPulsar:
         missing_param_policy: str = "linear_fallback",
         jug_compatibility: str = "auto",
         linearized: bool = False,
+        design_matrix_method: str = "analytic",
     ):
         """Return composite TimingBackend in canonical host row order."""
         if name not in {"jug", "pint", "tempo2"}:
@@ -855,6 +856,7 @@ class MetaPulsar:
             missing_param_policy,
             jug_compatibility,
             linearized,
+            design_matrix_method,
             self.cache_token(),
         )
         if cache_key in self._timing_backend_cache:
@@ -938,6 +940,7 @@ class MetaPulsar:
                     linear_model=linear_model,
                     compatibility=compatibility,
                     param_mapping=param_mapping,
+                    design_matrix_method=design_matrix_method,
                 )
 
             sessions.append(

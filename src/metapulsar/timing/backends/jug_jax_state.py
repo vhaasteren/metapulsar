@@ -385,6 +385,7 @@ def export_jax_timing_state(
     param_mapping: Mapping[str, str] | None = None,
     isort: np.ndarray | None = None,
     phase_mean_mode: str | None = None,
+    design_matrix_method: str = "analytic",
 ) -> JaxTimingState:
     """Export a frozen JAX timing state from a populated JUG ``TimingSession``."""
     fit_params = tuple(str(name) for name in fit_params)
@@ -411,6 +412,10 @@ def export_jax_timing_state(
         "dt_sec": cached["dt_sec"],
         "dt_sec_ld": cached.get("dt_sec_ld"),
         "tdb_mjd": cached["tdb_mjd"],
+        "model_mjd": cached.get("model_mjd"),
+        "bbat_mjd": cached.get("bbat_mjd"),
+        "engine_conventions": cached.get("engine_conventions"),
+        "diagnostic_conventions": cached.get("diagnostic_conventions"),
         "freq_bary_mhz": cached["freq_bary_mhz"],
         "toas_mjd": toas_mjd,
         "errors_us": errors_us,
@@ -418,6 +423,8 @@ def export_jax_timing_state(
         "roemer_shapiro_sec": cached.get("roemer_shapiro_sec"),
         "prebinary_delay_sec": cached.get("prebinary_delay_sec"),
         "ssb_obs_pos_ls": cached.get("ssb_obs_pos_ls"),
+        "earth_ssb_ls": cached.get("earth_ssb_ls"),
+        "observatory_earth_ls": cached.get("observatory_earth_ls"),
         "sw_geometry_pc": cached.get("sw_geometry_pc"),
         "jump_phase": cached.get("jump_phase"),
         "tzr_phase": cached.get("tzr_phase"),
@@ -431,6 +438,7 @@ def export_jax_timing_state(
         session.params,
         jug_fit_params,
         compatibility=compatibility,
+        design_matrix_method=design_matrix_method,
     )
 
     ref_params = _normalize_ref_params(session.params)
@@ -476,15 +484,13 @@ def export_jax_timing_state(
         design_matrix[:, col] = _fit_unit_column_to_native_delta(
             name, design_matrix[:, col]
         )
-    # Match the residual convention: the host ``_compute_full_model_residuals``
-    # always removes the *weighted* prefit mean (``compute_phase_residuals`` with
-    # its default ``mean_mode="weighted"``), which is equivalent to the timing
-    # offset/phase parameter being analytically marginalized in the GLS likelihood. Centering
-    # each column the same way makes ``design_matrix @ delta`` tangent to the
-    # mean-subtracted nonlinear residual delta. Done once here, in setup
-    # (pre-isort) row order so the weights line up with the residual computation.
-    weights = np.asarray(setup.weights, dtype=np.float64)
-    col_means = (weights @ design_matrix) / weights.sum()
+    # Match the residual convention used by JUG's phase residuals.  Tempo2 mode
+    # removes the unweighted phase mean; PINT mode removes the weighted mean.
+    if phase_mean_mode == "unweighted":
+        col_means = np.mean(design_matrix, axis=0)
+    else:
+        weights = np.asarray(setup.weights, dtype=np.float64)
+        col_means = (weights @ design_matrix) / weights.sum()
     design_matrix = design_matrix - col_means
     if isort is not None:
         design_matrix = design_matrix[np.asarray(isort, dtype=int), :]
