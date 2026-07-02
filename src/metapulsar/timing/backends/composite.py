@@ -184,6 +184,42 @@ class CompositeTimingBackend:
                     ]
         return out
 
+    def linearized_design_matrix(self, params: Any | None = None) -> np.ndarray:
+        """Assemble each session's selected linearized residual basis."""
+        out = np.zeros((self._nrows, len(self.fitpars)), dtype=float)
+        for session in self._sessions:
+            matrix_fn = getattr(
+                session.backend,
+                "linearized_design_matrix",
+                session.backend.design_matrix,
+            )
+            block = np.asarray(matrix_fn(params=params), dtype=float)
+            rows = np.asarray(session.row_indices, dtype=int)
+            for local_j, name in enumerate(session.backend.fitpars):
+                if name not in self._global_index:
+                    if self._missing_param_policy == "strict":
+                        raise ValueError(
+                            f"Session '{session.name}' has unmapped fitpar '{name}'"
+                        )
+                    continue
+                out[rows, self._global_index[name]] = block[:, local_j]
+            if session.linear_fallback_fitpars:
+                if self._missing_param_policy == "strict":
+                    raise ValueError(
+                        f"Session '{session.name}' requires linear fallback for "
+                        f"{sorted(session.linear_fallback_fitpars)}"
+                    )
+                if self._host_design is None:
+                    raise ValueError(
+                        f"Session '{session.name}' requires linear fallback but no "
+                        "host design matrix was provided"
+                    )
+                for name in session.linear_fallback_fitpars:
+                    out[rows, self._global_index[name]] = self._host_design[
+                        rows, self._global_index[name]
+                    ]
+        return out
+
 
 class CompositeJaxTimingBackend(CompositeTimingBackend):
     """Composite backend with JAX-capable path and precision-critical union."""

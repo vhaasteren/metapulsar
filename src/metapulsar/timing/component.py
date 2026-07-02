@@ -18,6 +18,28 @@ from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 
 _BACKENDS = {"jug", "pint", "tempo2"}
 _TRANSFORMS = {"none", "standardized", "whitening"}
+_DESIGN_MATRIX_METHODS = {"analytic", "autodiff"}
+
+
+def _normalize_design_matrix_method(method: str) -> str:
+    normalized = str(method or "analytic").lower()
+    if normalized not in _DESIGN_MATRIX_METHODS:
+        raise ValueError(
+            "design_matrix_method must be 'analytic' or 'autodiff'; " f"got {method!r}"
+        )
+    return normalized
+
+
+def _timing_design_matrix(host, backend, *, method: str) -> np.ndarray:
+    if method == "autodiff":
+        matrix_fn = getattr(backend, "linearized_design_matrix", None)
+        if matrix_fn is None:
+            raise ValueError(
+                "design_matrix_method='autodiff' requires a backend that exposes "
+                "linearized_design_matrix()."
+            )
+        return np.asarray(matrix_fn(), dtype=float)
+    return np.asarray(host.Mmat, dtype=float)
 
 
 def _stable_json(value: object) -> str:
@@ -35,6 +57,7 @@ class ResolvedTiming:
     coord: str
     site_name: str
     delay_keys: tuple[str, ...]
+    design_matrix: np.ndarray
 
 
 class NonLinearTimingModel:
@@ -49,6 +72,7 @@ class NonLinearTimingModel:
         *,
         backend: str = "jug",
         jug_compatibility: str = "auto",
+        design_matrix_method: str = "analytic",
         transform: str = "whitening",
         analytically_marginalize: str | Sequence[str] | None = "default",
         prior_policy: PriorPolicy = "fallback",
@@ -64,6 +88,9 @@ class NonLinearTimingModel:
             raise ValueError("cheat_prior_scale must be positive")
         self.backend = backend
         self.jug_compatibility = jug_compatibility
+        self.design_matrix_method = _normalize_design_matrix_method(
+            design_matrix_method
+        )
         self.transform = transform
         self.analytically_marginalize = analytically_marginalize
         self.prior_policy = validate_prior_policy(prior_policy)
@@ -113,6 +140,7 @@ class NonLinearTimingModel:
         other = NonLinearTimingModel(
             backend=backend,
             jug_compatibility=self.jug_compatibility,
+            design_matrix_method=self.design_matrix_method,
             transform=self.transform,
             analytically_marginalize=self.analytically_marginalize,
             prior_policy=self.prior_policy,
@@ -129,6 +157,9 @@ class NonLinearTimingModel:
             "jug_compatibility": (
                 self.jug_compatibility if self.backend == "jug" else None
             ),
+            "design_matrix_method": (
+                self.design_matrix_method if self.backend == "jug" else None
+            ),
             "transform": self.transform,
             "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
@@ -144,10 +175,11 @@ class NonLinearTimingModel:
     def _backend_for_host(self, host):
         if self.backend != "jug":
             return host.timing_backend(self.backend)
-        return host.timing_backend(
-            self.backend,
-            jug_compatibility=self.jug_compatibility,
-        )
+        kwargs = {}
+        if self.backend == "jug":
+            kwargs["jug_compatibility"] = self.jug_compatibility
+            kwargs["design_matrix_method"] = self.design_matrix_method
+        return host.timing_backend(self.backend, **kwargs)
 
     def _partition(self, host) -> PartitionResult:
         return resolve_partition(
@@ -182,7 +214,12 @@ class NonLinearTimingModel:
         }
 
     def _build_prior_block(
-        self, *, host, backend, partition: PartitionResult
+        self,
+        *,
+        host,
+        backend,
+        partition: PartitionResult,
+        design_matrix: np.ndarray,
     ) -> PriorBlock:
         ref_exact = backend.reference_theta_exact()
         sampled_refs = {
@@ -206,6 +243,7 @@ class NonLinearTimingModel:
             partition=partition,
             block=block,
             theta_ref_native=theta_ref_native,
+            design_matrix=design_matrix,
         )
 
     def _parfile_cheat_stds(self, host, names) -> dict[str, float]:
@@ -236,12 +274,18 @@ class NonLinearTimingModel:
         partition: PartitionResult,
         block: PriorBlock,
         theta_ref_native: dict[str, float] | None = None,
+        design_matrix: np.ndarray | None = None,
     ) -> PriorBlock:
         if not partition.sampled or "cheat_wls" not in block.sources.values():
             return block
         theta_ref_native = theta_ref_native or {}
         variance = np.asarray(host.toaerrs, dtype=float) ** 2
-        wls = schur_delta_wls(host=host, partition=partition, variance=variance)
+        wls = schur_delta_wls(
+            host=host,
+            partition=partition,
+            variance=variance,
+            design_matrix=design_matrix,
+        )
         wls_stds = np.sqrt(np.diag(wls.covariance))
         parfile_stds = self._parfile_cheat_stds(host, block.names)
         scale = self.cheat_prior_scale
@@ -278,7 +322,14 @@ class NonLinearTimingModel:
             names=block.names, priors=tuple(priors), sources=block.sources
         )
 
-    def _linear_transform(self, *, host, partition, prior_bijector) -> WhiteningLinear:
+    def _linear_transform(
+        self,
+        *,
+        host,
+        partition,
+        prior_bijector,
+        design_matrix: np.ndarray,
+    ) -> WhiteningLinear:
         ndim = len(partition.sampled)
         if self.transform == "none":
             return WhiteningLinear.identity(ndim)
@@ -290,6 +341,7 @@ class NonLinearTimingModel:
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
+                design_matrix=design_matrix,
             )
 
         cfg = dict(cfg)
@@ -300,6 +352,7 @@ class NonLinearTimingModel:
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
+                design_matrix=design_matrix,
                 **cfg,
             )
         if builder == "fixed_hyperparameters":
@@ -308,6 +361,7 @@ class NonLinearTimingModel:
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
+                design_matrix=design_matrix,
                 **cfg,
             )
         raise ValueError(f"Unsupported whitening builder: {builder}")
@@ -347,8 +401,16 @@ class NonLinearTimingModel:
             return self._resolved_cache[key]
 
         partition = self._partition(host)
+        design_matrix = _timing_design_matrix(
+            host,
+            backend,
+            method=self.design_matrix_method if self.backend == "jug" else "analytic",
+        )
         prior_block = self._build_prior_block(
-            host=host, backend=backend, partition=partition
+            host=host,
+            backend=backend,
+            partition=partition,
+            design_matrix=design_matrix,
         )
         prior_bijector = prior_block.to_bijector(
             precision_critical_fitpars=getattr(
@@ -359,6 +421,7 @@ class NonLinearTimingModel:
             host=host,
             partition=partition,
             prior_bijector=prior_bijector,
+            design_matrix=design_matrix,
         )
         ref_exact = backend.reference_theta_exact()
         sampled_ref_exact = {name: ref_exact[name] for name in partition.sampled}
@@ -380,6 +443,7 @@ class NonLinearTimingModel:
             delay_keys=tuple(
                 f"{host.name}_{self.name}_{name}" for name in partition.sampled
             ),
+            design_matrix=design_matrix,
         )
         self._resolved_cache[key] = resolved
         return resolved
@@ -406,13 +470,17 @@ class NonLinearTimingModel:
             backend=resolved.backend,
             partition=resolved.partition,
             name=self.name,
+            design_matrix=resolved.design_matrix,
         )
 
     def enterprise_signal(self):
         from .frontends.enterprise import enterprise_signal
 
         backend_kwargs = (
-            {"jug_compatibility": self.jug_compatibility}
+            {
+                "jug_compatibility": self.jug_compatibility,
+                "design_matrix_method": self.design_matrix_method,
+            }
             if self.backend == "jug"
             else {}
         )

@@ -139,6 +139,14 @@ class JugTimingBackend:
     def design_matrix(self, params: Any | None = None) -> np.ndarray:
         return np.asarray(self._model.design, dtype=float)
 
+    def linearized_design_matrix(self, params: Any | None = None) -> np.ndarray:
+        """Return JUG-owned linearized residual columns in backend fitpar order."""
+        design = np.asarray(self._model.design, dtype=float).copy()
+        jug_matrix = np.asarray(self._state.design_matrix, dtype=float)
+        for local_col, model_col in enumerate(self._jug_indices):
+            design[:, model_col] = jug_matrix[:, local_col]
+        return design
+
     def residual_delta_jax(self, delta_theta: Any) -> Any:
         import jax.numpy as jnp
 
@@ -218,6 +226,9 @@ class LinearizedJugTimingBackend(LinearTimingBackend):
         design = jnp.asarray(self.design_matrix(), dtype=jnp.asarray(delta_theta).dtype)
         delta = jnp.asarray(delta_theta)
         return design @ delta
+
+    def linearized_design_matrix(self, params: Any | None = None) -> np.ndarray:
+        return self.design_matrix(params=params)
 
     def precision_critical_fitpars(self) -> frozenset[str]:
         return self._precision_critical

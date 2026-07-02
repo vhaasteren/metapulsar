@@ -55,6 +55,22 @@ def _get_backend(host, backend_name: str, backend_kwargs: dict | None = None):
     return host.timing_backend(backend_name, **kwargs)
 
 
+def _selected_design_matrix(
+    host, backend_name: str, backend_kwargs: dict | None = None
+):
+    kwargs = {} if backend_kwargs is None else dict(backend_kwargs)
+    if kwargs.get("design_matrix_method") != "autodiff":
+        return np.asarray(host.Mmat, dtype=float)
+    backend = _get_backend(host, backend_name, kwargs)
+    matrix_fn = getattr(backend, "linearized_design_matrix", None)
+    if matrix_fn is None:
+        raise ValueError(
+            "design_matrix_method='autodiff' requires a backend that exposes "
+            "linearized_design_matrix()."
+        )
+    return np.asarray(matrix_fn(), dtype=float)
+
+
 def _axis_bijector(*, space, idx: int) -> PriorBijector:
     return PriorBijector(
         names=(space.names[idx],),
@@ -207,7 +223,13 @@ def _make_waveform(
     return waveform
 
 
-def _make_marginalizing_signal(*, partition_spec, name: str):
+def _make_marginalizing_signal(
+    *,
+    partition_spec,
+    name: str,
+    backend_name: str,
+    backend_kwargs: dict | None,
+):
     from enterprise.signals import gp_signals, signal_base
 
     class MarginalizingTimingModel(
@@ -220,6 +242,12 @@ def _make_marginalizing_signal(*, partition_spec, name: str):
         def __init__(self, psr):
             super().__init__(psr)
             partition = _resolve_partition(psr, partition_spec)
+            selected_matrix = _selected_design_matrix(
+                psr, backend_name=backend_name, backend_kwargs=backend_kwargs
+            )
+            self._basis = selected_matrix[
+                :, list(partition.idx_analytically_marginalized)
+            ]
             base = gp_signals.TimingModel(
                 name=f"{name}_timingmodel",
                 idx_exclude=partition.idx_sampled,
@@ -233,7 +261,7 @@ def _make_marginalizing_signal(*, partition_spec, name: str):
             self.basis_combine = getattr(self._inner, "basis_combine", False)
 
         def get_basis(self, params=None):
-            return self._inner.get_basis(params=params)
+            return self._basis
 
         def get_phi(self, params):
             return self._inner.get_phi(params)
@@ -310,5 +338,10 @@ def enterprise_signal(
         coord=coord,
     )
     delay_signal = deterministic_signals.Deterministic(waveform, name=name)
-    timing_model = _make_marginalizing_signal(partition_spec=partition_spec, name=name)
+    timing_model = _make_marginalizing_signal(
+        partition_spec=partition_spec,
+        name=name,
+        backend_name=backend_name,
+        backend_kwargs=backend_kwargs,
+    )
     return delay_signal + timing_model

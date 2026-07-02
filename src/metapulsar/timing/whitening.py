@@ -48,9 +48,14 @@ def schur_delta_wls(
     host,
     partition,
     variance: np.ndarray,
+    design_matrix: np.ndarray | None = None,
 ) -> DeltaWLS:
     """Return sampled-block Fisher, covariance, and WLS mean in delta units."""
-    mmat = np.asarray(host.Mmat, dtype=float)
+    mmat = (
+        np.asarray(design_matrix, dtype=float)
+        if design_matrix is not None
+        else np.asarray(host.Mmat, dtype=float)
+    )
     residuals = np.asarray(host.residuals, dtype=float)
     weights = 1.0 / np.asarray(variance, dtype=float)
 
@@ -137,6 +142,7 @@ def diagonal_white(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
+    design_matrix: np.ndarray | None = None,
 ) -> WhiteningLinear:
     """Default diagonal-white Fisher/WLS preconditioner."""
     if host is None or partition is None:
@@ -152,6 +158,7 @@ def diagonal_white(
         host=host,
         partition=partition,
         variance=variance,
+        design_matrix=design_matrix,
     )
     return _linear_transform_from_wls(
         wls,
@@ -178,6 +185,7 @@ def fixed_hyperparameters(
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
+    design_matrix: np.ndarray | None = None,
 ) -> WhiteningLinear:
     """Deterministic linear transform from fixed hyperparameter snapshot.
 
@@ -214,6 +222,7 @@ def fixed_hyperparameters(
         host=host,
         partition=partition,
         variance=variance,
+        design_matrix=design_matrix,
     )
     return _linear_transform_from_wls(
         wls,

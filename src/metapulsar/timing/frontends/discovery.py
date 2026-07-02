@@ -68,7 +68,7 @@ def _build_delay_callable(
 
 
 def discovery_signals(
-    *, host, space, backend, partition: PartitionResult, name: str
+    *, host, space, backend, partition: PartitionResult, name: str, design_matrix=None
 ) -> list:
     """Return Discovery-native timing signals: GP (optional) + nonlinear delay.
 
@@ -114,7 +114,12 @@ def discovery_signals(
     signals: list = []
     if partition.idx_analytically_marginalized:
         basis = np.asarray(
-            host.Mmat[:, list(partition.idx_analytically_marginalized)], dtype=float
+            (
+                np.asarray(host.Mmat, dtype=float)
+                if design_matrix is None
+                else np.asarray(design_matrix, dtype=float)
+            )[:, list(partition.idx_analytically_marginalized)],
+            dtype=float,
         )
         signals.append(
             discovery_signals.makegp_improper(

@@ -122,6 +122,14 @@ def _schur_fisher(host, *, analytically_marginalize, variance):
     return schur_delta_wls(host=host, partition=part, variance=variance).fisher
 
 
+def _autodiff_test_matrix(host):
+    design = np.asarray(host.Mmat, dtype=float).copy()
+    design[:, 0] *= 2.0
+    design[:, 1] *= 3.0
+    design[:, 2] *= 4.0
+    return design
+
+
 def _covariance_from_fisher(fisher: np.ndarray) -> np.ndarray:
     import scipy.linalg as sl
 
@@ -242,6 +250,37 @@ def test_whitening_builders_condition_fisher_to_unit_scale(host):
         )
 
 
+def test_autodiff_design_matrix_method_feeds_whitening(host):
+    autodiff_matrix = _autodiff_test_matrix(host)
+    host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        design_matrix_method="autodiff",
+        transform="whitening",
+        analytically_marginalize=["F0", "DM"],
+        name="timing",
+    )
+
+    resolved = ntm._resolve(host)
+    np.testing.assert_allclose(resolved.design_matrix, autodiff_matrix)
+
+    part = resolve_partition(host, analytically_marginalize=["F0", "DM"])
+    expected_fisher = schur_delta_wls(
+        host=host,
+        partition=part,
+        variance=np.asarray(host.toaerrs, dtype=float) ** 2,
+        design_matrix=autodiff_matrix,
+    ).fisher
+    fisher_z = _z_space_fisher(resolved.space, expected_fisher)
+    conditioned = resolved.space.linear.C.T @ fisher_z @ resolved.space.linear.C
+    np.testing.assert_allclose(
+        conditioned,
+        np.eye(len(resolved.space.names)),
+        rtol=1.0e-10,
+        atol=1.0e-10,
+    )
+
+
 def test_standardized_builder_uses_z_space_marginal_scales(host):
     ntm = NonLinearTimingModel(
         backend="jug",
@@ -294,6 +333,34 @@ def test_cheat_wls_prior_is_wide_uniform_box(host):
         half_widths, ntm.cheat_prior_scale * expected_stds, rtol=1e-6
     )
     np.testing.assert_allclose(centers, 0.0, atol=1e-12)
+
+
+def test_autodiff_design_matrix_method_feeds_cheat_prior_widths(host):
+    autodiff_matrix = _autodiff_test_matrix(host)
+    host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        design_matrix_method="autodiff",
+        transform="standardized",
+        analytically_marginalize=None,
+        name="timing",
+    )
+
+    block = ntm.priors(host)
+    part = resolve_partition(host, analytically_marginalize=None)
+    expected_fisher = schur_delta_wls(
+        host=host,
+        partition=part,
+        variance=np.asarray(host.toaerrs, dtype=float) ** 2,
+        design_matrix=autodiff_matrix,
+    ).fisher
+    expected_stds = np.sqrt(np.diag(_covariance_from_fisher(expected_fisher)))
+    half_widths = np.array(
+        [(prior.upper - prior.lower) / 2.0 for prior in block.priors], dtype=float
+    )
+    np.testing.assert_allclose(
+        half_widths, ntm.cheat_prior_scale * expected_stds, rtol=1e-6
+    )
 
 
 def test_cheat_prior_box_clipped_to_physical_bounds():
@@ -354,6 +421,33 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
     )
     with pytest.raises(ValueError, match="JAX-capable backend"):
         ntm_nonjax.discovery_signals(host)
+
+
+def test_autodiff_design_matrix_method_feeds_discovery_gp_basis(host, monkeypatch):
+    autodiff_matrix = _autodiff_test_matrix(host)
+    host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
+    captured = {}
+
+    def fake_makegp_improper(psr, basis, *, constant, name):
+        captured["basis"] = np.asarray(basis, dtype=float)
+        captured["constant"] = constant
+        captured["name"] = name
+        return "gp"
+
+    monkeypatch.setattr("discovery.signals.makegp_improper", fake_makegp_improper)
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        design_matrix_method="autodiff",
+        transform="standardized",
+        analytically_marginalize=["F0", "DM"],
+        name="timing",
+    )
+
+    signals = ntm.discovery_signals(host)
+
+    assert signals[0] == "gp"
+    np.testing.assert_allclose(captured["basis"], autodiff_matrix[:, [0, 2]])
+    assert not hasattr(host, "iisort")
 
 
 def test_all_analytically_marginalized_paths(host):
@@ -463,7 +557,27 @@ def test_enterprise_signal_forwards_jug_compatibility(host):
     )
     ent = ntm.enterprise_signal()
     _ = ent(host)
-    assert ("jug", {"jug_compatibility": "tempo2"}) in host.backend_calls
+    assert (
+        "jug",
+        {"jug_compatibility": "tempo2", "design_matrix_method": "analytic"},
+    ) in host.backend_calls
+
+
+def test_autodiff_design_matrix_method_feeds_enterprise_gp_basis(host):
+    autodiff_matrix = _autodiff_test_matrix(host)
+    host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
+    ntm = NonLinearTimingModel(
+        backend="jug",
+        design_matrix_method="autodiff",
+        transform="none",
+        analytically_marginalize=["F0", "DM"],
+        name="timing",
+    )
+
+    ent = ntm.enterprise_signal()
+    bound = ent(host)
+
+    np.testing.assert_allclose(bound.get_basis(), autodiff_matrix[:, [0, 2]])
 
 
 def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):

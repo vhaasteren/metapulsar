@@ -109,6 +109,29 @@ def test_factory_retains_exact_session_file_bytes(tmp_path):
     assert retained["timing_package"] == "pint"
 
 
+def test_factory_retains_included_tim_files(tmp_path):
+    chunk = tmp_path / "tims" / "chunk.tim"
+    chunk.parent.mkdir(parents=True)
+    chunk.write_text("FORMAT 1\n obs 1400.0 55000.0 1.0 site\n", encoding="utf-8")
+    main = tmp_path / "main.tim"
+    main.write_text("FORMAT 1\nINCLUDE tims/chunk.tim\n", encoding="utf-8")
+    par = tmp_path / "main.par"
+    par.write_text("F0 1\n", encoding="utf-8")
+
+    retained = MetaPulsarFactory()._retain_session_files(
+        pta_name="epta",
+        timing_package="tempo2",
+        par_path=par,
+        tim_path=main,
+        session_file_dir=tmp_path / "retained",
+    )
+
+    included = tmp_path / "retained" / "tims" / "chunk.tim"
+    assert included.is_file()
+    assert included.read_text(encoding="utf-8") == chunk.read_text(encoding="utf-8")
+    assert "INCLUDE tims/chunk.tim" in retained["tim_path"].read_text(encoding="utf-8")
+
+
 def test_jug_capability_requires_readable_session_files(monkeypatch, tmp_path):
     host = MetaPulsar.__new__(MetaPulsar)
     host._epulsars = {"pta": object()}

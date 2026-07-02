@@ -40,6 +40,47 @@ from .pint_helpers import (
     validate_pulse_number_mode,
 )
 
+
+def _collect_included_tim_rel_paths(tim_path: Path) -> frozenset[Path]:
+    """Return INCLUDE'd .tim paths relative to the root tim's parent directory."""
+    root = Path(tim_path).resolve()
+    root_dir = root.parent
+    seen: set[Path] = set()
+    included: set[Path] = set()
+
+    def walk(current: Path) -> None:
+        current = current.resolve()
+        if current in seen:
+            return
+        seen.add(current)
+        try:
+            lines = current.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return
+        for line in lines:
+            stripped = line.strip()
+            if (
+                not stripped
+                or stripped.startswith("#")
+                or stripped.upper().startswith("C ")
+            ):
+                continue
+            tokens = stripped.split()
+            if len(tokens) < 2 or tokens[0].upper() != "INCLUDE":
+                continue
+            inc_abs = (current.parent / tokens[1]).resolve()
+            if not inc_abs.is_file():
+                continue
+            try:
+                included.add(inc_abs.relative_to(root_dir))
+            except ValueError:
+                included.add(Path(tokens[1]))
+            walk(inc_abs)
+
+    walk(root)
+    return frozenset(included)
+
+
 # Default components for consistent combination strategy
 DEFAULT_COMBINE_COMPONENTS: List[str] = [
     "astrometry",
@@ -824,6 +865,11 @@ class MetaPulsarFactory:
         tim_dst = session_file_dir / f"{pta_safe}.tim"
         shutil.copy2(par_src, par_dst)
         shutil.copy2(tim_src, tim_dst)
+        for rel in _collect_included_tim_rel_paths(tim_src):
+            inc_src = (tim_src.parent / rel).resolve()
+            inc_dst = session_file_dir / rel
+            inc_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(inc_src, inc_dst)
         return {
             "par_path": par_dst,
             "tim_path": tim_dst,
