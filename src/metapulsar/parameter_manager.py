@@ -63,6 +63,7 @@ class ParameterManager:
         add_dm_derivatives: bool = True,
         output_dir: Path = None,
         pulsar_name: str = None,
+        exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
     ):
         """Initialize with file data and configuration.
 
@@ -72,12 +73,20 @@ class ParameterManager:
             add_dm_derivatives: Whether to add DM1, DM2 parameters
             output_dir: Directory for output files
             pulsar_name: Name of the pulsar (used for output filename generation)
+            exclude_from_consistent: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in combine_components.
+                Defaults to ("DM",) so each PTA keeps its own reference DM while
+                consistent dispersion still shares DM1/DM2. Pass an empty list to
+                merge all parameters in selected components.
         """
         self.file_data = file_data
         self.combine_components = combine_components
         self.add_dm_derivatives = add_dm_derivatives
         self.output_dir = output_dir
         self.pulsar_name = pulsar_name
+        self.exclude_from_consistent = self._normalize_excluded_consistent_parameters(
+            exclude_from_consistent
+        )
 
         # Use first dictionary key as reference (consistent with MetaPulsarFactory)
         self.reference_pta = next(iter(file_data.keys()))
@@ -104,6 +113,20 @@ class ParameterManager:
     def _clear_pint_models_cache(self):
         """Clear the PINT models cache."""
         self._pint_models_cache = None
+
+    def _normalize_excluded_consistent_parameters(
+        self, exclude_from_consistent: List[str] | tuple[str, ...]
+    ) -> set[str]:
+        """Return canonical PINT names excluded from consistent component merging."""
+        return {
+            resolve_parameter_alias(param).upper()
+            for param in tuple(exclude_from_consistent)
+        }
+
+    def _is_excluded_from_consistent(self, param_name: str) -> bool:
+        return (
+            resolve_parameter_alias(param_name).upper() in self.exclude_from_consistent
+        )
 
     # ===== MAIN PUBLIC METHODS =====
 
@@ -688,30 +711,31 @@ class ParameterManager:
         component_params: List[str],
     ) -> None:
         """Make parameters for a specific component consistent."""
-        # If no parameters to process, nothing to do
-        if not component_params:
+        consistent_params = [
+            param
+            for param in component_params
+            if not self._is_excluded_from_consistent(param)
+        ]
+
+        if not consistent_params:
             self.logger.debug(
-                f"No parameters found for component {component}, skipping"
+                f"No non-excluded parameters found for component {component}, skipping"
             )
             return
 
-        # Extract reference values
         reference_values = {}
-        for param in component_params:
+        for param in consistent_params:
             if param in reference_dict:
                 reference_values[param] = reference_dict[param]
 
-        # Apply to all PTAs
         for pta_name, parfile_dict in parfile_dicts.items():
             if pta_name == reference_pta:
-                continue  # Skip reference PTA
+                continue
 
-            # Remove ALL existing parameters for this component
-            for param in component_params:
+            for param in consistent_params:
                 if param in parfile_dict:
                     parfile_dict.pop(param)
 
-            # Add reference values
             for param, value in reference_values.items():
                 parfile_dict[param] = value
 
@@ -724,49 +748,40 @@ class ParameterManager:
     ) -> None:
         """Handle DM-specific special cases: DMX removal, DMEPOCH, DM1/DM2 derivatives."""
 
-        # Handle DM and DMEPOCH explicitly - always add to all PTAs
-        dm_value = reference_dict.get("DM")
-        if dm_value is None:
-            raise ValueError(
-                "DM parameter is missing from reference parfile. "
-                "DM parameter is required when add_dm_derivatives=True. "
-                "Please ensure the reference parfile contains a DM parameter."
-            )
-
-        # Parse DM parameter using PINT's Parameter class
-        reference_dm, dm_is_frozen = parse_parameter_using_pint("DM", dm_value)
-
-        if dm_is_frozen:
-            self.logger.warning(
-                f"DM parameter in reference parfile for {self.reference_pta} is not free. "
-                "Setting to free."
-            )
-
-        # Handle DMEPOCH explicitly - always add to all PTAs
         dmepoch_value = reference_dict.get("DMEPOCH", ["55000"])
         reference_dmepoch, _ = parse_parameter_using_pint("DMEPOCH", dmepoch_value)
         self.logger.debug(f"Reference DMEPOCH: {reference_dmepoch}")
 
-        # Process each PTA (including reference PTA)
         for pta_name, parfile_dict in parfile_dicts.items():
-            # Remove DMX parameters using pre-computed list
             dmx_params = dmx_params_map[pta_name]
             for dmx_param in dmx_params:
                 old_value = parfile_dict[dmx_param]
                 parfile_dict.pop(dmx_param)
                 self.logger.debug(f"PTA {pta_name}: Removed {dmx_param} = {old_value}")
 
-            # Set DM for ALL PTAs (so we ensure it's always being fit for)
-            parfile_dict["DM"] = [f"{reference_dm} 1"]  # 1 = free
-            self.logger.debug(f"PTA {pta_name}: Set DM = {reference_dm} (free)")
+            dm_value = parfile_dict.get("DM")
+            if dm_value is None:
+                raise ValueError(
+                    f"DM parameter is missing from parfile for PTA {pta_name}. "
+                    "DM is required for consistent dispersion cleanup because it "
+                    "is kept as that PTA's local reference DM."
+                )
 
-            # Set DMEPOCH for ALL PTAs (need it for DM1 and DM2)
-            parfile_dict["DMEPOCH"] = [f"{reference_dmepoch} 0"]  # 0 = frozen
+            local_dm, dm_is_frozen = parse_parameter_using_pint("DM", dm_value)
+            if dm_is_frozen:
+                self.logger.warning(
+                    f"DM parameter in parfile for PTA {pta_name} is not free. "
+                    "Setting to free."
+                )
+
+            parfile_dict["DM"] = [f"{local_dm} 1"]
+            self.logger.debug(f"PTA {pta_name}: Preserved local DM = {local_dm} (free)")
+
+            parfile_dict["DMEPOCH"] = [f"{reference_dmepoch} 0"]
             self.logger.debug(
                 f"PTA {pta_name}: Set DMEPOCH = {reference_dmepoch} (frozen)"
             )
 
-            # Handle DM derivatives based on add_dm_derivatives flag
             if add_dm_derivatives:
                 parfile_dict["DM1"] = ["0.0 1"]
                 parfile_dict["DM2"] = ["0.0 1"]
@@ -829,7 +844,11 @@ class ParameterManager:
 
             pint_models = self.pint_models  # Use cached models
             params = get_parameters_by_type_from_models(component_type, pint_models)
-            mergeable_params.extend(params)
+            mergeable_params.extend(
+                param
+                for param in params
+                if not self._is_excluded_from_consistent(param)
+            )
         return mergeable_params
 
     def _process_all_pta_parameters(
