@@ -104,6 +104,7 @@ class JugTimingBackend:
         )
         backend._jug_fitpars = tuple(jug_fitpars)
         backend._jug_indices = tuple(fitpars.index(name) for name in jug_fitpars)
+        backend.compatibility = str(getattr(state, "compatibility", compatibility))
         return backend
 
     def linear_fallback_fitpars(self) -> frozenset[str]:

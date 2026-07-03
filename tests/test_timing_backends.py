@@ -1,11 +1,13 @@
 """Slice-3 tests for per-session timing backends and validators."""
 
 import numpy as np
+import pytest
 
 from metapulsar.timing.backends.base import (
     LinearModel,
     validate_backend_shapes,
     validate_backend_zero_delta,
+    zero_delta_tolerance,
 )
 from metapulsar.timing.backends.jug import (
     JugTimingBackend,
@@ -158,3 +160,33 @@ def test_jug_linear_fallback_does_not_capture_spin_frequency_params():
     assert _should_use_linear_fallback("Offset")
     assert _should_use_linear_fallback("DMX_0001")
     assert _should_use_linear_fallback("JUMP1")
+
+
+class _OffsetZeroDeltaBackend:
+    backend_name = "jug"
+    fitpars = ("F0",)
+
+    def __init__(self, *, compatibility: str, offset_sec: float):
+        self.compatibility = compatibility
+        self._offset_sec = float(offset_sec)
+
+    def residual_delta(self, delta_theta):
+        return np.full(3, self._offset_sec, dtype=float)
+
+
+def test_zero_delta_tolerance_relaxed_for_jug_tempo2_only():
+    backend = _OffsetZeroDeltaBackend(compatibility="tempo2", offset_sec=2.7e-8)
+    assert zero_delta_tolerance(backend, 1e-9) == 1e-7
+    with pytest.warns(UserWarning, match="tempo2"):
+        validate_backend_zero_delta(backend, tol=1e-9)
+
+    strict = _OffsetZeroDeltaBackend(compatibility="pint", offset_sec=2.7e-8)
+    assert zero_delta_tolerance(strict, 1e-9) == 1e-9
+    with pytest.raises(ValueError, match="residual_delta\\(0\\)"):
+        validate_backend_zero_delta(strict, tol=1e-9)
+
+
+def test_zero_delta_tolerance_still_fails_large_jug_tempo2_offset():
+    backend = _OffsetZeroDeltaBackend(compatibility="tempo2", offset_sec=1e-3)
+    with pytest.raises(ValueError, match="residual_delta\\(0\\)"):
+        validate_backend_zero_delta(backend, tol=1e-9)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Mapping
@@ -9,6 +10,13 @@ from typing import Mapping
 import numpy as np
 
 from metapulsar.timing.protocols import EnterprisePulsarLike, TimingBackend
+
+# JUG(tempo2) G1: reference vs _update_param longdouble promotion is ~1e-8 s on
+# real IPTA data. See ref-packages/jug/TEMPO2_PARITY_GAPS.md (G1).
+_JUG_TEMPO2_ZERO_DELTA_TOL_SEC = 1e-7
+_JUG_TEMPO2_COMPAT_MODES = frozenset(
+    {"tempo2", "tempo2-compatible", "tempo2_compatible"}
+)
 
 
 def _as_1d_float(arr, *, name: str) -> np.ndarray:
@@ -38,12 +46,47 @@ def validate_enterprise_host(host: EnterprisePulsarLike) -> None:
         raise ValueError("Mmat column count must match fitpars length")
 
 
+def _is_jug_tempo2_backend(backend: TimingBackend) -> bool:
+    if getattr(backend, "backend_name", None) != "jug":
+        return False
+    mode = str(getattr(backend, "compatibility", "pint")).lower()
+    return mode in _JUG_TEMPO2_COMPAT_MODES
+
+
+def backend_uses_jug_tempo2_path(backend: TimingBackend) -> bool:
+    """Return whether any nested session uses JUG with tempo2 compatibility."""
+    if _is_jug_tempo2_backend(backend):
+        return True
+    sessions = getattr(backend, "_sessions", None)
+    if sessions is None:
+        return False
+    return any(backend_uses_jug_tempo2_path(session.backend) for session in sessions)
+
+
+def zero_delta_tolerance(backend: TimingBackend, requested: float) -> float:
+    """Return the residual_delta(0) tolerance for ``backend``."""
+    if backend_uses_jug_tempo2_path(backend):
+        return max(float(requested), _JUG_TEMPO2_ZERO_DELTA_TOL_SEC)
+    return float(requested)
+
+
 def validate_backend_zero_delta(backend: TimingBackend, tol: float = 1e-12) -> None:
     """Check residual_delta(0) = 0 invariant."""
+    effective_tol = zero_delta_tolerance(backend, tol)
     zero = np.zeros(len(backend.fitpars), dtype=float)
     residual = np.asarray(backend.residual_delta(zero), dtype=float)
-    if not np.allclose(residual, 0.0, atol=tol, rtol=0.0):
-        raise ValueError("residual_delta(0) must equal 0")
+    max_abs = float(np.max(np.abs(residual))) if residual.size else 0.0
+    if max_abs <= effective_tol:
+        if effective_tol > tol and max_abs > tol:
+            warnings.warn(
+                "JUG compatibility='tempo2' residual_delta(0) is within the relaxed "
+                f"MetaPulsar tolerance ({effective_tol:.1e} s, max|delta|={max_abs:.1e} s) "
+                "but not the strict check. Known reference-state gap (JUG "
+                "TEMPO2_PARITY_GAPS.md G1); nonlinear tempo2 parity is still experimental.",
+                stacklevel=2,
+            )
+        return
+    raise ValueError("residual_delta(0) must equal 0")
 
 
 def validate_backend_shapes(backend: TimingBackend) -> None:
@@ -65,7 +108,7 @@ def validate_backend_against_host(
     """Validate backend outputs against host canonical row and column ordering."""
     validate_enterprise_host(host)
     validate_backend_shapes(backend)
-    validate_backend_zero_delta(backend, tol=tol)
+    validate_backend_zero_delta(backend, tol=tol)  # may relax tol for JUG(tempo2)
     design = np.asarray(backend.design_matrix(), dtype=float)
     host_design = np.asarray(host.Mmat, dtype=float)
     nrows = len(host.toas)
