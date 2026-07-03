@@ -10,17 +10,17 @@ from metapulsar.timing.backends.base import (
     zero_delta_tolerance,
 )
 from metapulsar.timing.backends.jug import (
-    JugTimingBackend,
-    LinearizedJugTimingBackend,
-    _should_use_linear_fallback,
+    JugEngine,
+    LinearizedJugEngine,
+    _is_exact_linear_param,
 )
 from metapulsar.timing.backends.pint import (
-    PintTimingBackend,
-    LinearizedPintTimingBackend,
+    PintEngine,
+    LinearizedPintEngine,
 )
 from metapulsar.timing.backends.tempo2 import (
-    Tempo2TimingBackend,
-    LinearizedTempo2TimingBackend,
+    LibstempoEngine,
+    LinearizedLibstempoEngine,
 )
 
 
@@ -69,20 +69,20 @@ def _assert_linear_tangent(backend):
 
 
 def test_pint_backend_linear_contract():
-    backend = LinearizedPintTimingBackend.from_linear_model(_linear_model())
+    backend = LinearizedPintEngine.from_linear_model(_linear_model())
     _assert_linear_tangent(backend)
     assert backend.fitpars == ("F0", "F1")
     assert set(backend.reference_theta_exact()) == {"F0", "F1"}
 
 
 def test_tempo2_backend_linear_contract():
-    backend = LinearizedTempo2TimingBackend.from_linear_model(_linear_model())
+    backend = LinearizedLibstempoEngine.from_linear_model(_linear_model())
     _assert_linear_tangent(backend)
     assert backend.fitpars == ("F0", "F1")
 
 
 def test_jug_backend_jax_surface_and_precision_metadata():
-    backend = LinearizedJugTimingBackend.from_linear_model(
+    backend = LinearizedJugEngine.from_linear_model(
         _linear_model(),
         compatibility="tempo2",
         precision_critical=frozenset({"F0"}),
@@ -103,16 +103,16 @@ def test_jug_backend_jax_surface_and_precision_metadata():
 def test_native_backends_wrap_engines_with_host_metadata():
     model = _linear_model()
     backends = [
-        PintTimingBackend(engine=_FakeDeltaEngine(), linear_model=model),
-        Tempo2TimingBackend(engine=_FakeDeltaEngine(), linear_model=model),
-        JugTimingBackend(state=_FakeJaxState(), linear_model=model),
+        PintEngine(engine=_FakeDeltaEngine(), linear_model=model),
+        LibstempoEngine(engine=_FakeDeltaEngine(), linear_model=model),
+        JugEngine(state=_FakeJaxState(), linear_model=model),
     ]
     for backend in backends:
         _assert_linear_tangent(backend)
         assert backend.reference_theta_exact()["F0"] == "1234.567890123456789"
 
 
-def test_jug_backend_adds_linear_fallback_to_numpy_and_jax_paths():
+def test_jug_backend_adds_exact_linear_to_numpy_and_jax_paths():
     model = LinearModel.from_host(
         fitpars=("PB", "Offset"),
         design=np.array(
@@ -136,11 +136,11 @@ def test_jug_backend_adds_linear_fallback_to_numpy_and_jax_paths():
         return jnp.asarray(model.design[:, :1]) @ jnp.asarray(delta)
 
     state.residual_delta_jax = residual_delta_jax
-    backend = JugTimingBackend(state=state, linear_model=model)
+    backend = JugEngine(state=state, linear_model=model)
     backend._jug_indices = (0,)
     backend._jug_fitpars = ("PB",)
-    backend._linear_fallback_indices = (1,)
-    backend._linear_fallback_fitpars = frozenset({"Offset"})
+    backend._exact_linear_indices = (1,)
+    backend._exact_linear_fitpars = frozenset({"Offset"})
 
     delta = np.array([0.5, -0.25], dtype=float)
     expected = model.design @ delta
@@ -153,13 +153,13 @@ def test_jug_backend_adds_linear_fallback_to_numpy_and_jax_paths():
     )
 
 
-def test_jug_linear_fallback_does_not_capture_spin_frequency_params():
-    assert not _should_use_linear_fallback("F0")
-    assert not _should_use_linear_fallback("F1")
-    assert not _should_use_linear_fallback("F12")
-    assert _should_use_linear_fallback("Offset")
-    assert _should_use_linear_fallback("DMX_0001")
-    assert _should_use_linear_fallback("JUMP1")
+def test_jug_exact_linear_does_not_capture_spin_frequency_params():
+    assert not _is_exact_linear_param("F0")
+    assert not _is_exact_linear_param("F1")
+    assert not _is_exact_linear_param("F12")
+    assert _is_exact_linear_param("Offset")
+    assert _is_exact_linear_param("DMX_0001")
+    assert _is_exact_linear_param("JUMP1")
 
 
 class _OffsetZeroDeltaBackend:

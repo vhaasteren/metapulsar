@@ -33,15 +33,15 @@ from metapulsar.timing.partition import PartitionResult, resolve_partition
 from metapulsar.timing.space import default_coord_for_transform
 
 
-def _resolve_partition(host, partition_spec) -> PartitionResult:
+def _resolve_partition(pulsar, partition_spec) -> PartitionResult:
     if isinstance(partition_spec, PartitionResult):
         return partition_spec
     if callable(partition_spec):
-        resolved = partition_spec(host)
+        resolved = partition_spec(pulsar)
         if not isinstance(resolved, PartitionResult):
-            raise TypeError("partition_spec(host) must return PartitionResult")
+            raise TypeError("partition_spec(pulsar) must return PartitionResult")
         return resolved
-    return resolve_partition(host, analytically_marginalize=partition_spec)
+    return resolve_partition(pulsar, analytically_marginalize=partition_spec)
 
 
 def _coord_from_transform(transform: str) -> str:
@@ -50,18 +50,14 @@ def _coord_from_transform(transform: str) -> str:
     return default_coord_for_transform(transform)
 
 
-def _get_backend(host, backend_name: str, backend_kwargs: dict | None = None):
-    kwargs = {} if backend_kwargs is None else dict(backend_kwargs)
-    return host.timing_backend(backend_name, **kwargs)
+def _get_backend(pulsar, engines, *, design_matrix_method: str):
+    return pulsar.timing_backend(engines, design_matrix_method=design_matrix_method)
 
 
-def _selected_design_matrix(
-    host, backend_name: str, backend_kwargs: dict | None = None
-):
-    kwargs = {} if backend_kwargs is None else dict(backend_kwargs)
-    if kwargs.get("design_matrix_method") != "autodiff":
-        return np.asarray(host.Mmat, dtype=float)
-    backend = _get_backend(host, backend_name, kwargs)
+def _selected_design_matrix(pulsar, engines, *, design_matrix_method: str):
+    if design_matrix_method != "autodiff":
+        return np.asarray(pulsar.Mmat, dtype=float)
+    backend = _get_backend(pulsar, engines, design_matrix_method=design_matrix_method)
     matrix_fn = getattr(backend, "linearized_design_matrix", None)
     if matrix_fn is None:
         raise ValueError(
@@ -162,8 +158,8 @@ def _explicit_scalar_delay_function(sampled_names: tuple[str, ...], evaluator):
 def _make_waveform(
     *,
     space_fn: Callable,
-    backend_name: str,
-    backend_kwargs: dict | None,
+    engines,
+    design_matrix_method: str,
     partition_spec,
     coord: str,
 ):
@@ -176,7 +172,7 @@ def _make_waveform(
         partition = _resolve_partition(psr, partition_spec)
         sampled_names = tuple(partition.sampled)
         sampled_indices = tuple(partition.idx_sampled)
-        backend = _get_backend(psr, backend_name, backend_kwargs=backend_kwargs)
+        backend = _get_backend(psr, engines, design_matrix_method=design_matrix_method)
         ndim = len(partition.fitpars)
 
         if coord in {"delta", "z", "standardized"}:
@@ -227,8 +223,8 @@ def _make_marginalizing_signal(
     *,
     partition_spec,
     name: str,
-    backend_name: str,
-    backend_kwargs: dict | None,
+    engines,
+    design_matrix_method: str,
 ):
     from enterprise.signals import gp_signals, signal_base
 
@@ -243,7 +239,9 @@ def _make_marginalizing_signal(
             super().__init__(psr)
             partition = _resolve_partition(psr, partition_spec)
             selected_matrix = _selected_design_matrix(
-                psr, backend_name=backend_name, backend_kwargs=backend_kwargs
+                psr,
+                engines,
+                design_matrix_method=design_matrix_method,
             )
             self._basis = selected_matrix[
                 :, list(partition.idx_analytically_marginalized)
@@ -284,8 +282,8 @@ def _make_marginalizing_signal(
 def enterprise_signal(
     *,
     space_fn,
-    backend_name: str,
-    backend_kwargs: dict | None = None,
+    engines,
+    design_matrix_method: str,
     partition_spec,
     name: str,
     transform: str,
@@ -295,17 +293,16 @@ def enterprise_signal(
     Parameters
     ----------
     space_fn
-        Callable ``host -> ParameterSpace`` (typically ``NonLinearTimingModel.space``).
+        Callable ``pulsar -> ParameterSpace`` (typically ``NonLinearTimingModel.space``).
         Supplies per-axis priors and the whitening/standardized linear map used
         by ``UserParameter`` log-prior and PPF hooks.
-    backend_name
-        Host timing backend identifier (``"jug"``, ``"pint"``, ``"tempo2"``).
-    backend_kwargs
-        Optional kwargs forwarded to ``host.timing_backend`` (e.g.
-        ``jug_compatibility``).
+    engines
+        Engine-selection mapping forwarded to ``pulsar.timing_backend``.
+    design_matrix_method
+        Design-matrix method forwarded to ``pulsar.timing_backend``.
     partition_spec
         ``PartitionResult``, ``analytically_marginalize`` spec, or callable
-        ``host -> PartitionResult``.
+        ``pulsar -> PartitionResult``.
     name
         Enterprise signal / component name prefix.
     transform
@@ -332,8 +329,8 @@ def enterprise_signal(
     coord = _coord_from_transform(transform)
     waveform = _make_waveform(
         space_fn=space_fn,
-        backend_name=backend_name,
-        backend_kwargs=backend_kwargs,
+        engines=engines,
+        design_matrix_method=design_matrix_method,
         partition_spec=partition_spec,
         coord=coord,
     )
@@ -341,7 +338,7 @@ def enterprise_signal(
     timing_model = _make_marginalizing_signal(
         partition_spec=partition_spec,
         name=name,
-        backend_name=backend_name,
-        backend_kwargs=backend_kwargs,
+        engines=engines,
+        design_matrix_method=design_matrix_method,
     )
     return delay_signal + timing_model

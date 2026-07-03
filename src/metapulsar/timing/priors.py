@@ -211,7 +211,7 @@ class PriorBlock:
                     f"No proper PINT prior, override, or named default for strict policy parameter '{name}'"
                 )
 
-            # Host-bound component resolution replaces this sentinel with the final wide
+            # Pulsar-bound model resolution replaces this sentinel with the final wide
             # uniform cheat-prior box before any bijector is built.
             priors.append(AxisPrior(family="cheat_wls"))
             sources[name] = "cheat_wls"
@@ -228,7 +228,7 @@ class PriorBlock:
         for name, prior in zip(self.names, self.priors, strict=True):
             if prior.family == "cheat_wls":
                 raise ValueError(
-                    "cheat_wls fallback priors require host-bound resolution before "
+                    "cheat_wls fallback priors require pulsar-bound resolution before "
                     "building a PriorBijector"
                 )
             if name in critical and prior.family in ABSOLUTE_FORMING_FAMILIES:

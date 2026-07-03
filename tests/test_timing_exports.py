@@ -8,7 +8,7 @@ from metapulsar.timing import (
     NonLinearTimingModel,
     ParameterSpace,
     TimingBackend,
-    TimingHost,
+    PulsarInterface,
 )
 
 
@@ -16,7 +16,7 @@ def test_timing_subpackage_exports():
     assert NonLinearTimingModel is not None
     assert ParameterSpace is not None
     assert EnterprisePulsarLike is not None
-    assert TimingHost is not None
+    assert PulsarInterface is not None
     assert JaxTimingBackend is not None
     assert EphemerisExtras is not None
     assert TimingBackend is not None
@@ -25,4 +25,4 @@ def test_timing_subpackage_exports():
 def test_metapulsar_lazy_timing_exports():
     assert metapulsar.NonLinearTimingModel is NonLinearTimingModel
     assert metapulsar.ParameterSpace is ParameterSpace
-    assert metapulsar.TimingHost is TimingHost
+    assert metapulsar.PulsarInterface is PulsarInterface

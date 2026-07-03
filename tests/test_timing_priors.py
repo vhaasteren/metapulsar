@@ -19,7 +19,7 @@ def test_prior_block_fallback_marks_host_bound_cheat_priors():
     assert block.names == ("F0", "F1")
     assert block.source_labels()["F0"] == "cheat_wls"
     assert [prior.family for prior in block.priors] == ["cheat_wls", "cheat_wls"]
-    with pytest.raises(ValueError, match="host-bound resolution"):
+    with pytest.raises(ValueError, match="pulsar-bound resolution"):
         block.to_bijector()
 
 
@@ -162,7 +162,7 @@ def test_diagonal_white_uses_host_partition_for_nonidentity_transform():
     )
 
     transform = diagonal_white(
-        host=host,
+        pulsar=host,
         partition=partition,
         prior_bijector=block.to_bijector(),
     )
@@ -182,9 +182,9 @@ def test_fixed_hyperparameters_uses_serialized_white_noise_values():
         idx_sampled=(0, 1),
     )
 
-    default = diagonal_white(host=host, partition=partition)
+    default = diagonal_white(pulsar=host, partition=partition)
     fixed = fixed_hyperparameters(
-        host=host,
+        pulsar=host,
         partition=partition,
         hyperparameters={"efac": {"a": 2.0, "b": 1.0}, "equad": 0.1},
     )
@@ -220,7 +220,7 @@ def test_schur_delta_wls_raises_on_degenerate_fisher():
     )
     with pytest.raises(ValueError, match="positive definite"):
         schur_delta_wls(
-            host=host,
+            pulsar=host,
             partition=partition,
             variance=np.ones(3, dtype=float),
         )

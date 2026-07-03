@@ -8,9 +8,9 @@ import pytest
 from metapulsar.metapulsar import MetaPulsar, SessionFiles
 from metapulsar.metapulsar_factory import MetaPulsarFactory
 from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import JugTimingBackend
-from metapulsar.timing.backends.pint import PintTimingBackend
-from metapulsar.timing.backends.tempo2 import Tempo2TimingBackend
+from metapulsar.timing.backends.jug import JugEngine
+from metapulsar.timing.backends.pint import PintEngine
+from metapulsar.timing.backends.tempo2 import LibstempoEngine
 from metapulsar.timing.protocols import JaxTimingBackend
 
 
@@ -52,7 +52,7 @@ def test_jug_backend_is_jax_traceable():
     import jax.numpy as jnp
 
     model = _linear_model()
-    backend = JugTimingBackend(
+    backend = JugEngine(
         state=_FakeJaxState(model.design),
         linear_model=model,
         precision_critical={"F0"},
@@ -76,10 +76,8 @@ def test_jug_backend_is_jax_traceable():
 
 def test_native_pint_and_tempo2_wrappers_use_linear_model_metadata():
     model = _linear_model()
-    pint = PintTimingBackend(engine=_FakeDeltaEngine(model.design), linear_model=model)
-    tempo2 = Tempo2TimingBackend(
-        engine=_FakeDeltaEngine(model.design), linear_model=model
-    )
+    pint = PintEngine(engine=_FakeDeltaEngine(model.design), linear_model=model)
+    tempo2 = LibstempoEngine(engine=_FakeDeltaEngine(model.design), linear_model=model)
 
     for backend in (pint, tempo2):
         np.testing.assert_allclose(backend.design_matrix(), model.design)
@@ -139,7 +137,7 @@ def test_jug_capability_requires_readable_session_files(monkeypatch, tmp_path):
     monkeypatch.setattr(MetaPulsar, "_can_import_jug", staticmethod(lambda: True))
 
     host._session_files = {}
-    assert not host.has_timing_backend("jug")
+    assert not host.can_use_engines("jug")
 
     par = tmp_path / "session.par"
     tim = tmp_path / "session.tim"
@@ -148,4 +146,4 @@ def test_jug_capability_requires_readable_session_files(monkeypatch, tmp_path):
     host._session_files = {
         "pta": SessionFiles(par_path=par, tim_path=tim, timing_package="pint")
     }
-    assert host.has_timing_backend("jug")
+    assert host.can_use_engines("jug")

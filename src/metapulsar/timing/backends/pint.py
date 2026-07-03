@@ -1,4 +1,4 @@
-"""Per-session PINT timing backend adapter."""
+"""Per-session PINT timing engine adapter."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .base import LinearModel, LinearTimingBackend
 from .engines import PintDeltaEngine
 
 
-class PintTimingBackend:
+class PintEngine:
     """Native PINT residual-delta adapter."""
 
     backend_name = "pint"
@@ -24,7 +24,7 @@ class PintTimingBackend:
     @classmethod
     def from_session(
         cls, model: Any, toas: Any, *, linear_model: LinearModel
-    ) -> "PintTimingBackend":
+    ) -> "PintEngine":
         return cls(
             engine=PintDeltaEngine(model, toas, isort=None),
             linear_model=linear_model,
@@ -50,11 +50,11 @@ def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, 
     return {name: float(delta[i]) for i, name in enumerate(fitpars)}
 
 
-class LinearizedPintTimingBackend(LinearTimingBackend):
+class LinearizedPintEngine(LinearTimingBackend):
     """Explicit linearized PINT test double using a frozen design matrix."""
 
     backend_name = "pint"
 
     @classmethod
-    def from_linear_model(cls, model: LinearModel) -> "LinearizedPintTimingBackend":
+    def from_linear_model(cls, model: LinearModel) -> "LinearizedPintEngine":
         return cls(model)

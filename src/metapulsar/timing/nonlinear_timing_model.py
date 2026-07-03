@@ -1,4 +1,4 @@
-"""Config-only nonlinear timing component."""
+"""Nonlinear timing model configuration and pulsar binding."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
 from .space import ParameterSpace, default_coord_for_transform
 from .units import lookup_pint_param, native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
+from .backends import normalize_engines
 
-_BACKENDS = {"jug", "pint", "tempo2"}
 _TRANSFORMS = {"none", "standardized", "whitening"}
 _DESIGN_MATRIX_METHODS = {"analytic", "autodiff"}
 
@@ -30,7 +30,7 @@ def _normalize_design_matrix_method(method: str) -> str:
     return normalized
 
 
-def _timing_design_matrix(host, backend, *, method: str) -> np.ndarray:
+def _timing_design_matrix(pulsar, backend, *, method: str) -> np.ndarray:
     if method == "autodiff":
         matrix_fn = getattr(backend, "linearized_design_matrix", None)
         if matrix_fn is None:
@@ -39,7 +39,7 @@ def _timing_design_matrix(host, backend, *, method: str) -> np.ndarray:
                 "linearized_design_matrix()."
             )
         return np.asarray(matrix_fn(), dtype=float)
-    return np.asarray(host.Mmat, dtype=float)
+    return np.asarray(pulsar.Mmat, dtype=float)
 
 
 def _stable_json(value: object) -> str:
@@ -47,8 +47,8 @@ def _stable_json(value: object) -> str:
 
 
 @dataclass(frozen=True)
-class ResolvedTiming:
-    """Host-bound nonlinear timing context resolved from component config."""
+class BoundTiming:
+    """Pulsar-bound nonlinear timing context resolved from model config."""
 
     backend: object
     partition: PartitionResult
@@ -61,17 +61,17 @@ class ResolvedTiming:
 
 
 class NonLinearTimingModel:
-    """Config-only nonlinear timing component (timing backend + likelihood-frontend glue).
+    """Nonlinear timing model configuration and likelihood-frontend glue.
 
-    Binds to a ``TimingHost`` at call time. Does not own noise models or samplers; the user
-    assembles Enterprise/Discovery likelihood frontends and runs their chosen sampler.
+    Binds to a ``PulsarInterface`` at call time. Does not own noise models or samplers;
+    the user assembles Enterprise/Discovery likelihood frontends and runs their chosen
+    sampler.
     """
 
     def __init__(
         self,
         *,
-        backend: str = "jug",
-        jug_compatibility: str = "auto",
+        engines: str | Mapping[str, str] = "jug",
         design_matrix_method: str = "analytic",
         transform: str = "whitening",
         analytically_marginalize: str | Sequence[str] | None = "default",
@@ -80,14 +80,11 @@ class NonLinearTimingModel:
         whitening_config: Mapping[str, Any] | None = None,
         name: str = "nonlinear_timing_model",
     ):
-        if backend not in _BACKENDS:
-            raise ValueError(f"Unsupported backend: {backend}")
         if transform not in _TRANSFORMS:
             raise ValueError(f"Unsupported transform: {transform}")
         if not (float(cheat_prior_scale) > 0.0):
             raise ValueError("cheat_prior_scale must be positive")
-        self.backend = backend
-        self.jug_compatibility = jug_compatibility
+        self.engines = normalize_engines(engines)
         self.design_matrix_method = _normalize_design_matrix_method(
             design_matrix_method
         )
@@ -100,7 +97,7 @@ class NonLinearTimingModel:
         )
         self.name = name
         self._prior_overrides: dict[str, AxisPrior] = {}
-        self._resolved_cache: dict[str, ResolvedTiming] = {}
+        self._resolved_cache: dict[str, BoundTiming] = {}
 
     def set_prior(self, name: str, kind: str, **bounds) -> None:
         """Set or override one sampled-parameter prior."""
@@ -135,11 +132,10 @@ class NonLinearTimingModel:
         self._prior_overrides = set_prior(self._prior_overrides, name, prior)
         self._resolved_cache.clear()
 
-    def with_backend(self, backend: str) -> "NonLinearTimingModel":
-        """Return a new component config with a different timing backend family."""
+    def with_engines(self, engines) -> "NonLinearTimingModel":
+        """Return a new model config with a different engine selection."""
         other = NonLinearTimingModel(
-            backend=backend,
-            jug_compatibility=self.jug_compatibility,
+            engines=engines,
             design_matrix_method=self.design_matrix_method,
             transform=self.transform,
             analytically_marginalize=self.analytically_marginalize,
@@ -153,13 +149,8 @@ class NonLinearTimingModel:
 
     def _config_fingerprint(self) -> str:
         payload = {
-            "backend": self.backend,
-            "jug_compatibility": (
-                self.jug_compatibility if self.backend == "jug" else None
-            ),
-            "design_matrix_method": (
-                self.design_matrix_method if self.backend == "jug" else None
-            ),
+            "engines": sorted(self.engines.items()),
+            "design_matrix_method": self.design_matrix_method,
             "transform": self.transform,
             "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
@@ -172,18 +163,14 @@ class NonLinearTimingModel:
         }
         return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
 
-    def _backend_for_host(self, host):
-        if self.backend != "jug":
-            return host.timing_backend(self.backend)
-        kwargs = {}
-        if self.backend == "jug":
-            kwargs["jug_compatibility"] = self.jug_compatibility
-            kwargs["design_matrix_method"] = self.design_matrix_method
-        return host.timing_backend(self.backend, **kwargs)
+    def _backend_for_pulsar(self, pulsar):
+        return pulsar.timing_backend(
+            self.engines, design_matrix_method=self.design_matrix_method
+        )
 
-    def _partition(self, host) -> PartitionResult:
+    def _partition(self, pulsar) -> PartitionResult:
         return resolve_partition(
-            host, analytically_marginalize=self.analytically_marginalize
+            pulsar, analytically_marginalize=self.analytically_marginalize
         )
 
     def _effective_overrides(self, partition: PartitionResult) -> dict[str, AxisPrior]:
@@ -194,7 +181,7 @@ class NonLinearTimingModel:
         )
         if unknown:
             raise ValueError(
-                "Prior overrides target unknown fit parameters for this host: "
+                "Prior overrides target unknown fit parameters for this pulsar: "
                 f"{unknown}"
             )
         invalid = sorted(
@@ -204,7 +191,7 @@ class NonLinearTimingModel:
         )
         if invalid:
             raise ValueError(
-                "Prior overrides target non-sampled parameters for this host: "
+                "Prior overrides target non-sampled parameters for this pulsar: "
                 f"{invalid}"
             )
         return {
@@ -216,7 +203,7 @@ class NonLinearTimingModel:
     def _build_prior_block(
         self,
         *,
-        host,
+        pulsar,
         backend,
         partition: PartitionResult,
         design_matrix: np.ndarray,
@@ -235,21 +222,21 @@ class NonLinearTimingModel:
             policy=self.prior_policy,
             overrides=self._effective_overrides(partition),
             theta_ref=sampled_refs,
-            pint_model=host.pint_model(),
+            pint_model=pulsar.pint_model(),
         )
         theta_ref_native = {name: float(value) for name, value in sampled_refs.items()}
         return self._fill_wls_cheat_priors(
-            host=host,
+            pulsar=pulsar,
             partition=partition,
             block=block,
             theta_ref_native=theta_ref_native,
             design_matrix=design_matrix,
         )
 
-    def _parfile_cheat_stds(self, host, names) -> dict[str, float]:
+    def _parfile_cheat_stds(self, pulsar, names) -> dict[str, float]:
         """Per-parameter par-file frequentist uncertainties in native units."""
         out: dict[str, float] = {}
-        pint_model = host.pint_model()
+        pint_model = pulsar.pint_model()
         if pint_model is None:
             return out
         for name in names:
@@ -270,7 +257,7 @@ class NonLinearTimingModel:
     def _fill_wls_cheat_priors(
         self,
         *,
-        host,
+        pulsar,
         partition: PartitionResult,
         block: PriorBlock,
         theta_ref_native: dict[str, float] | None = None,
@@ -279,15 +266,15 @@ class NonLinearTimingModel:
         if not partition.sampled or "cheat_wls" not in block.sources.values():
             return block
         theta_ref_native = theta_ref_native or {}
-        variance = np.asarray(host.toaerrs, dtype=float) ** 2
+        variance = np.asarray(pulsar.toaerrs, dtype=float) ** 2
         wls = schur_delta_wls(
-            host=host,
+            pulsar=pulsar,
             partition=partition,
             variance=variance,
             design_matrix=design_matrix,
         )
         wls_stds = np.sqrt(np.diag(wls.covariance))
-        parfile_stds = self._parfile_cheat_stds(host, block.names)
+        parfile_stds = self._parfile_cheat_stds(pulsar, block.names)
         scale = self.cheat_prior_scale
         priors = []
         for idx, (name, prior) in enumerate(
@@ -325,7 +312,7 @@ class NonLinearTimingModel:
     def _linear_transform(
         self,
         *,
-        host,
+        pulsar,
         partition,
         prior_bijector,
         design_matrix: np.ndarray,
@@ -337,7 +324,7 @@ class NonLinearTimingModel:
         cfg = self.whitening_config
         if cfg is None:
             return diagonal_white(
-                host=host,
+                pulsar=pulsar,
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
@@ -348,7 +335,7 @@ class NonLinearTimingModel:
         builder = cfg.pop("name", "diagonal_white")
         if builder == "diagonal_white":
             return diagonal_white(
-                host=host,
+                pulsar=pulsar,
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
@@ -357,7 +344,7 @@ class NonLinearTimingModel:
             )
         if builder == "fixed_hyperparameters":
             return fixed_hyperparameters(
-                host=host,
+                pulsar=pulsar,
                 partition=partition,
                 prior_bijector=prior_bijector,
                 mode=self.transform,
@@ -366,48 +353,48 @@ class NonLinearTimingModel:
             )
         raise ValueError(f"Unsupported whitening builder: {builder}")
 
-    def _host_state_fingerprint(self, host, backend) -> str:
+    def _pulsar_state_fingerprint(self, pulsar, backend) -> str:
         token = None
-        if hasattr(host, "cache_token"):
-            token = host.cache_token()
+        if hasattr(pulsar, "cache_token"):
+            token = pulsar.cache_token()
         if token is not None:
             return f"token:{token}"
-        design = np.asarray(host.Mmat, dtype=float)
+        design = np.asarray(pulsar.Mmat, dtype=float)
         refs = backend.reference_theta_exact()
         payload = {
-            "fitpars": tuple(host.fitpars),
-            "n_toa": int(len(host.toas)),
+            "fitpars": tuple(pulsar.fitpars),
+            "n_toa": int(len(pulsar.toas)),
             "design_shape": tuple(design.shape),
             "design_checksum": float(np.sum(np.abs(design))),
-            "residual_shape": tuple(np.asarray(host.residuals).shape),
-            "refs": {name: refs.get(name) for name in host.fitpars},
+            "residual_shape": tuple(np.asarray(pulsar.residuals).shape),
+            "refs": {name: refs.get(name) for name in pulsar.fitpars},
         }
         return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
 
-    def _resolved_cache_key(self, host, backend) -> str:
-        host_id = f"{id(host)}:{getattr(host, 'name', 'unknown')}"
+    def _resolved_cache_key(self, pulsar, backend) -> str:
+        pulsar_id = f"{id(pulsar)}:{getattr(pulsar, 'name', 'unknown')}"
         return "|".join(
             [
-                host_id,
+                pulsar_id,
                 self._config_fingerprint(),
-                self._host_state_fingerprint(host, backend),
+                self._pulsar_state_fingerprint(pulsar, backend),
             ]
         )
 
-    def _resolve(self, host) -> ResolvedTiming:
-        backend = self._backend_for_host(host)
-        key = self._resolved_cache_key(host, backend)
+    def _resolve(self, pulsar) -> BoundTiming:
+        backend = self._backend_for_pulsar(pulsar)
+        key = self._resolved_cache_key(pulsar, backend)
         if key in self._resolved_cache:
             return self._resolved_cache[key]
 
-        partition = self._partition(host)
+        partition = self._partition(pulsar)
         design_matrix = _timing_design_matrix(
-            host,
+            pulsar,
             backend,
-            method=self.design_matrix_method if self.backend == "jug" else "analytic",
+            method=self.design_matrix_method,
         )
         prior_block = self._build_prior_block(
-            host=host,
+            pulsar=pulsar,
             backend=backend,
             partition=partition,
             design_matrix=design_matrix,
@@ -418,7 +405,7 @@ class NonLinearTimingModel:
             )()
         )
         linear = self._linear_transform(
-            host=host,
+            pulsar=pulsar,
             partition=partition,
             prior_bijector=prior_bijector,
             design_matrix=design_matrix,
@@ -430,42 +417,42 @@ class NonLinearTimingModel:
             prior_bijector=prior_bijector,
             transform=self.transform,
             linear_transform=linear,
-            pint_model=host.pint_model(),
+            pint_model=pulsar.pint_model(),
         )
         coord = default_coord_for_transform(self.transform)
-        resolved = ResolvedTiming(
+        resolved = BoundTiming(
             backend=backend,
             partition=partition,
             prior_block=prior_block,
             space=space,
             coord=coord,
-            site_name=f"{host.name}_{self.name}_{coord}",
+            site_name=f"{pulsar.name}_{self.name}_{coord}",
             delay_keys=tuple(
-                f"{host.name}_{self.name}_{name}" for name in partition.sampled
+                f"{pulsar.name}_{self.name}_{name}" for name in partition.sampled
             ),
             design_matrix=design_matrix,
         )
         self._resolved_cache[key] = resolved
         return resolved
 
-    def sampled(self, host) -> tuple[str, ...]:
-        return self._resolve(host).partition.sampled
+    def sampled(self, pulsar) -> tuple[str, ...]:
+        return self._resolve(pulsar).partition.sampled
 
-    def analytically_marginalized(self, host) -> tuple[str, ...]:
-        return self._resolve(host).partition.analytically_marginalized
+    def analytically_marginalized(self, pulsar) -> tuple[str, ...]:
+        return self._resolve(pulsar).partition.analytically_marginalized
 
-    def priors(self, host) -> PriorBlock:
-        return self._resolve(host).prior_block
+    def priors(self, pulsar) -> PriorBlock:
+        return self._resolve(pulsar).prior_block
 
-    def space(self, host) -> ParameterSpace:
-        return self._resolve(host).space
+    def space(self, pulsar) -> ParameterSpace:
+        return self._resolve(pulsar).space
 
-    def discovery_signals(self, host) -> list:
+    def discovery_signals(self, pulsar) -> list:
         from .frontends.discovery import discovery_signals
 
-        resolved = self._resolve(host)
+        resolved = self._resolve(pulsar)
         return discovery_signals(
-            host=host,
+            pulsar=pulsar,
             space=resolved.space,
             backend=resolved.backend,
             partition=resolved.partition,
@@ -476,53 +463,45 @@ class NonLinearTimingModel:
     def enterprise_signal(self):
         from .frontends.enterprise import enterprise_signal
 
-        backend_kwargs = (
-            {
-                "jug_compatibility": self.jug_compatibility,
-                "design_matrix_method": self.design_matrix_method,
-            }
-            if self.backend == "jug"
-            else {}
-        )
         return enterprise_signal(
             space_fn=self.space,
-            backend_name=self.backend,
-            backend_kwargs=backend_kwargs,
+            engines=self.engines,
+            design_matrix_method=self.design_matrix_method,
             partition_spec=self._partition,
             name=self.name,
             transform=self.transform,
         )
 
-    def _coord_site_name(self, host, coord: str | None = None) -> str:
+    def _coord_site_name(self, pulsar, coord: str | None = None) -> str:
         coord = default_coord_for_transform(self.transform) if coord is None else coord
         if coord not in {"delta", "z", "x"}:
             raise ValueError(f"Unsupported coord: {coord}")
         if coord == default_coord_for_transform(self.transform):
-            return self._resolve(host).site_name
-        return f"{host.name}_{self.name}_{coord}"
+            return self._resolve(pulsar).site_name
+        return f"{pulsar.name}_{self.name}_{coord}"
 
-    def _delay_keys(self, host) -> tuple[str, ...]:
-        return self._resolve(host).delay_keys
+    def _delay_keys(self, pulsar) -> tuple[str, ...]:
+        return self._resolve(pulsar).delay_keys
 
-    def timing_param_keys(self, host) -> tuple[str, ...]:
-        resolved = self._resolve(host)
+    def timing_param_keys(self, pulsar) -> tuple[str, ...]:
+        resolved = self._resolve(pulsar)
         if not resolved.partition.sampled:
             return tuple()
         keys = [resolved.site_name, *resolved.delay_keys]
         return tuple(keys)
 
-    def non_timing_params(self, host, params: Sequence[str]) -> tuple[str, ...]:
-        owned = set(self.timing_param_keys(host))
+    def non_timing_params(self, pulsar, params: Sequence[str]) -> tuple[str, ...]:
+        owned = set(self.timing_param_keys(pulsar))
         return tuple(name for name in params if name not in owned)
 
     def contribute_timing(
         self,
-        host,
+        pulsar,
         params: Mapping[str, Any],
         *,
         coord: str | None = None,
     ) -> Mapping[str, Any]:
-        resolved = self._resolve(host)
+        resolved = self._resolve(pulsar)
         sampled = resolved.partition.sampled
         if not sampled:
             return params
@@ -537,7 +516,7 @@ class NonLinearTimingModel:
         from numpyro.distributions import constraints
 
         space = resolved.space
-        site_name = self._coord_site_name(host, coord=coord)
+        site_name = self._coord_site_name(pulsar, coord=coord)
         q = numpyro.sample(
             site_name,
             dist.ImproperUniform(constraints.real, (), (len(sampled),)),
@@ -549,18 +528,18 @@ class NonLinearTimingModel:
 
         out = dict(params)
         for i, name in enumerate(sampled):
-            out[f"{host.name}_{self.name}_{name}"] = delta[i]
+            out[f"{pulsar.name}_{self.name}_{name}"] = delta[i]
         return out
 
     def _delta_from_params(
         self,
-        host,
+        pulsar,
         params: Mapping[str, Any],
         *,
         coord: str | None = None,
         coord_explicit: bool = False,
     ) -> np.ndarray:
-        resolved = self._resolve(host)
+        resolved = self._resolve(pulsar)
         sampled = resolved.partition.sampled
         if not sampled:
             return np.zeros((0,), dtype=float)
@@ -570,7 +549,7 @@ class NonLinearTimingModel:
         coord = resolved.coord if coord is None else coord
 
         delay_keys = resolved.delay_keys
-        site_name = self._coord_site_name(host, coord=coord)
+        site_name = self._coord_site_name(pulsar, coord=coord)
         space = resolved.space
 
         if site_name in params:
@@ -607,7 +586,7 @@ class NonLinearTimingModel:
 
     def record_physical(
         self,
-        host,
+        pulsar,
         params: Mapping[str, Any],
         *,
         scope: str = "timing",
@@ -624,7 +603,7 @@ class NonLinearTimingModel:
         if scope != "timing":
             raise ValueError("scope must be one of {'timing', 'all'}")
 
-        resolved = self._resolve(host)
+        resolved = self._resolve(pulsar)
         sampled = resolved.partition.sampled
         if not sampled:
             return
@@ -632,7 +611,7 @@ class NonLinearTimingModel:
         import numpyro
 
         delta = self._delta_from_params(
-            host,
+            pulsar,
             params,
             coord=coord,
             coord_explicit=coord_was_explicit,
@@ -640,6 +619,6 @@ class NonLinearTimingModel:
         theta = resolved.space.theta_from_delta(delta)
         for i, name in enumerate(sampled):
             numpyro.deterministic(
-                f"{host.name}_{self.name}_{name}_theta",
+                f"{pulsar.name}_{self.name}_{name}_theta",
                 theta[i],
             )

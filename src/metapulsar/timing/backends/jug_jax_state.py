@@ -21,7 +21,9 @@ from jug.fitting.optimized_fitter import (
     _compute_full_model_residuals,
     _update_param,
 )
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import HOURANGLE_PER_RAD, RAD_TO_DEG
+from jug.utils.constants import HIGH_PRECISION_PARAMS
 from jug.utils.units import validate_column_units
 
 
@@ -48,8 +50,13 @@ class JaxTimingState:
         params = dict(self.ref_params)
         for idx, name in enumerate(self.fit_params):
             backend = self._backend_name(name)
-            current = float(params.get(backend, self.ref_theta[idx]))
-            _update_param(params, backend, current + float(delta_theta[idx]))
+            if backend.upper() in HIGH_PRECISION_PARAMS and backend.upper() in params:
+                current = get_longdouble(params, backend)
+                updated = current + np.longdouble(delta_theta[idx])
+            else:
+                current = float(params.get(backend, self.ref_theta[idx]))
+                updated = current + float(delta_theta[idx])
+            _update_param(params, backend, updated)
         residuals_sec, _, _, _ = _compute_full_model_residuals(params, self.setup)
         residuals_sec = np.asarray(residuals_sec, dtype=np.float64)
         if self.isort is not None:

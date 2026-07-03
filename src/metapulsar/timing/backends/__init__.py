@@ -1,48 +1,63 @@
-"""Timing-backend builders and public timing-engine adapter classes."""
+"""Timing-engine builders and public timing-engine adapter classes."""
 
 from __future__ import annotations
 
-from .composite import BackendSession, build_composite_backend
-from .jug import JugTimingBackend, LinearizedJugTimingBackend
-from .pint import LinearizedPintTimingBackend, PintTimingBackend
-from .tempo2 import LinearizedTempo2TimingBackend, Tempo2TimingBackend
+from .composite import PulsarSession, build_composite_backend
+from .jug import JugEngine, LinearizedJugEngine
+from .pint import LinearizedPintEngine, PintEngine
+from .tempo2 import LinearizedLibstempoEngine, LibstempoEngine
+
+_ENGINE_CHOICES = {"tempo2": ("libstempo", "jug"), "pint": ("pint", "jug")}
+_IMPL_FAMILY = {"libstempo": "tempo2", "pint": "pint", "jug": "jug"}
+
+
+def normalize_engines(engines):
+    """Return ``{'tempo2': impl, 'pint': impl}`` for an engine selection."""
+    if isinstance(engines, str):
+        engines = {"tempo2": engines, "pint": engines}
+    else:
+        engines = dict(engines)
+    extra = set(engines) - set(_ENGINE_CHOICES)
+    if extra:
+        raise ValueError(f"Unknown engine compatibility keys: {sorted(extra)}")
+    out = {}
+    for native, choices in _ENGINE_CHOICES.items():
+        impl = engines.get(native, "jug")
+        if impl not in choices:
+            raise ValueError(
+                f"engines[{native!r}] must be one of {choices}, got {impl!r}"
+            )
+        out[native] = impl
+    return out
 
 
 def build_backend(
     *,
-    name: str,
     fitpars: tuple[str, ...],
     nrows: int,
-    sessions: list[BackendSession],
-    missing_param_policy: str = "linear_fallback",
+    sessions: list[PulsarSession],
     host_design=None,
 ):
-    """Build a composite backend for the requested family name."""
-    if name not in {"jug", "pint", "tempo2"}:
-        raise ValueError(f"Unsupported backend name: {name}")
-    mismatched = [
-        session.name
-        for session in sessions
-        if getattr(session.backend, "backend_name", None) != name
-    ]
-    if mismatched:
-        raise ValueError(f"Sessions cannot honor backend '{name}': {mismatched}")
+    """Build the per-pulsar composite over per-PTA engine sessions."""
     return build_composite_backend(
         fitpars=fitpars,
         nrows=nrows,
         sessions=sessions,
-        missing_param_policy=missing_param_policy,
         host_design=host_design,
     )
 
 
 __all__ = [
-    "BackendSession",
-    "JugTimingBackend",
-    "LinearizedJugTimingBackend",
-    "LinearizedPintTimingBackend",
-    "LinearizedTempo2TimingBackend",
-    "PintTimingBackend",
-    "Tempo2TimingBackend",
+    "PulsarSession",
+    "JugEngine",
+    "LinearizedJugEngine",
+    "LinearizedPintEngine",
+    "LinearizedLibstempoEngine",
+    "PintEngine",
+    "LibstempoEngine",
     "build_backend",
+    "build_composite_backend",
+    "normalize_engines",
+    "_ENGINE_CHOICES",
+    "_IMPL_FAMILY",
 ]

@@ -1,7 +1,7 @@
 """Discovery likelihood-frontend adapter for nonlinear timing.
 
 This module builds Discovery-native likelihood signals from a bound
-``NonLinearTimingModel`` host: an optional improper GP for analytically
+``NonLinearTimingModel`` pulsar: an optional improper GP for analytically
 marginalized linear fit parameters, plus a JAX nonlinear delay for the
 numerically sampled block.
 
@@ -31,20 +31,20 @@ from metapulsar.timing.partition import PartitionResult
 from metapulsar.timing.protocols import JaxTimingBackend
 
 
-def _sample_key(host_name: str, name: str, fitpar: str) -> str:
-    return f"{host_name}_{name}_{fitpar}"
+def _sample_key(pulsar_name: str, name: str, fitpar: str) -> str:
+    return f"{pulsar_name}_{name}_{fitpar}"
 
 
 def _build_delay_callable(
     *,
-    host,
+    pulsar,
     backend: JaxTimingBackend,
     partition: PartitionResult,
     name: str,
 ) -> Callable[[dict[str, object]], object]:
     sampled_names = tuple(partition.sampled)
     sampled_indices = tuple(partition.idx_sampled)
-    keys = [_sample_key(host.name, name, fitpar) for fitpar in sampled_names]
+    keys = [_sample_key(pulsar.name, name, fitpar) for fitpar in sampled_names]
     ndim = len(partition.fitpars)
 
     def delay(params: dict[str, object]):
@@ -68,14 +68,14 @@ def _build_delay_callable(
 
 
 def discovery_signals(
-    *, host, space, backend, partition: PartitionResult, name: str, design_matrix=None
+    *, pulsar, space, backend, partition: PartitionResult, name: str, design_matrix=None
 ) -> list:
     """Return Discovery-native timing signals: GP (optional) + nonlinear delay.
 
     Parameters
     ----------
-    host
-        Timing host with residuals, design matrix, and TOA metadata.
+    pulsar
+        Timing pulsar with residuals, design matrix, and TOA metadata.
     space
         ``ParameterSpace`` for the sampled block. Passed for API symmetry with
         ``NonLinearTimingModel.discovery_signals``; delay keys already use
@@ -85,7 +85,7 @@ def discovery_signals(
     backend
         JAX-capable timing backend used to evaluate ``residual_delta_jax``.
     partition
-        Numerically sampled vs analytically marginalized fit-parameter partition in host
+        Numerically sampled vs analytically marginalized fit-parameter partition in pulsar
         column order.
     name
         Component name prefix for emitted signal keys.
@@ -95,7 +95,7 @@ def discovery_signals(
     list
         Discovery signal factories: ``makegp_improper`` for analytically marginalized
         columns (when present) and a delay callable keyed by
-        ``{host.name}_{name}_{fitpar}`` for each sampled parameter.
+        ``{pulsar.name}_{name}_{fitpar}`` for each sampled parameter.
 
     Notes
     -----
@@ -108,14 +108,16 @@ def discovery_signals(
 
     _ = space  # Discovery delay keys are already backend-facing delta_theta values.
 
-    if tuple(partition.fitpars) != tuple(host.fitpars):
-        raise ValueError("partition.fitpars must match host.fitpars in canonical order")
+    if tuple(partition.fitpars) != tuple(pulsar.fitpars):
+        raise ValueError(
+            "partition.fitpars must match pulsar.fitpars in canonical order"
+        )
 
     signals: list = []
     if partition.idx_analytically_marginalized:
         basis = np.asarray(
             (
-                np.asarray(host.Mmat, dtype=float)
+                np.asarray(pulsar.Mmat, dtype=float)
                 if design_matrix is None
                 else np.asarray(design_matrix, dtype=float)
             )[:, list(partition.idx_analytically_marginalized)],
@@ -123,7 +125,7 @@ def discovery_signals(
         )
         signals.append(
             discovery_signals.makegp_improper(
-                host,
+                pulsar,
                 basis,
                 constant=1.0e40,
                 name=f"{name}_timingmodel",
@@ -140,7 +142,7 @@ def discovery_signals(
 
     signals.append(
         _build_delay_callable(
-            host=host,
+            pulsar=pulsar,
             backend=backend,
             partition=partition,
             name=name,

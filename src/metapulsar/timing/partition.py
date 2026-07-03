@@ -49,7 +49,7 @@ def _discover_category_params(pint_model, categories) -> set[str]:
 
 # Linear nuisance families that analytically_marginalize="default" must always peel off when
 # present. Used only as a sanity guard against silent partition failures (e.g. a
-# host whose fitpar names carry a PTA suffix that breaks canonical name matching).
+# pulsar whose fitpar names carry a PTA suffix that breaks canonical name matching).
 _LINEAR_FAMILY_PREFIXES = ("DMX", "JUMP", "FD")
 _LINEAR_EXACT = frozenset({"DM", "DM1", "DM2", "OFFSET", "PHOFF"})
 _ASTROMETRY_POSITION_ONLY = frozenset(
@@ -58,30 +58,30 @@ _ASTROMETRY_POSITION_ONLY = frozenset(
 _ASTROMETRY_SAMPLED_BY_DEFAULT = frozenset({"PMRA", "PMDEC", "PMELONG", "PMELAT", "PX"})
 
 
-def _base_param_candidates(host, name: str) -> set[str]:
+def _base_param_candidates(pulsar, name: str) -> set[str]:
     """Return the canonical base-name candidates for a (possibly suffixed) fitpar.
 
-    Composite hosts expose PTA-suffixed fitpars (e.g. ``RAJ_ng5``) while PINT
-    category discovery yields unsuffixed canonical names (e.g. ``RAJ``). The host
+    Composite pulsars expose PTA-suffixed fitpars (e.g. ``RAJ_ng5``) while PINT
+    category discovery yields unsuffixed canonical names (e.g. ``RAJ``). The pulsar
     carries the suffixed -> per-PTA base mapping in ``_fitparameters``; use it so
     membership tests resolve to the underlying PINT parameter names.
     """
     candidates: set[str] = {name, resolve_parameter_alias(name)}
-    mapping = getattr(host, "_fitparameters", None) or {}
+    mapping = getattr(pulsar, "_fitparameters", None) or {}
     for base in mapping.get(name, {}).values():
         candidates.add(base)
         candidates.add(resolve_parameter_alias(base))
     return candidates
 
 
-def _fallback_policy_candidates(host, name: str) -> set[str]:
-    """Return candidates eligible for exact/prefix fallback registries.
+def _exact_linear_policy_candidates(pulsar, name: str) -> set[str]:
+    """Return candidates eligible for exact-linear/prefix registries.
 
-    Composite hosts with PTA-suffixed names must provide ``_fitparameters`` mappings.
-    Without that mapping, broad prefix fallback would silently treat ``DMX_0001_ng5`` as a
-    valid DMX parameter instead of surfacing the broken suffix resolution.
+    Composite pulsars with PTA-suffixed names must provide ``_fitparameters`` mappings.
+    Without that mapping, broad prefix matching would silently treat ``DMX_0001_ng5``
+    as a valid DMX parameter instead of surfacing broken suffix resolution.
     """
-    mapping = getattr(host, "_fitparameters", None)
+    mapping = getattr(pulsar, "_fitparameters", None)
     if mapping is not None:
         bases = mapping.get(name, {})
         candidates: set[str] = set()
@@ -92,12 +92,12 @@ def _fallback_policy_candidates(host, name: str) -> set[str]:
     return {name, resolve_parameter_alias(name)}
 
 
-def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
+def default_analytically_marginalized_fitpars(pulsar) -> tuple[str, ...]:
     """Default policy: linear timing nuisances plus astrometry positions."""
-    model = host.pint_model()
+    model = pulsar.pint_model()
     if model is None:
         raise ValueError(
-            "host.pint_model() is required for analytically_marginalize='default'"
+            "pulsar.pint_model() is required for analytically_marginalize='default'"
         )
 
     discovered: set[str] = set()
@@ -113,12 +113,12 @@ def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
 
     analytically_marginalized: list[str] = []
     has_linear_family = False
-    for raw in host.fitpars:
-        candidates = _base_param_candidates(host, raw)
-        fallback_candidates = _fallback_policy_candidates(host, raw)
+    for raw in pulsar.fitpars:
+        candidates = _base_param_candidates(pulsar, raw)
+        exact_linear_candidates = _exact_linear_policy_candidates(pulsar, raw)
         canonical_candidates = {resolve_parameter_alias(c).upper() for c in candidates}
         canonical_fallbacks = {
-            resolve_parameter_alias(c).upper() for c in fallback_candidates
+            resolve_parameter_alias(c).upper() for c in exact_linear_candidates
         }
         if canonical_candidates & _LINEAR_EXACT or any(
             c.startswith(_LINEAR_FAMILY_PREFIXES) for c in canonical_candidates
@@ -137,7 +137,7 @@ def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
     if has_linear_family and not analytically_marginalized:
         raise ValueError(
             "analytically_marginalize='default' resolved to an empty "
-            "analytically marginalized set even though the host carries linear nuisance "
+            "analytically marginalized set even though the pulsar carries linear nuisance "
             "families (DMX/JUMP/FD). This usually means fitpar name matching against PINT "
             "categories failed (e.g. an unmapped PTA suffix). Refusing to silently sample "
             "every timing parameter."
@@ -147,16 +147,16 @@ def default_analytically_marginalized_fitpars(host) -> tuple[str, ...]:
 
 
 def resolve_partition(
-    host,
+    pulsar,
     analytically_marginalize: str | list[str] | tuple[str, ...] | None = "default",
 ) -> PartitionResult:
     """Resolve numerically sampled vs analytically marginalized names and index mappings."""
-    fitpars = tuple(resolve_parameter_alias(p) for p in host.fitpars)
+    fitpars = tuple(resolve_parameter_alias(p) for p in pulsar.fitpars)
     if len(set(fitpars)) != len(fitpars):
         raise ValueError("Duplicate fit parameters after alias normalization")
 
     if analytically_marginalize == "default":
-        analytically_marginalized = default_analytically_marginalized_fitpars(host)
+        analytically_marginalized = default_analytically_marginalized_fitpars(pulsar)
     elif analytically_marginalize is None:
         analytically_marginalized = tuple()
     elif isinstance(analytically_marginalize, str):

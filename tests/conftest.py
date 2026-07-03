@@ -97,7 +97,7 @@ class FakeTimingBackend:
         return np.zeros((4, len(self.fitpars)), dtype=float)
 
 
-class FakeTimingHost:
+class FakePulsarInterface:
     """Minimal host scaffold implementing the expected timing host shape."""
 
     def __init__(self) -> None:
@@ -142,17 +142,17 @@ class FakeTimingHost:
     def pint_model(self):  # pragma: no cover - placeholder for Slice 3b.
         return None
 
-    def timing_backend(self, name: str) -> FakeTimingBackend:
+    def timing_backend(self, engines="jug") -> FakeTimingBackend:
         return FakeTimingBackend(self.fitpars)
 
-    def has_timing_backend(self, name: str) -> bool:
-        return name in {"jug", "pint", "tempo2"}
+    def can_use_engines(self, engines="jug") -> bool:
+        return True
 
     def cache_token(self) -> str:
-        return "fake-host-v1"
+        return "fake-pulsar-v1"
 
 
 @pytest.fixture
-def fake_timing_host() -> FakeTimingHost:
-    """Provide a deterministic fake timing host for early timing tests."""
-    return FakeTimingHost()
+def fake_pulsar_interface() -> FakePulsarInterface:
+    """Provide a deterministic fake pulsar interface for early timing tests."""
+    return FakePulsarInterface()

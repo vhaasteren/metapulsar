@@ -1,4 +1,4 @@
-"""Protocols for timing hosts and timing-backend adapters.
+"""Protocols for pulsars and timing-engine adapters.
 
 Stack layering:
 - **Timing backend / timing engine** — residuals and design matrix (JUG, PINT, tempo2).
@@ -15,7 +15,7 @@ import numpy as np
 
 @runtime_checkable
 class EphemerisExtras(Protocol):
-    """Optional ephemeris-related host fields used by some signal blocks."""
+    """Optional ephemeris-related pulsar fields used by some signal blocks."""
 
     @property
     def pos_t(self) -> np.ndarray: ...
@@ -47,7 +47,7 @@ class EphemerisExtras(Protocol):
 
 @runtime_checkable
 class EnterprisePulsarLike(Protocol):
-    """Duck-typed host surface consumed by likelihood frontends (Enterprise/Discovery)."""
+    """Duck-typed pulsar surface consumed by likelihood frontends."""
 
     name: str
     fitpars: list[str] | tuple[str, ...]
@@ -76,7 +76,7 @@ class EnterprisePulsarLike(Protocol):
 
 @runtime_checkable
 class TimingBackend(Protocol):
-    """Timing-backend adapter around theta-native timing engines in canonical host order."""
+    """Timing-engine adapter around theta-native engines in canonical pulsar order."""
 
     fitpars: tuple[str, ...]
     native_units: Mapping[str, str]
@@ -100,13 +100,13 @@ class JaxTimingBackend(TimingBackend, Protocol):
 
 
 @runtime_checkable
-class TimingHost(EnterprisePulsarLike, Protocol):
-    """Host protocol: frozen arrays plus timing-engine / timing-backend accessors."""
+class PulsarInterface(EnterprisePulsarLike, Protocol):
+    """Pulsar protocol: frozen arrays plus timing-engine accessors."""
 
     def pint_model(self) -> Any: ...
 
-    def timing_backend(self, name: str = "jug") -> TimingBackend: ...
+    def timing_backend(self, engines="jug") -> TimingBackend: ...
 
-    def has_timing_backend(self, name: str) -> bool: ...
+    def can_use_engines(self, engines="jug") -> bool: ...
 
     def cache_token(self) -> str | None: ...

@@ -26,23 +26,25 @@ def _as_1d_float(arr, *, name: str) -> np.ndarray:
     return out
 
 
-def validate_enterprise_host(host: EnterprisePulsarLike) -> None:
-    """Validate basic frozen host-surface shape invariants."""
-    toas = _as_1d_float(host.toas, name="toas")
-    residuals = _as_1d_float(host.residuals, name="residuals")
-    toaerrs = _as_1d_float(host.toaerrs, name="toaerrs")
-    freqs = _as_1d_float(host.freqs, name="freqs")
-    backend_flags = np.asarray(host.backend_flags)
-    mmat = np.asarray(host.Mmat, dtype=float)
+def validate_enterprise_pulsar(pulsar: EnterprisePulsarLike) -> None:
+    """Validate basic frozen pulsar-surface shape invariants."""
+    toas = _as_1d_float(pulsar.toas, name="toas")
+    residuals = _as_1d_float(pulsar.residuals, name="residuals")
+    toaerrs = _as_1d_float(pulsar.toaerrs, name="toaerrs")
+    freqs = _as_1d_float(pulsar.freqs, name="freqs")
+    backend_flags = np.asarray(pulsar.backend_flags)
+    mmat = np.asarray(pulsar.Mmat, dtype=float)
 
     nrows = len(toas)
     if len(residuals) != nrows or len(toaerrs) != nrows or len(freqs) != nrows:
-        raise ValueError("Host arrays toas/residuals/toaerrs/freqs must be same length")
+        raise ValueError(
+            "Pulsar arrays toas/residuals/toaerrs/freqs must be same length"
+        )
     if len(backend_flags) != nrows:
-        raise ValueError("backend_flags length mismatch with host rows")
+        raise ValueError("backend_flags length mismatch with pulsar rows")
     if mmat.shape[0] != nrows:
-        raise ValueError("Mmat row count must match host arrays")
-    if mmat.shape[1] != len(host.fitpars):
+        raise ValueError("Mmat row count must match pulsar arrays")
+    if mmat.shape[1] != len(pulsar.fitpars):
         raise ValueError("Mmat column count must match fitpars length")
 
 
@@ -102,25 +104,25 @@ def validate_backend_shapes(backend: TimingBackend) -> None:
         raise ValueError(f"reference_theta_exact missing fitpars: {missing}")
 
 
-def validate_backend_against_host(
-    backend: TimingBackend, host: EnterprisePulsarLike, tol: float = 1e-12
+def validate_backend_against_pulsar(
+    backend: TimingBackend, pulsar: EnterprisePulsarLike, tol: float = 1e-12
 ) -> None:
-    """Validate backend outputs against host canonical row and column ordering."""
-    validate_enterprise_host(host)
+    """Validate backend outputs against pulsar canonical row and column ordering."""
+    validate_enterprise_pulsar(pulsar)
     validate_backend_shapes(backend)
     validate_backend_zero_delta(backend, tol=tol)  # may relax tol for JUG(tempo2)
     design = np.asarray(backend.design_matrix(), dtype=float)
-    host_design = np.asarray(host.Mmat, dtype=float)
-    nrows = len(host.toas)
+    host_design = np.asarray(pulsar.Mmat, dtype=float)
+    nrows = len(pulsar.toas)
     if design.shape[0] != nrows:
-        raise ValueError("Backend row count must match host rows")
-    if tuple(host.fitpars) != tuple(backend.fitpars):
-        raise ValueError("Backend fitpars must match host fitpars in canonical order")
+        raise ValueError("Backend row count must match pulsar rows")
+    if tuple(pulsar.fitpars) != tuple(backend.fitpars):
+        raise ValueError("Backend fitpars must match pulsar fitpars in canonical order")
     if design.shape != host_design.shape:
-        raise ValueError("Backend design_matrix shape must match host.Mmat")
+        raise ValueError("Backend design_matrix shape must match pulsar.Mmat")
     if not np.allclose(design, host_design, atol=tol, rtol=0.0):
         raise ValueError(
-            "Backend design_matrix must match host.Mmat in canonical row order"
+            "Backend design_matrix must match pulsar.Mmat in canonical row order"
         )
 
 

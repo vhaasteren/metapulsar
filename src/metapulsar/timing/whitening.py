@@ -45,7 +45,7 @@ def _cho_factor_pd(matrix: np.ndarray, *, context: str) -> tuple[np.ndarray, boo
 
 def schur_delta_wls(
     *,
-    host,
+    pulsar,
     partition,
     variance: np.ndarray,
     design_matrix: np.ndarray | None = None,
@@ -54,9 +54,9 @@ def schur_delta_wls(
     mmat = (
         np.asarray(design_matrix, dtype=float)
         if design_matrix is not None
-        else np.asarray(host.Mmat, dtype=float)
+        else np.asarray(pulsar.Mmat, dtype=float)
     )
-    residuals = np.asarray(host.residuals, dtype=float)
+    residuals = np.asarray(pulsar.residuals, dtype=float)
     weights = 1.0 / np.asarray(variance, dtype=float)
 
     sampled = _as_columns(mmat, tuple(partition.idx_sampled))
@@ -138,24 +138,24 @@ def _linear_transform_from_wls(
 def diagonal_white(
     ndim: int | None = None,
     *,
-    host=None,
+    pulsar=None,
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
     design_matrix: np.ndarray | None = None,
 ) -> WhiteningLinear:
     """Default diagonal-white Fisher/WLS preconditioner."""
-    if host is None or partition is None:
+    if pulsar is None or partition is None:
         if ndim is None:
-            raise ValueError("ndim is required when host/partition are not provided")
+            raise ValueError("ndim is required when pulsar/partition are not provided")
         return WhiteningLinear(
             C=np.eye(ndim, dtype=float),
             z0=np.zeros(ndim, dtype=float),
         )
 
-    variance = np.asarray(host.toaerrs, dtype=float) ** 2
+    variance = np.asarray(pulsar.toaerrs, dtype=float) ** 2
     wls = schur_delta_wls(
-        host=host,
+        pulsar=pulsar,
         partition=partition,
         variance=variance,
         design_matrix=design_matrix,
@@ -181,7 +181,7 @@ def fixed_hyperparameters(
     ndim: int | None = None,
     hyperparameters: dict | None = None,
     *,
-    host=None,
+    pulsar=None,
     partition=None,
     prior_bijector=None,
     mode: str = "whitening",
@@ -194,9 +194,9 @@ def fixed_hyperparameters(
     NumPy builder is added.
     """
     hyperparameters = hyperparameters or {}
-    if host is None or partition is None:
+    if pulsar is None or partition is None:
         if ndim is None:
-            raise ValueError("ndim is required when host/partition are not provided")
+            raise ValueError("ndim is required when pulsar/partition are not provided")
         center = hyperparameters.get("center", None)
         z0 = (
             np.zeros(ndim, dtype=float)
@@ -213,13 +213,13 @@ def fixed_hyperparameters(
             "fixed_hyperparameters red_noise requires a named pure NumPy builder"
         )
 
-    labels = np.asarray(host.backend_flags)
+    labels = np.asarray(pulsar.backend_flags)
     efac = _resolve_noise_value(hyperparameters.get("efac", 1.0), labels, 1.0)
     equad = _resolve_noise_value(hyperparameters.get("equad", 0.0), labels, 0.0)
-    toaerrs = np.asarray(host.toaerrs, dtype=float)
+    toaerrs = np.asarray(pulsar.toaerrs, dtype=float)
     variance = (efac * toaerrs) ** 2 + equad**2
     wls = schur_delta_wls(
-        host=host,
+        pulsar=pulsar,
         partition=partition,
         variance=variance,
         design_matrix=design_matrix,

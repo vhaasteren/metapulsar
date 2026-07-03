@@ -3,14 +3,17 @@
 import numpy as np
 import pytest
 
+from jug.io.par_reader import get_longdouble
 from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
+from metapulsar.timing.backends.jug import LinearizedJugEngine
+from metapulsar.timing.backends import jug_jax_state
+from metapulsar.timing.backends.jug_jax_state import JaxTimingState
 
 pytestmark = [pytest.mark.requires_jug]
 
 
-def _jug_backend(compatibility: str) -> LinearizedJugTimingBackend:
-    return LinearizedJugTimingBackend.from_linear_model(
+def _jug_backend(compatibility: str) -> LinearizedJugEngine:
+    return LinearizedJugEngine.from_linear_model(
         LinearModel.from_host(
             fitpars=("F0", "F1"),
             design=np.array(
@@ -55,3 +58,41 @@ def test_jug_tangent_near_zero_matches_design_matrix():
 def test_jug_precision_critical_fitpars_exposed_with_canonical_names():
     backend = _jug_backend("tempo2")
     assert backend.precision_critical_fitpars() == frozenset({"F0"})
+
+
+def test_jax_timing_state_residual_delta_np_preserves_high_precision_f0(monkeypatch):
+    base_f0 = np.longdouble("326.60056708749672367")
+    ref_params = {
+        "F0": float(base_f0),
+        "_high_precision": {"F0": "326.60056708749672367"},
+    }
+
+    def compute_residuals(params, setup):
+        f0 = get_longdouble(params, "F0")
+        return (
+            np.array([float((f0 - base_f0) * np.longdouble("1e6"))]),
+            None,
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(
+        jug_jax_state, "_compute_full_model_residuals", compute_residuals
+    )
+    state = JaxTimingState(
+        fit_params=("F0",),
+        param_mapping=(),
+        ref_params=ref_params,
+        ref_theta=np.array([float(base_f0)]),
+        reference_residuals_sec=np.array([0.0]),
+        subtract_tzr=True,
+        compatibility="pint",
+        phase_mean_mode="weighted",
+        isort=None,
+        design_matrix=np.empty((1, 1)),
+        column_units=("Hz",),
+        setup=object(),
+        _residual_delta_jax_fn=lambda delta: delta,
+    )
+
+    np.testing.assert_allclose(state.residual_delta_np(np.zeros(1)), [0.0], atol=1e-18)

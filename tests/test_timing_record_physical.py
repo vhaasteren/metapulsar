@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
-from metapulsar.timing.component import NonLinearTimingModel
+from metapulsar.timing.backends.jug import LinearizedJugEngine
+from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
 
 
 class _Host:
@@ -24,7 +24,7 @@ class _Host:
             design=np.column_stack([np.ones(5), np.linspace(-0.5, 0.5, 5)]),
             theta_exact={"F0": "100.0", "F1": "1.0"},
         )
-        self._backend = LinearizedJugTimingBackend.from_linear_model(model)
+        self._backend = LinearizedJugEngine.from_linear_model(model)
 
     @property
     def toas(self):
@@ -60,9 +60,7 @@ class _Host:
     def pint_model(self):
         return object()
 
-    def timing_backend(self, name: str, **kwargs):
-        if name != "jug":
-            raise ValueError(name)
+    def timing_backend(self, engines="jug", **kwargs):
         return self._backend
 
 
@@ -92,7 +90,7 @@ def _patch_numpyro(monkeypatch, sample_value):
 
 def test_record_physical_timing_scope_emits_prefixed_theta_sites(host, monkeypatch):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0"],
         name="timing",
@@ -111,7 +109,7 @@ def test_record_physical_timing_scope_emits_prefixed_theta_sites(host, monkeypat
 
 def test_record_physical_scope_all_raises(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0"],
         name="timing",
@@ -122,7 +120,7 @@ def test_record_physical_scope_all_raises(host):
 
 def test_record_physical_does_not_change_density_calls(host, monkeypatch):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0"],
         name="timing",
@@ -143,7 +141,7 @@ def test_record_physical_explicit_coord_handles_standardized_scalar_params(
     host, monkeypatch
 ):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0"],
         name="timing",
@@ -165,7 +163,7 @@ def test_record_physical_implicit_coord_handles_standardized_contribute_output(
     host, monkeypatch
 ):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0"],
         name="timing",
@@ -186,7 +184,7 @@ def test_record_physical_implicit_coord_handles_standardized_contribute_output(
 
 def test_record_physical_invalid_coord_raises(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0"],
         name="timing",

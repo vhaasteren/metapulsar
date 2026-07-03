@@ -850,7 +850,7 @@ class MetaPulsarFactory:
         tim_path: Path,
         session_file_dir: Path,
     ) -> Dict[str, Any]:
-        """Copy exact timing-package input files into durable host-owned paths."""
+        """Copy exact timing-package input files into durable pulsar-owned paths."""
         pta_safe = "".join(
             ch if ch.isalnum() or ch in "._-" else "_" for ch in pta_name
         )

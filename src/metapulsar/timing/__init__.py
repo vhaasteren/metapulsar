@@ -1,12 +1,12 @@
-"""Nonlinear timing transforms, timing backends, and likelihood-frontend adapters."""
+"""Nonlinear timing transforms, timing engines, and likelihood-frontend adapters."""
 
-from .component import NonLinearTimingModel
+from .nonlinear_timing_model import NonLinearTimingModel
 from .protocols import (
     EnterprisePulsarLike,
     EphemerisExtras,
     JaxTimingBackend,
+    PulsarInterface,
     TimingBackend,
-    TimingHost,
 )
 from .space import ParameterSpace
 
@@ -17,5 +17,5 @@ __all__ = [
     "EphemerisExtras",
     "TimingBackend",
     "JaxTimingBackend",
-    "TimingHost",
+    "PulsarInterface",
 ]

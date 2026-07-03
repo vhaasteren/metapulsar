@@ -3,8 +3,8 @@
 import numpy as np
 
 from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
-from metapulsar.timing.component import NonLinearTimingModel
+from metapulsar.timing.backends.jug import LinearizedJugEngine
+from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
 
 
 class _Host:
@@ -23,7 +23,7 @@ class _Host:
             design=np.column_stack([np.ones(4), np.linspace(-0.5, 0.5, 4)]),
             theta_exact={"F0": "100.0", "F1": "1.0"},
         )
-        self._backend = LinearizedJugTimingBackend.from_linear_model(model)
+        self._backend = LinearizedJugEngine.from_linear_model(model)
 
     @property
     def toas(self):
@@ -59,9 +59,7 @@ class _Host:
     def pint_model(self):
         return object()
 
-    def timing_backend(self, name: str, **kwargs):
-        if name != "jug":
-            raise ValueError(name)
+    def timing_backend(self, engines="jug", **kwargs):
         return self._backend
 
 
@@ -69,7 +67,7 @@ def test_multi_host_prefixes_and_cache_independence(monkeypatch):
     host_a = _Host("J0001+0001", "tok-a")
     host_b = _Host("J0002+0002", "tok-b")
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0"],
         name="timing",

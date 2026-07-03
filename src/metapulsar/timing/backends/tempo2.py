@@ -1,4 +1,4 @@
-"""Per-session Tempo2/libstempo timing backend adapter."""
+"""Per-session libstempo timing engine adapter."""
 
 from __future__ import annotations
 
@@ -10,22 +10,37 @@ from .base import LinearModel, LinearTimingBackend
 from .engines import Tempo2DeltaEngine
 
 
-class Tempo2TimingBackend:
-    """Native Tempo2/libstempo residual-delta adapter."""
+class LibstempoEngine:
+    """Native libstempo residual-delta adapter."""
 
     backend_name = "tempo2"
 
-    def __init__(self, *, engine: Tempo2DeltaEngine, linear_model: LinearModel):
+    def __init__(
+        self,
+        *,
+        engine: Tempo2DeltaEngine,
+        linear_model: LinearModel,
+        param_mapping: Mapping[str, str] | None = None,
+    ):
         self._engine = engine
         self._model = linear_model
+        self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
 
     @classmethod
     def from_session(
-        cls, lt_psr, *, linear_model: LinearModel
-    ) -> "Tempo2TimingBackend":
-        return cls(engine=Tempo2DeltaEngine(lt_psr), linear_model=linear_model)
+        cls,
+        lt_psr,
+        *,
+        linear_model: LinearModel,
+        param_mapping: Mapping[str, str] | None = None,
+    ) -> "LibstempoEngine":
+        return cls(
+            engine=Tempo2DeltaEngine(lt_psr),
+            linear_model=linear_model,
+            param_mapping=param_mapping,
+        )
 
     def reference_theta(self) -> np.ndarray:
         return self._model.reference_theta()
@@ -34,7 +49,13 @@ class Tempo2TimingBackend:
         return dict(self._model.theta_exact)
 
     def residual_delta(self, delta_theta: np.ndarray) -> np.ndarray:
-        return self._engine.delta_residuals(_delta_dict(self.fitpars, delta_theta))
+        delta = _delta_dict(self.fitpars, delta_theta)
+        if self._param_mapping:
+            delta = {
+                self._param_mapping.get(name, name): value
+                for name, value in delta.items()
+            }
+        return self._engine.delta_residuals(delta)
 
     def design_matrix(self, params=None) -> np.ndarray:
         return np.asarray(self._model.design, dtype=float)
@@ -47,11 +68,11 @@ def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, 
     return {name: float(delta[i]) for i, name in enumerate(fitpars)}
 
 
-class LinearizedTempo2TimingBackend(LinearTimingBackend):
-    """Explicit linearized Tempo2 test double using a frozen design matrix."""
+class LinearizedLibstempoEngine(LinearTimingBackend):
+    """Explicit linearized libstempo test double using a frozen design matrix."""
 
     backend_name = "tempo2"
 
     @classmethod
-    def from_linear_model(cls, model: LinearModel) -> "LinearizedTempo2TimingBackend":
+    def from_linear_model(cls, model: LinearModel) -> "LinearizedLibstempoEngine":
         return cls(model)

@@ -7,14 +7,14 @@ import jax.random as jr
 from numpyro import handlers
 
 from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import LinearizedJugTimingBackend
-from metapulsar.timing.backends.pint import LinearizedPintTimingBackend
-from metapulsar.timing.component import NonLinearTimingModel
+from metapulsar.timing.backends.jug import LinearizedJugEngine
+from metapulsar.timing.backends.pint import LinearizedPintEngine
+from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
 from metapulsar.timing.partition import resolve_partition
 from metapulsar.timing.whitening import schur_delta_wls
 
 
-class _Host:
+class _Pulsar:
     def __init__(self):
         self.name = "J0000+0000"
         self.fitpars = ("F0", "F1", "DM")
@@ -47,8 +47,8 @@ class _Host:
             design=design,
             theta_exact={"F0": "10.0", "F1": "1.0", "DM": "5.0"},
         )
-        self._jug_backend = LinearizedJugTimingBackend.from_linear_model(model)
-        self._pint_backend = LinearizedPintTimingBackend.from_linear_model(model)
+        self._jug_backend = LinearizedJugEngine.from_linear_model(model)
+        self._pint_backend = LinearizedPintEngine.from_linear_model(model)
 
     @property
     def toas(self):
@@ -84,18 +84,16 @@ class _Host:
     def pint_model(self):
         return object()
 
-    def timing_backend(self, name: str, **kwargs):
-        self.backend_calls.append((name, dict(kwargs)))
-        if name == "jug":
-            return self._jug_backend
-        if name == "pint":
+    def timing_backend(self, engines="jug", **kwargs):
+        self.backend_calls.append((engines, dict(kwargs)))
+        if isinstance(engines, dict) and engines.get("pint") == "pint":
             return self._pint_backend
-        raise ValueError(f"Unsupported backend for test host: {name}")
+        return self._jug_backend
 
 
 @pytest.fixture
 def host():
-    return _Host()
+    return _Pulsar()
 
 
 def _monkeypatch_numpyro(monkeypatch, sample_value):
@@ -119,7 +117,7 @@ def _monkeypatch_numpyro(monkeypatch, sample_value):
 
 def _schur_fisher(host, *, analytically_marginalize, variance):
     part = resolve_partition(host, analytically_marginalize=analytically_marginalize)
-    return schur_delta_wls(host=host, partition=part, variance=variance).fisher
+    return schur_delta_wls(pulsar=host, partition=part, variance=variance).fisher
 
 
 def _autodiff_test_matrix(host):
@@ -146,21 +144,19 @@ def _z_space_fisher(space, delta_fisher):
     return J @ delta_fisher @ J
 
 
-def test_component_config_only_build_and_with_backend():
+def test_component_config_only_build_and_with_engines():
     ntm = NonLinearTimingModel(
-        backend="jug",
-        jug_compatibility="tempo2",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=["F0"],
         prior_policy="fallback",
         whitening_config={"name": "diagonal_white"},
         name="timing",
     )
-    swapped = ntm.with_backend("pint")
+    swapped = ntm.with_engines({"tempo2": "jug", "pint": "pint"})
 
-    assert ntm.backend == "jug"
-    assert ntm.jug_compatibility == "tempo2"
-    assert swapped.backend == "pint"
+    assert ntm.engines == {"tempo2": "jug", "pint": "jug"}
+    assert swapped.engines == {"tempo2": "jug", "pint": "pint"}
     assert swapped.transform == ntm.transform
     assert swapped.analytically_marginalize == ntm.analytically_marginalize
     assert swapped.prior_policy == ntm.prior_policy
@@ -169,7 +165,7 @@ def test_component_config_only_build_and_with_backend():
 
 def test_space_cached_and_invalidated_by_cache_token(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -185,12 +181,12 @@ def test_space_cached_and_invalidated_by_cache_token(host):
 
 def test_whitening_named_builders_bind_from_serializable_configs(host):
     ntm_default = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=["F0", "DM"],
     )
     ntm_fixed = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=["F0", "DM"],
         whitening_config={
@@ -209,12 +205,12 @@ def test_whitening_named_builders_bind_from_serializable_configs(host):
 def test_whitening_builders_condition_fisher_to_unit_scale(host):
     analytically_marginalize_cfg = None
     ntm_default = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=analytically_marginalize_cfg,
     )
     ntm_fixed = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=analytically_marginalize_cfg,
         whitening_config={
@@ -254,7 +250,7 @@ def test_autodiff_design_matrix_method_feeds_whitening(host):
     autodiff_matrix = _autodiff_test_matrix(host)
     host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         design_matrix_method="autodiff",
         transform="whitening",
         analytically_marginalize=["F0", "DM"],
@@ -266,7 +262,7 @@ def test_autodiff_design_matrix_method_feeds_whitening(host):
 
     part = resolve_partition(host, analytically_marginalize=["F0", "DM"])
     expected_fisher = schur_delta_wls(
-        host=host,
+        pulsar=host,
         partition=part,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
         design_matrix=autodiff_matrix,
@@ -283,7 +279,7 @@ def test_autodiff_design_matrix_method_feeds_whitening(host):
 
 def test_standardized_builder_uses_z_space_marginal_scales(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=None,
         name="timing",
@@ -306,7 +302,7 @@ def test_standardized_builder_uses_z_space_marginal_scales(host):
 
 def test_cheat_wls_prior_is_wide_uniform_box(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=None,
         name="timing",
@@ -339,7 +335,7 @@ def test_autodiff_design_matrix_method_feeds_cheat_prior_widths(host):
     autodiff_matrix = _autodiff_test_matrix(host)
     host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         design_matrix_method="autodiff",
         transform="standardized",
         analytically_marginalize=None,
@@ -349,7 +345,7 @@ def test_autodiff_design_matrix_method_feeds_cheat_prior_widths(host):
     block = ntm.priors(host)
     part = resolve_partition(host, analytically_marginalize=None)
     expected_fisher = schur_delta_wls(
-        host=host,
+        pulsar=host,
         partition=part,
         variance=np.asarray(host.toaerrs, dtype=float) ** 2,
         design_matrix=autodiff_matrix,
@@ -364,7 +360,7 @@ def test_autodiff_design_matrix_method_feeds_cheat_prior_widths(host):
 
 
 def test_cheat_prior_box_clipped_to_physical_bounds():
-    class _BoundedHost(_Host):
+    class _BoundedHost(_Pulsar):
         def __init__(self):
             super().__init__()
             self.fitpars = ("ECC", "F1", "DM")
@@ -374,11 +370,11 @@ def test_cheat_prior_box_clipped_to_physical_bounds():
                 design=self._design,
                 theta_exact={"ECC": repr(self._ecc_ref), "F1": "1.0", "DM": "5.0"},
             )
-            self._jug_backend = LinearizedJugTimingBackend.from_linear_model(model)
+            self._jug_backend = LinearizedJugEngine.from_linear_model(model)
 
     bounded = _BoundedHost()
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F1", "DM"],
         name="timing",
@@ -402,7 +398,7 @@ def test_cheat_prior_box_clipped_to_physical_bounds():
 
 def test_discovery_signals_delta_only_and_jax_gate(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -414,7 +410,7 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
     np.testing.assert_allclose(output, expected)
 
     ntm_nonjax = NonLinearTimingModel(
-        backend="pint",
+        engines={"tempo2": "jug", "pint": "pint"},
         transform="none",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -436,7 +432,7 @@ def test_autodiff_design_matrix_method_feeds_discovery_gp_basis(host, monkeypatc
 
     monkeypatch.setattr("discovery.signals.makegp_improper", fake_makegp_improper)
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         design_matrix_method="autodiff",
         transform="standardized",
         analytically_marginalize=["F0", "DM"],
@@ -452,7 +448,7 @@ def test_autodiff_design_matrix_method_feeds_discovery_gp_basis(host, monkeypatc
 
 def test_all_analytically_marginalized_paths(host):
     ntm = NonLinearTimingModel(
-        backend="pint",
+        engines={"tempo2": "jug", "pint": "pint"},
         transform="none",
         analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
@@ -466,7 +462,7 @@ def test_all_analytically_marginalized_paths(host):
 
 def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="whitening",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -478,7 +474,7 @@ def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host)
     assert ntm.non_timing_params(host, params) == ("efac", "gamma", "log10_A")
 
     ntm_all_marg = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
@@ -492,7 +488,7 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
     host, monkeypatch
 ):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -510,7 +506,7 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
 
 def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
@@ -525,7 +521,7 @@ def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
 
 def test_set_prior_validated_against_sampled_partition(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -537,7 +533,7 @@ def test_set_prior_validated_against_sampled_partition(host):
 
 def test_set_prior_unknown_name_raises(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -547,10 +543,9 @@ def test_set_prior_unknown_name_raises(host):
         ntm.space(host)
 
 
-def test_enterprise_signal_forwards_jug_compatibility(host):
+def test_enterprise_signal_forwards_engines(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
-        jug_compatibility="tempo2",
+        engines="jug",
         transform="none",
         analytically_marginalize=["F0", "DM"],
         name="timing",
@@ -558,8 +553,8 @@ def test_enterprise_signal_forwards_jug_compatibility(host):
     ent = ntm.enterprise_signal()
     _ = ent(host)
     assert (
-        "jug",
-        {"jug_compatibility": "tempo2", "design_matrix_method": "analytic"},
+        {"tempo2": "jug", "pint": "jug"},
+        {"design_matrix_method": "analytic"},
     ) in host.backend_calls
 
 
@@ -567,7 +562,7 @@ def test_autodiff_design_matrix_method_feeds_enterprise_gp_basis(host):
     autodiff_matrix = _autodiff_test_matrix(host)
     host._jug_backend.linearized_design_matrix = lambda params=None: autodiff_matrix
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         design_matrix_method="autodiff",
         transform="none",
         analytically_marginalize=["F0", "DM"],
@@ -582,7 +577,7 @@ def test_autodiff_design_matrix_method_feeds_enterprise_gp_basis(host):
 
 def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
     ntm = NonLinearTimingModel(
-        backend="jug",
+        engines="jug",
         transform="standardized",
         analytically_marginalize=["F0", "DM"],
         name="timing",

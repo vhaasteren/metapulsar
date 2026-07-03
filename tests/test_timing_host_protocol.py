@@ -6,24 +6,26 @@ import pytest
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 from metapulsar.timing.backends.base import (
-    validate_backend_against_host,
-    validate_enterprise_host,
+    validate_backend_against_pulsar,
+    validate_enterprise_pulsar,
 )
-from metapulsar.timing.protocols import EnterprisePulsarLike, TimingHost
+from metapulsar.timing.protocols import EnterprisePulsarLike, PulsarInterface
 
 
-def test_fake_host_satisfies_protocol_and_shape_validators(fake_timing_host):
-    assert isinstance(fake_timing_host, EnterprisePulsarLike)
-    assert isinstance(fake_timing_host, TimingHost)
-    validate_enterprise_host(fake_timing_host)
+def test_fake_host_satisfies_protocol_and_shape_validators(fake_pulsar_interface):
+    assert isinstance(fake_pulsar_interface, EnterprisePulsarLike)
+    assert isinstance(fake_pulsar_interface, PulsarInterface)
+    validate_enterprise_pulsar(fake_pulsar_interface)
 
-    backend = fake_timing_host.timing_backend("pint")
-    assert tuple(fake_timing_host.fitpars) == backend.fitpars
-    validate_backend_against_host(backend, fake_timing_host)
+    backend = fake_pulsar_interface.timing_backend({"tempo2": "jug", "pint": "pint"})
+    assert tuple(fake_pulsar_interface.fitpars) == backend.fitpars
+    validate_backend_against_pulsar(backend, fake_pulsar_interface)
 
 
-def test_reference_theta_exact_roundtrip(fake_timing_host):
-    backend = fake_timing_host.timing_backend("tempo2")
+def test_reference_theta_exact_roundtrip(fake_pulsar_interface):
+    backend = fake_pulsar_interface.timing_backend(
+        {"tempo2": "libstempo", "pint": "jug"}
+    )
     exact = backend.reference_theta_exact()
     floats = backend.reference_theta()
     for i, name in enumerate(backend.fitpars):
@@ -73,10 +75,10 @@ def test_non_metapulsar_host_can_conform():
         def pint_model(self):
             return None
 
-        def timing_backend(self, name: str = "jug"):
-            return fake_timing_host_backend
+        def timing_backend(self, engines="jug"):
+            return fake_pulsar_interface_backend
 
-        def has_timing_backend(self, name: str):
+        def can_use_engines(self, engines="jug"):
             return True
 
         def cache_token(self):
@@ -98,16 +100,16 @@ def test_non_metapulsar_host_can_conform():
         def design_matrix(self, params=None):
             return np.zeros((2, 2), dtype=float)
 
-    fake_timing_host_backend = LocalBackend()
+    fake_pulsar_interface_backend = LocalBackend()
     host = LocalHost()
-    assert isinstance(host, TimingHost)
-    validate_enterprise_host(host)
-    validate_backend_against_host(host.timing_backend(), host)
+    assert isinstance(host, PulsarInterface)
+    validate_enterprise_pulsar(host)
+    validate_backend_against_pulsar(host.timing_backend(), host)
 
 
-def test_backend_validator_rejects_design_row_mismatch(fake_timing_host):
+def test_backend_validator_rejects_design_row_mismatch(fake_pulsar_interface):
     class BadBackend:
-        fitpars = tuple(fake_timing_host.fitpars)
+        fitpars = tuple(fake_pulsar_interface.fitpars)
         native_units = {name: "native" for name in fitpars}
 
         def reference_theta(self):
@@ -117,15 +119,15 @@ def test_backend_validator_rejects_design_row_mismatch(fake_timing_host):
             return {name: "0.0" for name in self.fitpars}
 
         def residual_delta(self, delta_theta):
-            return np.zeros(len(fake_timing_host.toas), dtype=float)
+            return np.zeros(len(fake_pulsar_interface.toas), dtype=float)
 
         def design_matrix(self, params=None):
-            design = np.asarray(fake_timing_host.Mmat, dtype=float).copy()
+            design = np.asarray(fake_pulsar_interface.Mmat, dtype=float).copy()
             design[0, 0] = 1.0
             return design
 
     with pytest.raises(ValueError, match="canonical row order"):
-        validate_backend_against_host(BadBackend(), fake_timing_host)
+        validate_backend_against_pulsar(BadBackend(), fake_pulsar_interface)
 
 
 def _build_real_host():
@@ -142,24 +144,25 @@ def _build_real_host():
 
 def test_metapulsar_timing_host_surface_and_backend_roundtrip():
     host = _build_real_host()
-    assert isinstance(host, TimingHost)
-    validate_enterprise_host(host)
+    assert isinstance(host, PulsarInterface)
+    validate_enterprise_pulsar(host)
 
     # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
-    assert host.has_timing_backend("tempo2")
-    assert not host.has_timing_backend("jug")
-    assert not host.has_timing_backend("pint")
-    assert host.has_timing_backend("tempo2", linearized=True)
-    assert host.has_timing_backend("jug", linearized=True)
-    assert not host.has_timing_backend("pint", linearized=True)
+    native_engines = {"tempo2": "libstempo", "pint": "jug"}
+    assert host.can_use_engines(native_engines)
+    assert not host.can_use_engines("jug")
+    assert not host.can_use_engines({"tempo2": "jug", "pint": "pint"})
+    assert host.can_use_engines(native_engines, linearized=True)
+    assert host.can_use_engines("jug", linearized=True)
+    assert host.can_use_engines({"tempo2": "jug", "pint": "pint"}, linearized=True)
 
-    native_backend = host.timing_backend("tempo2")
+    native_backend = host.timing_backend(native_engines)
     assert tuple(host.fitpars) == native_backend.fitpars
-    validate_backend_against_host(native_backend, host)
+    validate_backend_against_pulsar(native_backend, host)
 
-    backend = host.timing_backend("tempo2", linearized=True)
+    backend = host.timing_backend(native_engines, linearized=True)
     assert tuple(host.fitpars) == backend.fitpars
-    validate_backend_against_host(backend, host)
+    validate_backend_against_pulsar(backend, host)
 
     # cache_token should be stable across repeated reads in unchanged state.
     assert host.cache_token() == host.cache_token()
@@ -170,8 +173,8 @@ def test_metapulsar_pint_model_and_backend_error_paths():
     model = host.pint_model()
     assert model is not None
 
-    with pytest.raises(ValueError, match="cannot be honored"):
-        host.timing_backend("pint", linearized=True)
+    backend = host.timing_backend({"tempo2": "jug", "pint": "pint"}, linearized=True)
+    assert getattr(backend._sessions[0].backend, "backend_name") == "jug"
 
 
 def test_metapulsar_reference_theta_missing_values_raise():
@@ -181,17 +184,18 @@ def test_metapulsar_reference_theta_missing_values_raise():
     host._invalidate_timing_caches()
 
     with pytest.raises(ValueError, match="Missing reference theta"):
-        host.timing_backend("tempo2", linearized=True)
+        host.timing_backend({"tempo2": "libstempo", "pint": "jug"}, linearized=True)
 
 
 def test_metapulsar_timing_backend_cache_tracks_host_state():
     host = _build_real_host()
-    backend = host.timing_backend("tempo2", linearized=True)
+    native_engines = {"tempo2": "libstempo", "pint": "jug"}
+    backend = host.timing_backend(native_engines, linearized=True)
     token = host.cache_token()
 
     host._designmatrix = host._designmatrix.copy()
     host._designmatrix[0, 0] += 1.0
-    changed = host.timing_backend("tempo2", linearized=True)
+    changed = host.timing_backend(native_engines, linearized=True)
 
     assert host.cache_token() != token
     assert changed is not backend

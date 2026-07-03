@@ -54,13 +54,16 @@ from .selection_utils import create_staggered_selection
 from .pint_helpers import PINTDiscoveryError
 
 _TIMING_LAZY_EXPORTS = {
-    "NonLinearTimingModel": ("metapulsar.timing.component", "NonLinearTimingModel"),
+    "NonLinearTimingModel": (
+        "metapulsar.timing.nonlinear_timing_model",
+        "NonLinearTimingModel",
+    ),
     "ParameterSpace": ("metapulsar.timing.space", "ParameterSpace"),
     "EnterprisePulsarLike": ("metapulsar.timing.protocols", "EnterprisePulsarLike"),
     "EphemerisExtras": ("metapulsar.timing.protocols", "EphemerisExtras"),
     "TimingBackend": ("metapulsar.timing.protocols", "TimingBackend"),
     "JaxTimingBackend": ("metapulsar.timing.protocols", "JaxTimingBackend"),
-    "TimingHost": ("metapulsar.timing.protocols", "TimingHost"),
+    "PulsarInterface": ("metapulsar.timing.protocols", "PulsarInterface"),
 }
 
 
@@ -111,7 +114,7 @@ __all__ = [
     "EphemerisExtras",
     "TimingBackend",
     "JaxTimingBackend",
-    "TimingHost",
+    "PulsarInterface",
 ]
 
 

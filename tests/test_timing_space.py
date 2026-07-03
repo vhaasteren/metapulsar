@@ -130,9 +130,9 @@ def test_exact_native_ref_has_explicit_float_constructor():
     assert ref.values == ("123.0", "-1e-15")
 
 
-def test_fake_timing_host_fixture_is_auto_discovered(fake_timing_host):
-    assert fake_timing_host.name == "FAKEPSR"
-    assert fake_timing_host.Mmat.shape == (4, 2)
+def test_fake_pulsar_interface_fixture_is_auto_discovered(fake_pulsar_interface):
+    assert fake_pulsar_interface.name == "FAKEPSR"
+    assert fake_pulsar_interface.Mmat.shape == (4, 2)
 
 
 def test_whitening_linear_x_from_z_supports_jax_xp():
