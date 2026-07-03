@@ -77,14 +77,16 @@ class MetaPulsar:
             sort: Whether to sort data by time
         """
         self._pulsars = pulsars
-        # Extract parfile data from objects
-        self._parfile_dicts = self._get_parfile_data(pulsars)
         self.combination_strategy = combination_strategy
         self.combine_components = (
             combine_components if combination_strategy == "consistent" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
+        # Retained session par/tim must be available before reference-theta lookup:
+        # pulse-number tracking uses temporary TRACK -2 par paths that are deleted
+        # after libstempo construction.
         self._session_files = self._normalize_session_files(session_files)
+        self._parfile_dicts = self._get_parfile_data(pulsars)
         self._clock_dir = None if clock_dir is None else Path(clock_dir)
         self._sort = sort
         self._timing_backend_cache = {}
@@ -634,42 +636,41 @@ class MetaPulsar:
         raise KeyError(f"No PTA source available for {pta_name!r}")
 
     def _get_parfile_data(self, pulsars):
-        """Extract per-PTA parfile dictionaries for reference-theta lookup."""
+        """Extract per-PTA parfile dictionaries for reference-theta lookup.
+
+        This uses ``_parfile_content_for_pta`` as the single source of truth for
+        non-PINT sessions, so retained session par files (e.g. TRACK-modified
+        pulse-number tracking inputs) are preferred over transient object paths.
+        """
         from .pint_helpers import create_pint_model
+
+        if not hasattr(self, "_pulsars") or not self._pulsars:
+            self._pulsars = pulsars
 
         parfile_dicts = {}
         for pta_name, pulsar in pulsars.items():
+            if isinstance(pulsar, tuple) and len(pulsar) == 2:
+                # PINT tuple (model, toas) - preserve direct metadata extraction.
+                model, _ = pulsar
+                parfile_dicts[pta_name] = model.get_params_dict()
+                continue
+
+            par_attr = getattr(pulsar, "parfile", None)
+            if isinstance(par_attr, dict):
+                # Test doubles and legacy paths may expose dict-like metadata.
+                parfile_dicts[pta_name] = par_attr
+                continue
+
+            par_content = self._parfile_content_for_pta(pta_name)
             try:
-                if isinstance(pulsar, tuple) and len(pulsar) == 2:
-                    # PINT tuple (model, toas) - preserve direct metadata extraction.
-                    model, _ = pulsar
-                    parfile_dicts[pta_name] = model.get_params_dict()
-                    continue
-
-                par_attr = getattr(pulsar, "parfile", None)
-                if isinstance(par_attr, dict):
-                    # Test doubles and legacy paths may expose dict-like metadata.
-                    parfile_dicts[pta_name] = par_attr
-                    continue
-
-                if isinstance(par_attr, str):
-                    if "\n" in par_attr or par_attr.lstrip().startswith("PSR"):
-                        par_content = par_attr
-                    else:
-                        par_path = Path(par_attr)
-                        if par_path.is_file():
-                            par_content = par_path.read_text(encoding="utf-8")
-                        else:
-                            par_content = par_attr
-                else:
-                    par_content = self._get_libstempo_parfile_content(pulsar)
-
                 parfile_dicts[pta_name] = create_pint_model(
                     par_content
                 ).get_params_dict()
-            except Exception as e:
-                logger.error(f"Failed to extract parfile data from {pta_name}: {e}")
-                parfile_dicts[pta_name] = {}
+            except Exception as exc:
+                raise ValueError(
+                    "Failed to extract parfile metadata for "
+                    f"pta={pta_name!r} from canonical par content: {exc}"
+                ) from exc
         return parfile_dicts
 
     def _get_pulsar_name(self, pulsars):

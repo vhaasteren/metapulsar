@@ -114,3 +114,23 @@ def test_pulse_tracking_recovers_coherent_postfit_solution(timing_package):
         f"threshold={INCOHERENT_POSTFIT_RMS_THRESHOLD_S:.3e}s "
         f"postfit_without_pn={postfit_without_pn:.3e}s"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "timing_package",
+    [
+        pytest.param("tempo2", marks=pytest.mark.requires_libstempo),
+    ],
+)
+def test_pulse_tracking_retains_tempo2_reference_theta_metadata(timing_package):
+    """TRACK -2 tempo2 sessions must not lose par metadata for reference theta."""
+    file_data = _build_file_data(timing_package)
+    host = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        use_pulse_numbers="yes",
+    )
+    assert host._parfile_dicts[
+        "epta_like"
+    ], "tempo2 reference par metadata must not be empty when pulse tracking is on"
