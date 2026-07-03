@@ -149,23 +149,54 @@ def create_staggered_selection(
                     result.update(selections)
 
             elif isinstance(flag_spec, tuple):
-                # Staggered flags - try each flag in order until one is available
-                flag_values = None
-
-                for flag_name in flag_spec:
-                    if flag_name in flags:
-                        flag_values = flags[flag_name]
-                        break
-
-                if flag_values is not None:
-                    selections = _create_selections_for_flag(
-                        flag_values, target_value, name, freq_mask
-                    )
-                    result.update(selections)
+                selections = _create_staggered_selections_for_flags(
+                    flags, flag_spec, target_value, name, freq_mask
+                )
+                result.update(selections)
 
         return result
 
     return selection_function
+
+
+def _create_staggered_selections_for_flags(
+    flags: Dict[str, np.ndarray],
+    flag_names: Tuple[str, ...],
+    target_value: Optional[str],
+    base_name: str,
+    freq_mask: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    """Create staggered selections with per-TOA fallback across flag columns."""
+    n_toas = len(freq_mask)
+    for flag_name in flag_names:
+        if flag_name in flags:
+            n_toas = len(flags[flag_name])
+            break
+    else:
+        if not flags:
+            return {}
+        n_toas = len(next(iter(flags.values())))
+
+    msk_todo = np.ones(n_toas, dtype=bool)
+    selections: Dict[str, np.ndarray] = {}
+
+    for flag_name in flag_names:
+        if flag_name not in flags:
+            continue
+
+        flag_values = flags[flag_name]
+        if target_value is None:
+            values = set(flag_values) - {""}
+        else:
+            values = {target_value}
+
+        for value in values:
+            msk_flag = (flag_values == value) & freq_mask
+            if np.any(msk_todo & msk_flag):
+                selections[f"{base_name}_{value}"] = msk_flag
+                msk_todo &= ~msk_flag
+
+    return selections
 
 
 def _create_selections_for_flag(
