@@ -7,8 +7,11 @@ for multi-PTA pulsar data.
 
 import pytest
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch, mock_open
+
+from pint.models.model_builder import parse_parfile
 
 from metapulsar.parameter_manager import (
     ParameterManager,
@@ -872,6 +875,26 @@ UNITS TDB
         }
 
         assert "DM" in mergeable
+
+        parfile_data = {
+            pta: data["par_content"]
+            for pta, data in file_data_with_two_different_dm_values.items()
+        }
+        consistent_parfiles = parameter_manager._make_parameters_consistent(
+            parfile_data
+        )
+
+        for pta_name in file_data_with_two_different_dm_values:
+            parfile_dict = parse_parfile(StringIO(consistent_parfiles[pta_name]))
+            assert parfile_dict["DM"] == ["13.2 1"]
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM" in mapping.merged_parameters
+        assert "DM1" in mapping.merged_parameters
+        assert "DM2" in mapping.merged_parameters
+        assert "DM_EPTA" not in mapping.pta_specific_parameters
+        assert "DM_PPTA" not in mapping.pta_specific_parameters
 
     @pytest.fixture
     def file_data_with_two_different_f0_values(self):
