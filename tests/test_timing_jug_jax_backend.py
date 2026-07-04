@@ -95,4 +95,7 @@ def test_jax_timing_state_residual_delta_np_preserves_high_precision_f0(monkeypa
         _residual_delta_jax_fn=lambda delta: delta,
     )
 
-    np.testing.assert_allclose(state.residual_delta_np(np.zeros(1)), [0.0], atol=1e-18)
+    with pytest.deprecated_call():
+        np.testing.assert_allclose(
+            state.residual_delta_np(np.zeros(1)), [0.0], atol=1e-18
+        )

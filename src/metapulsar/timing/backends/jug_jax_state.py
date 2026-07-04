@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,12 @@ from jug.utils.constants import HOURANGLE_PER_RAD, RAD_TO_DEG
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 from jug.utils.units import validate_column_units
 
+_NUMPY_RESIDUAL_DEPRECATION = (
+    "JUG NumPy residual path (residual_delta_np) is deprecated and will be "
+    "removed once JAX residual_delta_jax reaches full parity. Use "
+    "residual_delta_jax for new code."
+)
+
 
 @dataclass(frozen=True)
 class JaxTimingState:
@@ -46,6 +53,11 @@ class JaxTimingState:
     _residual_delta_jax_fn: Any
 
     def residual_delta_np(self, delta_theta: np.ndarray) -> np.ndarray:
+        warnings.warn(
+            _NUMPY_RESIDUAL_DEPRECATION,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         delta_theta = np.asarray(delta_theta, dtype=np.float64).reshape(-1)
         params = dict(self.ref_params)
         for idx, name in enumerate(self.fit_params):

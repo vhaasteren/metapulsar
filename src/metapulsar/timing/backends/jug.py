@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Mapping
 
 import numpy as np
 
 from .engines import infer_jug_param_mapping
 from .base import LinearModel, LinearTimingBackend
+from .jug_jax_state import _NUMPY_RESIDUAL_DEPRECATION
+
+_ECLIPTIC_FITPARS = frozenset(
+    {
+        "ELONG",
+        "ELAT",
+        "PMELONG",
+        "PMELAT",
+        "LAMBDA",
+        "BETA",
+        "PMLAMBDA",
+        "PMBETA",
+    }
+)
 
 
 class JugEngine:
@@ -133,6 +148,11 @@ class JugEngine:
         return dict(self._model.theta_exact)
 
     def residual_delta(self, delta_theta: np.ndarray) -> np.ndarray:
+        warnings.warn(
+            _NUMPY_RESIDUAL_DEPRECATION,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         nonlinear = self._state.residual_delta_np(self._jug_delta(delta_theta))
         return nonlinear + self._exact_linear_delta(delta_theta)
 
@@ -143,8 +163,24 @@ class JugEngine:
         """Return JUG-owned linearized residual columns in backend fitpar order."""
         design = np.asarray(self._model.design, dtype=float).copy()
         jug_matrix = np.asarray(self._state.design_matrix, dtype=float)
+        param_mapping = dict(getattr(self._state, "param_mapping", ()))
+        jug_fitpars = getattr(self, "_jug_fitpars", self.fitpars)
         for local_col, model_col in enumerate(self._jug_indices):
             design[:, model_col] = jug_matrix[:, local_col]
+            canonical = jug_fitpars[local_col]
+            backend = param_mapping.get(canonical, canonical)
+            if (
+                backend.upper() in _ECLIPTIC_FITPARS
+                or canonical.upper() in _ECLIPTIC_FITPARS
+            ):
+                col_norm = float(np.linalg.norm(jug_matrix[:, local_col]))
+                if col_norm < 1e-30:
+                    raise ValueError(
+                        f"JUG autodiff design-matrix column for {canonical!r} is "
+                        "numerically zero; ecliptic sync may be broken. Use "
+                        "design_matrix_method='analytic' or exact_linear for "
+                        "ecliptic params until fixed."
+                    )
         return design
 
     def residual_delta_jax(self, delta_theta: Any) -> Any:

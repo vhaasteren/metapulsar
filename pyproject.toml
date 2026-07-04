@@ -152,4 +152,5 @@ markers = [
     "requires_libstempo: marks tests that need libstempo/Tempo2 available",
     "requires_ipta_data: marks tests that need IPTA data files present",
     "requires_legacy: marks tests that need metapulsar.legacy installed",
+    "jug_numpy_jax_parity_deprecated: TEMPORARY — compares deprecated NumPy residual path to JAX; remove after JAX migration",
 ]
