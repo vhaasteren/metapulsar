@@ -12,7 +12,7 @@ import numpy as np
 from metapulsar.timing.protocols import EnterprisePulsarLike, TimingBackend
 
 # JUG(tempo2) G1: reference vs _update_param longdouble promotion is ~1e-8 s on
-# real IPTA data. See ref-packages/jug/TEMPO2_PARITY_GAPS.md (G1).
+# real IPTA data. See ref-packages/jug/TEMPO2_PARITY.md (G1).
 _JUG_TEMPO2_ZERO_DELTA_TOL_SEC = 1e-7
 _JUG_TEMPO2_COMPAT_MODES = frozenset(
     {"tempo2", "tempo2-compatible", "tempo2_compatible"}
@@ -84,7 +84,7 @@ def validate_backend_zero_delta(backend: TimingBackend, tol: float = 1e-12) -> N
                 "JUG compatibility='tempo2' residual_delta(0) is within the relaxed "
                 f"MetaPulsar tolerance ({effective_tol:.1e} s, max|delta|={max_abs:.1e} s) "
                 "but not the strict check. Known reference-state gap (JUG "
-                "TEMPO2_PARITY_GAPS.md G1); nonlinear tempo2 parity is still experimental.",
+                "TEMPO2_PARITY.md G1); nonlinear tempo2 parity is still experimental.",
                 stacklevel=2,
             )
         return
