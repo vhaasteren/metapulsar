@@ -975,25 +975,15 @@ class MetaPulsar:
                 )
             else:
                 jug_session = self._build_jug_session(pta_name, native_compat)
-                from .timing.backends.engines import infer_jug_param_mapping
-
                 session_mapping = {
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
                     for name in session_fitpars
-                }
-                alias_mapping = infer_jug_param_mapping(
-                    tuple(session_mapping.values()),
-                    set(jug_session.params.keys()),
-                )
-                param_mapping = {
-                    host_name: alias_mapping.get(mapped, mapped)
-                    for host_name, mapped in session_mapping.items()
                 }
                 backend = JugEngine.from_session(
                     jug_session,
                     linear_model=linear_model,
                     compatibility=native_compat,
-                    param_mapping=param_mapping,
+                    param_mapping=session_mapping,
                     design_matrix_method=design_matrix_method,
                 )
 

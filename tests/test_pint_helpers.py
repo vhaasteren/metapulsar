@@ -12,6 +12,7 @@ from metapulsar.pint_helpers import (
     get_parameters_by_type_from_parfiles,
     create_pint_model,
     resolve_parameter_alias,
+    resolve_parfile_parameter_name,
     PINTDiscoveryError,
 )
 
@@ -87,8 +88,27 @@ class TestResolveParameterAlias:
         assert fitpars_canonical == ["EDOT", "F0", "RAJ"]
         assert fitpars_canonical.index(resolve_parameter_alias(mapped_param)) == 0
 
+    def test_resolve_parfile_parameter_name_xdot(self):
+        """Parfiles with XDOT should resolve to XDOT, not PINT canonical A1DOT."""
+        parfile_dict = {
+            "XDOT": ["8.1279761448223669144e-15"],
+            "F0": ["316.12397933185408713"],
+        }
+        assert resolve_parfile_parameter_name("A1DOT", parfile_dict) == "XDOT"
+        assert (
+            resolve_parfile_parameter_name("A1DOT", parfile_dict, fallback="A1DOT")
+            == "XDOT"
+        )
 
-# These tests are commented out until the function is implemented as part of the refactor
+    def test_resolve_parfile_parameter_name_eccdot(self):
+        """Parfiles with ECCDOT should resolve to ECCDOT for canonical EDOT."""
+        parfile_dict = {
+            "ECCDOT": ["1.2e-20"],
+            "F0": ["316.12397933185408713"],
+        }
+        assert resolve_parfile_parameter_name("EDOT", parfile_dict) == "ECCDOT"
+
+
 #
 # class TestGetParametersByTypeFromPint:
 #     """Test get_parameters_by_type_from_pint function."""

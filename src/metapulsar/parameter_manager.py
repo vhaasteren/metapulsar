@@ -19,6 +19,7 @@ from pint.models.timing_model import TimingModel
 
 from .pint_helpers import (
     resolve_parameter_alias,
+    resolve_parfile_parameter_name,
     create_pint_model,
     get_parameters_by_type_from_models,
     check_component_available_in_model,
@@ -838,6 +839,7 @@ class ParameterManager:
         """Process parameters from all PTAs."""
         fitparameters = {}
         setparameters = {}
+        parfile_dicts = self._parse_parfiles()
 
         # Create PINT models from file data
         pint_models = {}
@@ -846,11 +848,12 @@ class ParameterManager:
             pint_models[pta_name] = create_pint_model(parfile_content)
 
         for pta_name, model in pint_models.items():
+            parfile_dict = parfile_dicts[pta_name]
             self._process_pta_parameters(
-                pta_name, model, mergeable_params, fitparameters, "free"
+                pta_name, model, mergeable_params, fitparameters, "free", parfile_dict
             )
             self._process_pta_parameters(
-                pta_name, model, mergeable_params, setparameters, "all"
+                pta_name, model, mergeable_params, setparameters, "all", parfile_dict
             )
 
             # Make sure Offset is added if PHOFF is not present
@@ -858,10 +861,10 @@ class ParameterManager:
             # typically sneakily fit for
             if "PHOFF" not in model.params:
                 self._add_pta_specific_parameter(
-                    "PHOFF", pta_name, "Offset", fitparameters
+                    "PHOFF", pta_name, "Offset", "Offset", fitparameters
                 )
                 self._add_pta_specific_parameter(
-                    "PHOFF", pta_name, "Offset", setparameters
+                    "PHOFF", pta_name, "Offset", "Offset", setparameters
                 )
 
         return fitparameters, setparameters
@@ -873,6 +876,7 @@ class ParameterManager:
         mergeable_params: List[str],
         target_dict: Dict,
         parameter_type: str = "all",
+        parfile_dict: Dict[str, Any] | None = None,
     ) -> None:
         """Process parameters for a single PINT model.
 
@@ -882,6 +886,7 @@ class ParameterManager:
             mergeable_params: List of parameters that should be merged
             target_dict: Dictionary to update with parameters
             parameter_type: Type of parameters to process ("free" or "all")
+            parfile_dict: Parsed parfile dictionary for backend-native name lookup
         """
         if parameter_type == "free":
             param_list = model.free_params  # Only free (unfrozen) parameters
@@ -894,19 +899,27 @@ class ParameterManager:
                 f"Processing PTA '{pta_name}' with {len(param_list)} total parameters"
             )
 
+        if parfile_dict is None:
+            parfile_dict = {}
+
         for param_name in param_list:
-            meta_parname = self.resolve_parameter_aliases(param_name)
+            canonical_name = self.resolve_parameter_aliases(param_name)
+            mapped_name = resolve_parfile_parameter_name(
+                canonical_name,
+                parfile_dict,
+                fallback=param_name,
+            )
 
             # Check if this parameter should be merged
             if param_name in mergeable_params:
                 # Add as merged parameter - will fail if not available across PTAs
                 self._add_merged_parameter(
-                    meta_parname, pta_name, param_name, target_dict
+                    canonical_name, pta_name, mapped_name, target_dict
                 )
             else:
                 # Parameter not mergeable (detector-specific), make it PTA-specific
                 self._add_pta_specific_parameter(
-                    meta_parname, pta_name, param_name, target_dict
+                    canonical_name, pta_name, param_name, mapped_name, target_dict
                 )
 
     def _add_merged_parameter(
@@ -918,12 +931,16 @@ class ParameterManager:
         target_dict[meta_parname][pta_name] = param_name
 
     def _add_pta_specific_parameter(
-        self, meta_parname: str, pta_name: str, param_name: str, target_dict: Dict
+        self,
+        meta_parname: str,
+        pta_name: str,
+        host_param_name: str,
+        mapped_param_name: str,
+        target_dict: Dict,
     ) -> None:
         """Add a PTA-specific parameter to target dictionary."""
-        # For PTA-specific parameters, use the original parameter name
-        full_parname = f"{param_name}_{pta_name}"
-        target_dict[full_parname] = {pta_name: param_name}
+        full_parname = f"{host_param_name}_{pta_name}"
+        target_dict[full_parname] = {pta_name: mapped_param_name}
 
     def _validate_parameter_consistency(
         self, fitparameters: Dict, setparameters: Dict

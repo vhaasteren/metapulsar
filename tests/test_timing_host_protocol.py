@@ -199,3 +199,85 @@ def test_metapulsar_timing_backend_cache_tracks_host_state():
 
     assert host.cache_token() != token
     assert changed is not backend
+
+
+def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
+    """LibstempoEngine should accept A1DOT->XDOT mapping built by ParameterManager."""
+    from metapulsar.mockpulsar import MockParameter
+    from metapulsar.parameter_manager import ParameterManager
+    from metapulsar.timing.backends.base import LinearModel
+    from metapulsar.timing.backends.engines import Tempo2DeltaEngine
+    from metapulsar.timing.backends.tempo2 import LibstempoEngine
+
+    file_data = {
+        "epta": {
+            "timing_package": "tempo2",
+            "par_content": (
+                "PSRJ J1640+2224\n"
+                "F0 316.12397933185408713 1 0\n"
+                "PEPOCH 55000\n"
+                "DM 18.417 1 0\n"
+                "BINARY T2\n"
+                "PB 175.46066459623014253 1 0\n"
+                "T0 51626.179967495799449 1 0\n"
+                "A1 55.329722354525327725 1 0\n"
+                "OM 50.733505043065199373 1 0\n"
+                "ECC 0.0007972975541058369088 1 0\n"
+                "XDOT 8.1279761448223669144e-15 1 0\n"
+                "EPHEM DE421\n"
+                "CLK TT(BIPM2011)\n"
+            ),
+        }
+    }
+    pm = ParameterManager(file_data=file_data, combine_components=["binary"])
+    mapping = pm.build_parameter_mappings()
+    param_mapping = {"A1DOT": mapping.fitparameters["A1DOT"]["epta"]}
+    assert param_mapping == {"A1DOT": "XDOT"}
+
+    class XdotPulsar:
+        def __init__(self):
+            self._fitpars = ["XDOT", "F0"]
+            self._setpars = ["XDOT", "F0", "PB"]
+            self._params = {
+                "XDOT": MockParameter(8.1279761448223669144e-15),
+                "F0": MockParameter(316.12397933185408713),
+            }
+            self._residuals = np.zeros(4)
+            self._design = np.array(
+                [[1.0, 0.0], [1.0, 0.1], [1.0, 0.2], [1.0, 0.3]], dtype=float
+            )
+
+        def pars(self, which="fit"):
+            return tuple(self._fitpars if which == "fit" else self._setpars)
+
+        def __getitem__(self, name):
+            return self._params[name]
+
+        def formbats(self):
+            pass
+
+        def residuals(self):
+            return self._residuals.copy()
+
+        def designmatrix(self):
+            return self._design.copy()
+
+    psr = XdotPulsar()
+    model = LinearModel.from_host(
+        fitpars=("A1DOT", "F0"),
+        design=np.array([[0.5, 0.0], [0.5, 0.1], [0.5, 0.2], [0.5, 0.3]], dtype=float),
+        theta_exact={
+            "A1DOT": "8.1279761448223669144e-15",
+            "F0": "316.12397933185408713",
+        },
+    )
+    backend = LibstempoEngine.from_session(
+        psr, linear_model=model, param_mapping=param_mapping
+    )
+    np.testing.assert_allclose(
+        backend.residual_delta(np.zeros(2, dtype=float)), np.zeros(4)
+    )
+
+    engine = Tempo2DeltaEngine(psr)
+    with pytest.raises(KeyError, match="A1DOT"):
+        engine.delta_residuals({"A1DOT": 1e-18})

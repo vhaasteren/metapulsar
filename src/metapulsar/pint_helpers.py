@@ -4,7 +4,17 @@ This module provides pure functions that encapsulate PINT-specific logic
 for parameter discovery, alias resolution, and model validation.
 """
 
-from typing import Dict, List, Tuple, Any, Iterator, Literal, Optional, TYPE_CHECKING
+from typing import (
+    Dict,
+    List,
+    Tuple,
+    Any,
+    Iterator,
+    Literal,
+    Mapping,
+    Optional,
+    TYPE_CHECKING,
+)
 from functools import lru_cache
 from pint.models import TimingModel
 from pint.models.timing_model import AllComponents
@@ -133,7 +143,7 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
         return [canonical_param]
 
 
-def _parfile_alias_value_present(parfile_dict: Dict[str, Any], alias: str) -> bool:
+def _parfile_alias_value_present(parfile_dict: Mapping[str, Any], alias: str) -> bool:
     """Return True if alias is present in a parfile dict with a non-empty value."""
     if alias not in parfile_dict:
         return False
@@ -153,6 +163,27 @@ def has_parameter_alias(parfile_dict: Dict[str, Any], canonical_param: str) -> b
         _parfile_alias_value_present(parfile_dict, alias)
         for alias in get_aliases_for_parameter(canonical_param)
     )
+
+
+def resolve_parfile_parameter_name(
+    canonical_name: str,
+    parfile_dict: Mapping[str, Any],
+    *,
+    fallback: str | None = None,
+) -> str:
+    """Return the parfile key spelling for a canonical parameter name.
+
+    Preference order:
+    1) first alias from get_aliases_for_parameter() present with non-empty value
+    2) fallback (typically the PINT model param name)
+    3) canonical_name
+    """
+    for alias in get_aliases_for_parameter(canonical_name):
+        if _parfile_alias_value_present(parfile_dict, alias):
+            return alias
+    if fallback is not None:
+        return fallback
+    return canonical_name
 
 
 def has_equatorial_astrometry(parfile_dict: Dict[str, Any]) -> bool:

@@ -197,10 +197,25 @@ UNITS TDB
         """Test adding PTA-specific parameter to dictionary."""
         setparameters = {}
 
-        parameter_manager._add_pta_specific_parameter("DM", "EPTA", "DM", setparameters)
+        parameter_manager._add_pta_specific_parameter(
+            "DM", "EPTA", "DM", "DM", setparameters
+        )
 
         assert "DM_EPTA" in setparameters
         assert setparameters["DM_EPTA"]["EPTA"] == "DM"
+
+    def test_add_pta_specific_parameter_host_key_differs_from_mapped_value(
+        self, parameter_manager
+    ):
+        """Host key suffix uses PINT name; mapped value uses parfile-native spelling."""
+        setparameters = {}
+
+        parameter_manager._add_pta_specific_parameter(
+            "A1DOT", "epta", "A1DOT", "XDOT", setparameters
+        )
+
+        assert "A1DOT_epta" in setparameters
+        assert setparameters["A1DOT_epta"]["epta"] == "XDOT"
 
     def test_validate_parameter_consistency(self, parameter_manager):
         """Test parameter consistency validation."""
@@ -372,6 +387,36 @@ UNITS TDB
                         mock_process.assert_called_once()
                         mock_validate.assert_called_once()
                         mock_build.assert_called_once()
+
+    def test_build_parameter_mappings_uses_parfile_native_xdot(self):
+        """Binary parfiles with XDOT should map A1DOT host key to XDOT backend name."""
+        file_data = {
+            "epta": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSRJ J1640+2224\n"
+                    "F0 316.12397933185408713 1 0\n"
+                    "PEPOCH 55000\n"
+                    "DM 18.417 1 0\n"
+                    "BINARY T2\n"
+                    "PB 175.46066459623014253 1 0\n"
+                    "T0 51626.179967495799449 1 0\n"
+                    "A1 55.329722354525327725 1 0\n"
+                    "OM 50.733505043065199373 1 0\n"
+                    "ECC 0.0007972975541058369088 1 0\n"
+                    "XDOT 8.1279761448223669144e-15 1 0\n"
+                    "EPHEM DE421\n"
+                    "CLK TT(BIPM2011)\n"
+                ),
+            }
+        }
+        pm = ParameterManager(
+            file_data=file_data,
+            combine_components=["binary"],
+        )
+        result = pm.build_parameter_mappings()
+        assert "A1DOT" in result.fitparameters
+        assert result.fitparameters["A1DOT"]["epta"] == "XDOT"
 
     # ===== ERROR HANDLING TESTS =====
 
