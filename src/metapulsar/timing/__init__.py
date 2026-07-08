@@ -1,5 +1,14 @@
 """Nonlinear timing transforms, timing engines, and likelihood-frontend adapters."""
 
+from .artifacts import (
+    NLTArtifactError,
+    NLTBinding,
+    NLTChainBundle,
+    build_binding,
+    deterministic_site_name,
+    physical_deterministics,
+    save_discovery_checkpoint,
+)
 from .nonlinear_timing_model import NonLinearTimingModel
 from .protocols import (
     EnterprisePulsarLike,
@@ -13,6 +22,13 @@ from .space import ParameterSpace
 __all__ = [
     "NonLinearTimingModel",
     "ParameterSpace",
+    "NLTArtifactError",
+    "NLTBinding",
+    "NLTChainBundle",
+    "build_binding",
+    "deterministic_site_name",
+    "physical_deterministics",
+    "save_discovery_checkpoint",
     "EnterprisePulsarLike",
     "EphemerisExtras",
     "TimingBackend",

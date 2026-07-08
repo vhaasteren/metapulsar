@@ -107,5 +107,7 @@ def test_multi_host_prefixes_and_cache_independence(monkeypatch):
     ntm.record_physical(host_a, params_a, scope="timing")
     ntm.record_physical(host_b, params_b, scope="timing")
     deterministic_names = {name for name, _ in deterministic_calls}
-    assert f"{host_a.name}_timing_F1_theta" in deterministic_names
-    assert f"{host_b.name}_timing_F1_theta" in deterministic_names
+    assert f"{host_a.name}_timing_F1_theta_native" in deterministic_names
+    assert f"{host_a.name}_timing_F1_theta_display" in deterministic_names
+    assert f"{host_b.name}_timing_F1_theta_native" in deterministic_names
+    assert f"{host_b.name}_timing_F1_theta_display" in deterministic_names

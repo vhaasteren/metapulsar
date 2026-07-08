@@ -100,11 +100,16 @@ def test_record_physical_timing_scope_emits_prefixed_theta_sites(host, monkeypat
 
     ntm.record_physical(host, params, scope="timing")
 
-    assert calls["deterministic"][0][0] == f"{host.name}_timing_F1_theta"
+    det_names = [name for name, _ in calls["deterministic"]]
+    assert f"{host.name}_timing_F1_theta_native" in det_names
+    assert f"{host.name}_timing_F1_theta_display" in det_names
     expected_theta = ntm.space(host).theta_from_delta(
         np.array([params[f"{host.name}_timing_F1"]])
     )
-    np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
+    native_call = next(
+        v for n, v in calls["deterministic"] if n.endswith("_theta_native")
+    )
+    np.testing.assert_allclose(native_call, expected_theta[0])
 
 
 def test_record_physical_scope_all_raises(host):
@@ -134,7 +139,7 @@ def test_record_physical_does_not_change_density_calls(host, monkeypatch):
 
     assert len(calls["sample"]) == n_sample
     assert len(calls["factor"]) == n_factor
-    assert len(calls["deterministic"]) == 1
+    assert len(calls["deterministic"]) == 2
 
 
 def test_record_physical_explicit_coord_handles_standardized_scalar_params(
@@ -155,8 +160,13 @@ def test_record_physical_explicit_coord_handles_standardized_scalar_params(
     space = ntm.space(host)
     delta = space.delta_from_coord(np.array([x_value], dtype=float), np, coord="x")
     expected_theta = space.theta_from_delta(delta)
-    assert calls["deterministic"][0][0] == f"{host.name}_timing_F1_theta"
-    np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
+    det_names = [name for name, _ in calls["deterministic"]]
+    assert f"{host.name}_timing_F1_theta_native" in det_names
+    assert f"{host.name}_timing_F1_theta_display" in det_names
+    native_call = next(
+        v for n, v in calls["deterministic"] if n.endswith("_theta_native")
+    )
+    np.testing.assert_allclose(native_call, expected_theta[0])
 
 
 def test_record_physical_implicit_coord_handles_standardized_contribute_output(
@@ -178,8 +188,13 @@ def test_record_physical_implicit_coord_handles_standardized_contribute_output(
     expected_theta = ntm.space(host).theta_from_delta(
         np.array([params[f"{host.name}_timing_F1"]], dtype=float)
     )
-    assert calls["deterministic"][0][0] == f"{host.name}_timing_F1_theta"
-    np.testing.assert_allclose(calls["deterministic"][0][1], expected_theta[0])
+    det_names = [name for name, _ in calls["deterministic"]]
+    assert f"{host.name}_timing_F1_theta_native" in det_names
+    assert f"{host.name}_timing_F1_theta_display" in det_names
+    native_call = next(
+        v for n, v in calls["deterministic"] if n.endswith("_theta_native")
+    )
+    np.testing.assert_allclose(native_call, expected_theta[0])
 
 
 def test_record_physical_invalid_coord_raises(host):

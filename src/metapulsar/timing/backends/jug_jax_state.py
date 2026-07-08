@@ -136,13 +136,24 @@ def export_jax_timing_state(
     mapping = dict(param_mapping or {})
 
     cached = session._cached_result_by_mode.get(subtract_tzr)
-    if cached is None:
+    needs_native_payload = str(compatibility).lower().startswith("tempo2")
+    if cached is None or "dt_sec" not in cached:
         session.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=False)
+        cached = session._cached_result_by_mode.get(subtract_tzr)
+    elif needs_native_payload and cached.get("term_diagnostics") is None:
+        session.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=True)
         cached = session._cached_result_by_mode.get(subtract_tzr)
     if cached is None or "dt_sec" not in cached:
         raise RuntimeError(
             "TimingSession cache is unavailable; call compute_residuals() first."
         )
+    if needs_native_payload:
+        td = cached.get("term_diagnostics") or {}
+        if "tempo2_obs_state" not in td:
+            raise RuntimeError(
+                "Tempo2 JUG cache is missing term_diagnostics['tempo2_obs_state']; "
+                "call compute_residuals(force_recompute=True) with tempo2 compatibility."
+            )
 
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in session.toas_data])
     errors_us = np.array([toa.error_us for toa in session.toas_data])
@@ -167,6 +178,8 @@ def export_jax_timing_state(
         "sw_geometry_pc": cached.get("sw_geometry_pc"),
         "jump_phase": cached.get("jump_phase"),
         "tzr_phase": cached.get("tzr_phase"),
+        "term_diagnostics": cached.get("term_diagnostics"),
+        "toas": session.toas_data,
     }
 
     mapping = dict(param_mapping or {})

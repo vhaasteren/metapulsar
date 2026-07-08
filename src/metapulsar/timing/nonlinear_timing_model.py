@@ -11,7 +11,16 @@ import numpy as np
 
 from .bijectors import AxisPrior, WhiteningLinear
 from .partition import PartitionResult, resolve_partition
-from .priors import PriorBlock, PriorPolicy, set_prior, validate_prior_policy
+from .priors import (
+    PriorBlock,
+    PriorBuildContext,
+    PriorFrame,
+    PriorOverrideSpec,
+    PriorPolicy,
+    materialize_prior_override,
+    store_prior_override,
+    validate_prior_policy,
+)
 from .space import ParameterSpace, default_coord_for_transform
 from .units import lookup_pint_param, native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
@@ -96,11 +105,25 @@ class NonLinearTimingModel:
             None if whitening_config is None else dict(whitening_config)
         )
         self.name = name
-        self._prior_overrides: dict[str, AxisPrior] = {}
+        self._prior_overrides: dict[str, PriorOverrideSpec] = {}
         self._resolved_cache: dict[str, BoundTiming] = {}
 
-    def set_prior(self, name: str, kind: str, **bounds) -> None:
-        """Set or override one sampled-parameter prior."""
+    def set_prior(
+        self,
+        name: str,
+        kind: str,
+        *,
+        frame: PriorFrame = "absolute",
+        scale: str | None = None,
+        **bounds,
+    ) -> None:
+        """Set or override one sampled-parameter prior.
+
+        frame='absolute': bounds are native/physical values converted to delta at bind time.
+        frame='delta': bounds are offsets from the bound parameter's backend reference.
+        scale: optional fitpar name; multiplies bounds by that parameter's backend ref
+               (delta frame only).
+        """
         if kind == "normal":
             prior = AxisPrior(
                 family="normal",
@@ -114,6 +137,8 @@ class NonLinearTimingModel:
                 upper=float(bounds["upper"]),
             )
         elif kind == "log_uniform":
+            if scale is not None:
+                raise ValueError("scale=... is not supported for log_uniform priors")
             prior = AxisPrior(
                 family="log_uniform",
                 lower=float(bounds["lower"]),
@@ -129,8 +154,21 @@ class NonLinearTimingModel:
             )
         else:
             raise ValueError(f"Unsupported prior kind: {kind}")
-        self._prior_overrides = set_prior(self._prior_overrides, name, prior)
+
+        spec = PriorOverrideSpec(prior=prior, frame=frame, scale=scale)
+        self._prior_overrides = store_prior_override(self._prior_overrides, name, spec)
         self._resolved_cache.clear()
+
+    def set_prior_delta(
+        self,
+        name: str,
+        kind: str,
+        *,
+        scale: str | None = None,
+        **bounds,
+    ) -> None:
+        """Convenience wrapper for frame='delta' priors."""
+        self.set_prior(name, kind, frame="delta", scale=scale, **bounds)
 
     def with_engines(self, engines) -> "NonLinearTimingModel":
         """Return a new model config with a different engine selection."""
@@ -158,7 +196,12 @@ class NonLinearTimingModel:
             "whitening_config": self.whitening_config,
             "name": self.name,
             "prior_overrides": {
-                key: vars(prior) for key, prior in sorted(self._prior_overrides.items())
+                key: {
+                    "frame": spec.frame,
+                    "scale": spec.scale,
+                    "prior": vars(spec.prior),
+                }
+                for key, spec in sorted(self._prior_overrides.items())
             },
         }
         return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
@@ -173,9 +216,15 @@ class NonLinearTimingModel:
             pulsar, analytically_marginalize=self.analytically_marginalize
         )
 
-    def _effective_overrides(self, partition: PartitionResult) -> dict[str, AxisPrior]:
-        sampled_set = set(partition.sampled)
+    def _resolve_prior_overrides(
+        self,
+        *,
+        backend,
+        partition: PartitionResult,
+    ) -> dict[str, AxisPrior]:
+        """Materialize stored override specs into delta-space AxisPrior values."""
         fitpar_set = set(partition.fitpars)
+        sampled_set = set(partition.sampled)
         unknown = sorted(
             name for name in self._prior_overrides if name not in fitpar_set
         )
@@ -194,11 +243,19 @@ class NonLinearTimingModel:
                 "Prior overrides target non-sampled parameters for this pulsar: "
                 f"{invalid}"
             )
-        return {
-            name: prior
-            for name, prior in self._prior_overrides.items()
-            if name in sampled_set
-        }
+
+        ref_exact = backend.reference_theta_exact()
+        ctx = PriorBuildContext(
+            refs=ref_exact,
+            fitpars=partition.fitpars,
+            sampled=partition.sampled,
+        )
+        resolved: dict[str, AxisPrior] = {}
+        for name, spec in self._prior_overrides.items():
+            if name not in sampled_set:
+                continue
+            resolved[name] = materialize_prior_override(name, spec, ctx)
+        return resolved
 
     def _build_prior_block(
         self,
@@ -220,7 +277,11 @@ class NonLinearTimingModel:
         block = PriorBlock.from_fitpars(
             partition.sampled,
             policy=self.prior_policy,
-            overrides=self._effective_overrides(partition),
+            overrides=self._resolve_prior_overrides(
+                backend=backend,
+                partition=partition,
+            ),
+            overrides_in_delta=True,
             theta_ref=sampled_refs,
             pint_model=pulsar.pint_model(),
         )
@@ -447,6 +508,24 @@ class NonLinearTimingModel:
     def space(self, pulsar) -> ParameterSpace:
         return self._resolve(pulsar).space
 
+    def binding_fingerprint(self, pulsar) -> str:
+        """Identity of decoder + frontend config + pulsar/model state."""
+        backend = self._backend_for_pulsar(pulsar)
+        payload = {
+            "config": self._config_fingerprint(),
+            "pulsar_state": self._pulsar_state_fingerprint(pulsar, backend),
+            "space": self.space(pulsar).fingerprint(),
+            "transform": self.transform,
+            "coord": default_coord_for_transform(self.transform),
+            "sampled": list(self.sampled(pulsar)),
+            "engines": sorted(self.engines.items()),
+            "design_matrix_method": self.design_matrix_method,
+        }
+        return (
+            "sha256:"
+            + hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+        )
+
     def discovery_signals(self, pulsar) -> list:
         from .frontends.discovery import discovery_signals
 
@@ -616,9 +695,17 @@ class NonLinearTimingModel:
             coord=coord,
             coord_explicit=coord_was_explicit,
         )
-        theta = resolved.space.theta_from_delta(delta)
-        for i, name in enumerate(sampled):
+        prefix = f"{pulsar.name}_{self.name}"
+        theta_native = resolved.space.to_physical(
+            delta[None, :], units="native", coord="delta"
+        )
+        theta_display = resolved.space.to_physical(
+            delta[None, :], units="display", coord="delta"
+        )
+        for name in sampled:
             numpyro.deterministic(
-                f"{pulsar.name}_{self.name}_{name}_theta",
-                theta[i],
+                f"{prefix}_{name}_theta_native", theta_native[name][0]
+            )
+            numpyro.deterministic(
+                f"{prefix}_{name}_theta_display", theta_display[name][0]
             )

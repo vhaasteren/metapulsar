@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
-from typing import Literal
+from typing import Literal, Mapping
+
+import numpy as np
 
 from metapulsar.pint_helpers import resolve_parameter_alias
 
@@ -12,7 +14,27 @@ from .bijectors import AxisPrior, PriorBijector
 from .precision import ExactNativeRef
 
 PriorPolicy = Literal["fallback", "strict", "explicit"]
+PriorFrame = Literal["absolute", "delta"]
 ABSOLUTE_FORMING_FAMILIES = frozenset({"log_uniform"})
+_SCALE_SUPPORTED_FAMILIES = frozenset({"uniform", "normal", "truncated_normal"})
+
+
+@dataclass(frozen=True)
+class PriorOverrideSpec:
+    """User-declared prior override before pulsar binding."""
+
+    prior: AxisPrior
+    frame: PriorFrame = "absolute"
+    scale: str | None = None
+
+
+@dataclass(frozen=True)
+class PriorBuildContext:
+    """Bind-time context for materializing prior overrides."""
+
+    refs: Mapping[str, str]
+    fitpars: tuple[str, ...]
+    sampled: tuple[str, ...]
 
 
 def validate_prior_policy(policy: str) -> PriorPolicy:
@@ -24,13 +46,15 @@ def validate_prior_policy(policy: str) -> PriorPolicy:
     return policy  # type: ignore[return-value]
 
 
-def set_prior(
-    overrides: dict[str, AxisPrior], param_name: str, prior: AxisPrior
-) -> dict[str, AxisPrior]:
-    """Set/override one prior with canonical-name normalization."""
+def store_prior_override(
+    overrides: dict[str, PriorOverrideSpec],
+    param_name: str,
+    spec: PriorOverrideSpec,
+) -> dict[str, PriorOverrideSpec]:
+    """Set/override one prior spec with canonical-name normalization."""
     canonical = resolve_parameter_alias(param_name)
     merged = dict(overrides)
-    merged[canonical] = prior
+    merged[canonical] = spec
     return merged
 
 
@@ -104,6 +128,51 @@ def _ref_mapping(
     return mapping
 
 
+def _scale_factor(ctx: PriorBuildContext, scale: str) -> float:
+    canonical = resolve_parameter_alias(scale)
+    if canonical not in ctx.refs:
+        raise ValueError(
+            f"Prior scale parameter '{scale}' is missing from backend references"
+        )
+    if canonical not in ctx.fitpars:
+        raise ValueError(
+            f"Prior scale parameter '{scale}' is not a fit parameter for this pulsar"
+        )
+    factor = float(ctx.refs[canonical])
+    if not np.isfinite(factor):
+        raise ValueError(
+            f"Prior scale parameter '{scale}' has non-finite reference value: {factor!r}"
+        )
+    return factor
+
+
+def apply_prior_scale(prior: AxisPrior, factor: float) -> AxisPrior:
+    """Multiply prior numeric bounds by a native reference scale factor."""
+    if prior.family == "uniform":
+        return AxisPrior(
+            family="uniform",
+            lower=float(prior.lower) * factor,
+            upper=float(prior.upper) * factor,
+        )
+    if prior.family == "normal":
+        return AxisPrior(
+            family="normal",
+            mean=float(prior.mean) * factor,
+            std=float(prior.std) * factor,
+        )
+    if prior.family == "truncated_normal":
+        return AxisPrior(
+            family="truncated_normal",
+            lower=float(prior.lower) * factor,
+            upper=float(prior.upper) * factor,
+            mean=float(prior.mean) * factor,
+            std=float(prior.std) * factor,
+        )
+    raise ValueError(
+        f"Prior family '{prior.family}' does not support scale=... in this release"
+    )
+
+
 def _to_delta_prior(prior: AxisPrior, ref_str: str) -> AxisPrior:
     """Convert an absolute/native prior description into delta-valued constants."""
     if prior.family == "normal":
@@ -139,6 +208,41 @@ def _to_delta_prior(prior: AxisPrior, ref_str: str) -> AxisPrior:
     raise ValueError(f"Unsupported prior family: {prior.family}")
 
 
+def materialize_prior_override(
+    param_name: str,
+    spec: PriorOverrideSpec,
+    ctx: PriorBuildContext,
+) -> AxisPrior:
+    """Convert a stored override spec into a delta-space AxisPrior."""
+    canonical = resolve_parameter_alias(param_name)
+    if canonical not in ctx.sampled:
+        raise ValueError(f"Prior override targets non-sampled parameter '{param_name}'")
+    if canonical not in ctx.refs:
+        raise ValueError(
+            f"Prior override parameter '{param_name}' is missing from backend references"
+        )
+
+    prior = spec.prior
+
+    if spec.scale is not None:
+        if spec.frame != "delta":
+            raise ValueError(
+                "Prior scale=... is only supported with frame='delta'; "
+                f"got frame={spec.frame!r} for parameter '{param_name}'"
+            )
+        if prior.family not in _SCALE_SUPPORTED_FAMILIES:
+            raise ValueError(
+                f"Prior family '{prior.family}' does not support scale=... "
+                f"for parameter '{param_name}'"
+            )
+        prior = apply_prior_scale(prior, _scale_factor(ctx, spec.scale))
+
+    if spec.frame == "delta":
+        return prior
+
+    return _to_delta_prior(prior, ctx.refs[canonical])
+
+
 @dataclass(frozen=True)
 class PriorBlock:
     """Resolved per-parameter priors and their source labels."""
@@ -154,6 +258,7 @@ class PriorBlock:
         *,
         policy: PriorPolicy = "fallback",
         overrides: dict[str, AxisPrior] | None = None,
+        overrides_in_delta: bool = False,
         named_defaults: dict[str, AxisPrior] | None = None,
         theta_ref: ExactNativeRef | dict[str, str | float | int] | None = None,
         pint_model=None,
@@ -180,7 +285,11 @@ class PriorBlock:
 
         for name in names:
             if name in canonical_overrides:
-                priors.append(_to_delta_prior(canonical_overrides[name], refs[name]))
+                override = canonical_overrides[name]
+                if overrides_in_delta:
+                    priors.append(override)
+                else:
+                    priors.append(_to_delta_prior(override, refs[name]))
                 sources[name] = "override"
                 continue
 

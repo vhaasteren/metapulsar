@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import namedtuple
 from decimal import Decimal, localcontext
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -220,6 +221,33 @@ class ParameterSpace:
             "theta_ref": self.theta_ref.as_mapping(),
             "transform": self.transform,
         }
+
+    def fingerprint(self) -> str:
+        """Stable identity of this decoder (names, refs, transform, priors, C, z0)."""
+        hasher = hashlib.sha256()
+        meta = {
+            "schema": "nlt-parameter-space-v1",
+            "names": list(self.names),
+            "theta_ref": self.theta_ref.as_mapping(),
+            "transform": self.transform,
+            "priors": [
+                {
+                    "family": p.family,
+                    "lower": p.lower,
+                    "upper": p.upper,
+                    "mean": p.mean,
+                    "std": p.std,
+                    "offset": p.offset,
+                }
+                for p in self.prior_bijector.priors
+            ],
+        }
+        hasher.update(
+            json.dumps(meta, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        hasher.update(np.ascontiguousarray(self.linear.C, dtype=np.float64).tobytes())
+        hasher.update(np.ascontiguousarray(self.linear.z0, dtype=np.float64).tobytes())
+        return "sha256:" + hasher.hexdigest()
 
     def save(self, path: str | Path) -> None:
         base = Path(path)

@@ -117,6 +117,23 @@ def display_unit(name: str, pint_model: Any | None = None) -> str:
     return _unit_label(storage_unit(name, pint_model))
 
 
+def native_unit_label(name: str, pint_model: Any | None = None) -> str:
+    """Engine-native storage unit label for a fit parameter."""
+    unit = storage_unit(name, pint_model)
+    return "native" if unit is None else unit.to_string()
+
+
+def units_map(
+    names, pint_model: Any | None = None, *, kind: str = "display"
+) -> dict[str, str]:
+    """Map fitpar name -> unit label. kind in {'display', 'native'}."""
+    if kind == "display":
+        return {name: display_unit(name, pint_model) for name in names}
+    if kind == "native":
+        return {name: native_unit_label(name, pint_model) for name in names}
+    raise ValueError(f"kind must be 'display' or 'native'; got {kind!r}")
+
+
 def to_native(name: str, display_value, pint_model: Any | None = None):
     """Convert display-unit magnitudes to timing-engine storage units."""
     _ = storage_unit(name, pint_model)
