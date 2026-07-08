@@ -72,6 +72,16 @@ def zero_delta_tolerance(backend: TimingBackend, requested: float) -> float:
     return float(requested)
 
 
+def is_exact_linear_param(backend_name: str) -> bool:
+    """Return true for fitpars that should use exact design-matrix columns."""
+    name = backend_name.upper()
+    if name == "OFFSET":
+        return True
+    if name.startswith(("DMX", "JUMP", "FD")):
+        return True
+    return False
+
+
 def validate_backend_zero_delta(backend: TimingBackend, tol: float = 1e-12) -> None:
     """Check residual_delta(0) = 0 invariant."""
     effective_tol = zero_delta_tolerance(backend, tol)

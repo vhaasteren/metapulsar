@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .engines import infer_jug_param_mapping
-from .base import LinearModel, LinearTimingBackend
+from .base import LinearModel, LinearTimingBackend, is_exact_linear_param
 from .jug_jax_state import _NUMPY_RESIDUAL_DEPRECATION
 
 _ECLIPTIC_FITPARS = frozenset(
@@ -82,7 +82,7 @@ class JugEngine:
         exact_linear: list[str] = []
         for name in fitpars:
             backend_name = mapping.get(name, name)
-            if _is_exact_linear_param(backend_name):
+            if is_exact_linear_param(backend_name):
                 exact_linear.append(name)
                 continue
             try:
@@ -216,14 +216,38 @@ def _canonical_high_precision(
     )
 
 
-def _is_exact_linear_param(backend_name: str) -> bool:
-    """Return true for exact-linear timing columns JUG JAX should not own."""
-    name = backend_name.upper()
-    if name == "OFFSET":
-        return True
-    if name.startswith(("DMX", "JUMP", "FD")):
-        return True
-    return False
+def verify_jug_native_chain_wiring(
+    backend: object,
+    *,
+    design_matrix_method: str = "autodiff",
+) -> None:
+    """Smoke-check tempo2 JUG sessions export native-chain JAX state."""
+    if str(design_matrix_method).lower() != "autodiff":
+        return
+    sessions = getattr(backend, "sessions", None) or getattr(backend, "_sessions", ())
+    for session in sessions:
+        jug_backend = session.backend
+        if type(jug_backend).__name__ != "JugEngine":
+            continue
+        setup = getattr(getattr(jug_backend, "_state", None), "setup", None)
+        if setup is None:
+            raise RuntimeError(
+                f"JugEngine for {session.name!r} has no GeneralFitSetup."
+            )
+        compat = str(getattr(setup, "compatibility", "")).lower()
+        if not compat.startswith("tempo2"):
+            continue
+        static = getattr(setup, "native_chain_static", None)
+        if static is None:
+            raise RuntimeError(
+                f"PTA {session.name!r}: native_chain_static is None; "
+                "re-run timing_backend with prime_sessions=True."
+            )
+        td = static.get("term_diagnostics") or {}
+        if "tempo2_obs_state" not in td:
+            raise RuntimeError(
+                f"PTA {session.name!r}: native_chain_static missing tempo2_obs_state."
+            )
 
 
 class LinearizedJugEngine(LinearTimingBackend):

@@ -5,6 +5,7 @@ import pytest
 
 from metapulsar.timing.backends.base import (
     LinearModel,
+    is_exact_linear_param,
     validate_backend_shapes,
     validate_backend_zero_delta,
     zero_delta_tolerance,
@@ -12,7 +13,6 @@ from metapulsar.timing.backends.base import (
 from metapulsar.timing.backends.jug import (
     JugEngine,
     LinearizedJugEngine,
-    _is_exact_linear_param,
 )
 from metapulsar.timing.backends.pint import (
     PintEngine,
@@ -28,6 +28,55 @@ class _FakeDeltaEngine:
     def delta_residuals(self, delta_params):
         delta = np.array([delta_params["F0"], delta_params["F1"]], dtype=float)
         return _linear_model().design @ delta
+
+
+class _StrictTempo2Engine:
+    def __init__(self):
+        self._reference_values = {"PB": 1.0}
+        self.calls: list[dict[str, float]] = []
+
+    def delta_residuals(self, delta_params):
+        unknown = set(delta_params) - set(self._reference_values)
+        if unknown:
+            raise KeyError(f"unexpected native params: {unknown}")
+        self.calls.append(dict(delta_params))
+        return np.array([2.0, 3.0, 5.0], dtype=float) * delta_params.get("PB", 0.0)
+
+
+class _FakeLTPulsarParam:
+    def __init__(self, val: float):
+        self.val = val
+
+
+class _FakeLTPulsarWithJump:
+    def __init__(self):
+        self._params = {"PB": _FakeLTPulsarParam(1.0)}
+
+    def pars(self, which=None):
+        if which == "set":
+            return ["PB", "JUMP"]
+        return ["PB", "JUMP"]
+
+    def __getitem__(self, name):
+        if name not in self._params:
+            raise KeyError(name)
+        return self._params[name]
+
+    def residuals(self):
+        return np.zeros(3, dtype=float)
+
+    def designmatrix(self):
+        return np.array(
+            [
+                [1.0, 10.0],
+                [1.0, 11.0],
+                [1.0, 13.0],
+            ],
+            dtype=float,
+        )
+
+    def formbats(self):
+        return None
 
 
 class _FakeJaxState:
@@ -153,13 +202,62 @@ def test_jug_backend_adds_exact_linear_to_numpy_and_jax_paths():
     )
 
 
-def test_jug_exact_linear_does_not_capture_spin_frequency_params():
-    assert not _is_exact_linear_param("F0")
-    assert not _is_exact_linear_param("F1")
-    assert not _is_exact_linear_param("F12")
-    assert _is_exact_linear_param("Offset")
-    assert _is_exact_linear_param("DMX_0001")
-    assert _is_exact_linear_param("JUMP1")
+def test_exact_linear_policy_does_not_capture_spin_frequency_params():
+    assert not is_exact_linear_param("F0")
+    assert not is_exact_linear_param("F1")
+    assert not is_exact_linear_param("F12")
+    assert is_exact_linear_param("Offset")
+    assert is_exact_linear_param("DMX_0001")
+    assert is_exact_linear_param("JUMP1")
+
+
+def test_libstempo_backend_routes_jump_through_exact_linear_design_column():
+    model = LinearModel.from_host(
+        fitpars=("PB", "JUMP"),
+        design=np.array(
+            [
+                [2.0, 10.0],
+                [3.0, 11.0],
+                [5.0, 13.0],
+            ],
+            dtype=float,
+        ),
+        theta_exact={"PB": "1.0", "JUMP": "0.0"},
+    )
+    engine = _StrictTempo2Engine()
+    backend = LibstempoEngine(
+        engine=engine,
+        linear_model=model,
+        native_fitpars=("PB",),
+        exact_linear_fitpars=frozenset({"JUMP"}),
+    )
+
+    delta = np.array([0.25, -0.5], dtype=float)
+    np.testing.assert_allclose(backend.residual_delta(delta), model.design @ delta)
+    assert engine.calls == [{"PB": 0.25}]
+    assert backend.exact_linear_fitpars() == frozenset({"JUMP"})
+
+
+def test_libstempo_from_session_marks_unsettable_jump_exact_linear():
+    model = LinearModel.from_host(
+        fitpars=("PB", "JUMP"),
+        design=np.array(
+            [
+                [2.0, 10.0],
+                [3.0, 11.0],
+                [5.0, 13.0],
+            ],
+            dtype=float,
+        ),
+        theta_exact={"PB": "1.0", "JUMP": "0.0"},
+    )
+    backend = LibstempoEngine.from_session(_FakeLTPulsarWithJump(), linear_model=model)
+
+    assert backend.exact_linear_fitpars() == frozenset({"JUMP"})
+    np.testing.assert_allclose(
+        backend.residual_delta(np.array([0.0, 0.5], dtype=float)),
+        model.design[:, 1] * 0.5,
+    )
 
 
 class _OffsetZeroDeltaBackend:

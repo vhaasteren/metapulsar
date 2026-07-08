@@ -60,6 +60,11 @@ class PulsarTimingBackend:
         )
         self._ref_exact = self._merge_reference_theta_exact()
 
+    @property
+    def sessions(self) -> list[PulsarSession]:
+        """Per-PTA session adapters in pulsar row order."""
+        return list(self._sessions)
+
     def _merge_reference_theta_exact(self) -> dict[str, str]:
         merged: dict[str, str] = {}
         for session in self._sessions:

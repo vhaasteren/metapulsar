@@ -28,6 +28,19 @@ _NATIVE_SUFFIX = "_theta_native"
 _DISPLAY_SUFFIX = "_theta_display"
 
 
+def _sidecar_tempo2_native(ntm) -> str | dict[str, Any] | None:
+    value = getattr(ntm, "tempo2_native", None)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(value):
+        return asdict(value)
+    return str(value)
+
+
 class NLTArtifactError(RuntimeError):
     """Raised when NLT artifacts are missing, mismatched, or unreadable."""
 
@@ -80,6 +93,8 @@ class NLTBinding:
     binding_fingerprint: str
     space_fingerprint: str
     deterministic_prefix: str
+    tempo2_native: str | dict[str, Any] | None = None
+    prior_override_policy: str | None = None
     scenario: str | None = None
     latent: dict[str, Any] | None = None
     checkpoint: dict[str, Any] | None = None
@@ -106,6 +121,8 @@ class NLTBinding:
             "transform": self.transform,
             "design_matrix_method": self.design_matrix_method,
             "engines": dict(self.engines),
+            "tempo2_native": self.tempo2_native,
+            "prior_override_policy": self.prior_override_policy,
             "native_units": self.native_units,
             "display_units": self.display_units,
             "deterministic_prefix": self.deterministic_prefix,
@@ -155,6 +172,7 @@ def build_binding(
         )
     pint_model = pulsar.pint_model()
     prefix = f"{pulsar.name}_{ntm.name}"
+    tempo2_native = _sidecar_tempo2_native(ntm)
     return NLTBinding(
         space=space,
         frontend=frontend,
@@ -166,6 +184,8 @@ def build_binding(
         transform=ntm.transform,
         design_matrix_method=ntm.design_matrix_method,
         engines=dict(ntm.engines),
+        tempo2_native=tempo2_native,
+        prior_override_policy=ntm.prior_override_policy,
         native_units=units_map(sampled, pint_model, kind="native"),
         display_units=units_map(sampled, pint_model, kind="display"),
         binding_fingerprint=ntm.binding_fingerprint(pulsar),

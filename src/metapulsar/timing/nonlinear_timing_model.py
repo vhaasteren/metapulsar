@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -25,9 +26,11 @@ from .space import ParameterSpace, default_coord_for_transform
 from .units import lookup_pint_param, native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 from .backends import normalize_engines
+from .policy import NLTTimingPolicy
 
 _TRANSFORMS = {"none", "standardized", "whitening"}
 _DESIGN_MATRIX_METHODS = {"analytic", "autodiff"}
+_PRIOR_OVERRIDE_POLICIES = {"warn", "strict"}
 
 
 def _normalize_design_matrix_method(method: str) -> str:
@@ -82,21 +85,38 @@ class NonLinearTimingModel:
         *,
         engines: str | Mapping[str, str] = "jug",
         design_matrix_method: str = "analytic",
+        tempo2_native: str | object | None = None,
+        timing_policy: NLTTimingPolicy | None = None,
         transform: str = "whitening",
         analytically_marginalize: str | Sequence[str] | None = "default",
         prior_policy: PriorPolicy = "fallback",
+        prior_override_policy: Literal["warn", "strict"] = "warn",
         cheat_prior_scale: float = 50.0,
         whitening_config: Mapping[str, Any] | None = None,
         name: str = "nonlinear_timing_model",
     ):
+        if timing_policy is not None:
+            engines = timing_policy.engines
+            design_matrix_method = timing_policy.design_matrix_method
+            if tempo2_native is None:
+                tempo2_native = timing_policy.tempo2_native
         if transform not in _TRANSFORMS:
             raise ValueError(f"Unsupported transform: {transform}")
         if not (float(cheat_prior_scale) > 0.0):
             raise ValueError("cheat_prior_scale must be positive")
+        override_policy = str(prior_override_policy or "warn").lower()
+        if override_policy not in _PRIOR_OVERRIDE_POLICIES:
+            raise ValueError(
+                "prior_override_policy must be 'warn' or 'strict'; "
+                f"got {prior_override_policy!r}"
+            )
         self.engines = normalize_engines(engines)
         self.design_matrix_method = _normalize_design_matrix_method(
             design_matrix_method
         )
+        self.tempo2_native = tempo2_native
+        self._timing_policy = timing_policy
+        self.prior_override_policy = override_policy
         self.transform = transform
         self.analytically_marginalize = analytically_marginalize
         self.prior_policy = validate_prior_policy(prior_policy)
@@ -175,9 +195,12 @@ class NonLinearTimingModel:
         other = NonLinearTimingModel(
             engines=engines,
             design_matrix_method=self.design_matrix_method,
+            tempo2_native=self.tempo2_native,
+            timing_policy=self._timing_policy,
             transform=self.transform,
             analytically_marginalize=self.analytically_marginalize,
             prior_policy=self.prior_policy,
+            prior_override_policy=self.prior_override_policy,
             cheat_prior_scale=self.cheat_prior_scale,
             whitening_config=self.whitening_config,
             name=self.name,
@@ -189,9 +212,11 @@ class NonLinearTimingModel:
         payload = {
             "engines": sorted(self.engines.items()),
             "design_matrix_method": self.design_matrix_method,
+            "tempo2_native": self._tempo2_native_fingerprint(),
             "transform": self.transform,
             "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
+            "prior_override_policy": self.prior_override_policy,
             "cheat_prior_scale": self.cheat_prior_scale,
             "whitening_config": self.whitening_config,
             "name": self.name,
@@ -206,9 +231,35 @@ class NonLinearTimingModel:
         }
         return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
 
+    def _tempo2_native_fingerprint(self) -> str | None:
+        if self.tempo2_native is None:
+            return None
+        if isinstance(self.tempo2_native, str):
+            return self.tempo2_native
+        from dataclasses import asdict
+
+        return _stable_json(asdict(self.tempo2_native))
+
+    def _timing_backend_kwargs(self) -> dict[str, Any]:
+        if self._timing_policy is not None:
+            return {
+                "tempo2_native": self._timing_policy.tempo2_native,
+                "prime_sessions": self._timing_policy.prime_sessions,
+                "verify_wiring": self._timing_policy.verify_wiring,
+                "subtract_tzr": self._timing_policy.subtract_tzr,
+            }
+        return {
+            "tempo2_native": self.tempo2_native,
+            "prime_sessions": True,
+            "verify_wiring": False,
+            "subtract_tzr": False,
+        }
+
     def _backend_for_pulsar(self, pulsar):
         return pulsar.timing_backend(
-            self.engines, design_matrix_method=self.design_matrix_method
+            self.engines,
+            design_matrix_method=self.design_matrix_method,
+            **self._timing_backend_kwargs(),
         )
 
     def _partition(self, pulsar) -> PartitionResult:
@@ -229,9 +280,16 @@ class NonLinearTimingModel:
             name for name in self._prior_overrides if name not in fitpar_set
         )
         if unknown:
-            raise ValueError(
-                "Prior overrides target unknown fit parameters for this pulsar: "
-                f"{unknown}"
+            if self.prior_override_policy == "strict":
+                raise ValueError(
+                    "Prior overrides target unknown fit parameters for this pulsar: "
+                    f"{unknown}"
+                )
+            warnings.warn(
+                "Skipping prior overrides for fit parameters absent on this pulsar: "
+                f"{unknown}",
+                UserWarning,
+                stacklevel=3,
             )
         invalid = sorted(
             name
@@ -239,9 +297,16 @@ class NonLinearTimingModel:
             if name in fitpar_set and name not in sampled_set
         )
         if invalid:
-            raise ValueError(
-                "Prior overrides target non-sampled parameters for this pulsar: "
-                f"{invalid}"
+            if self.prior_override_policy == "strict":
+                raise ValueError(
+                    "Prior overrides target non-sampled parameters for this pulsar: "
+                    f"{invalid}"
+                )
+            warnings.warn(
+                "Skipping prior overrides for non-sampled fit parameters on this pulsar: "
+                f"{invalid}",
+                UserWarning,
+                stacklevel=3,
             )
 
         ref_exact = backend.reference_theta_exact()
