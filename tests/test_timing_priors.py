@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from metapulsar.timing.bijectors import AxisPrior
-from metapulsar.timing.priors import PriorBlock, set_prior
+from metapulsar.timing.priors import PriorBlock, PriorOverrideSpec, store_prior_override
 from metapulsar.timing.partition import PartitionResult
 from metapulsar.timing.space import ParameterSpace
 from metapulsar.timing.whitening import (
@@ -28,11 +28,15 @@ def test_prior_block_explicit_requires_overrides():
         PriorBlock.from_fitpars(["F0"], policy="explicit", overrides={})
 
 
-def test_set_prior_normalizes_aliases():
+def test_store_prior_override_normalizes_aliases():
     overrides = {}
-    overrides = set_prior(overrides, "ECCDOT", AxisPrior(family="normal", std=2.0))
+    overrides = store_prior_override(
+        overrides,
+        "ECCDOT",
+        PriorOverrideSpec(prior=AxisPrior(family="normal", std=2.0)),
+    )
     assert "EDOT" in overrides
-    assert overrides["EDOT"].std == 2.0
+    assert overrides["EDOT"].prior.std == 2.0
 
 
 def test_prior_block_to_bijector_supports_uniform_and_normal():

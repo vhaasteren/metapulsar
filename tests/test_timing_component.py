@@ -524,6 +524,7 @@ def test_set_prior_validated_against_sampled_partition(host):
         engines="jug",
         transform="none",
         analytically_marginalize=["F0", "DM"],
+        prior_override_policy="strict",
         name="timing",
     )
     ntm.set_prior("F0", "uniform", lower=-1.0, upper=1.0)
@@ -536,6 +537,7 @@ def test_set_prior_unknown_name_raises(host):
         engines="jug",
         transform="none",
         analytically_marginalize=["F0", "DM"],
+        prior_override_policy="strict",
         name="timing",
     )
     ntm.set_prior("F11", "uniform", lower=-1.0, upper=1.0)
