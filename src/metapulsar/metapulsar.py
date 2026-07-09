@@ -870,12 +870,34 @@ class MetaPulsar:
             return files.timing_package
         return self._get_timing_package(self._epulsars[pta_name])
 
+    @staticmethod
+    def _enforce_tempo2_native_cache_requirement(
+        term_diagnostics: dict | None,
+        *,
+        tempo2_jug_options: dict | None,
+        context: str,
+    ) -> None:
+        """Raise when MetaPulsar requires tempo2_obs_state in session cache."""
+        from jug.timing import resolve_tempo2_jug_options
+
+        options = resolve_tempo2_jug_options(tempo2_jug_options)
+        if not options.get("require_native_cache", True):
+            return
+        td = term_diagnostics or {}
+        if "tempo2_obs_state" not in td:
+            raise RuntimeError(
+                f"{context}: tempo2 JUG cache missing "
+                "term_diagnostics['tempo2_obs_state']; call "
+                "compute_residuals(force_recompute=True) with tempo2 compatibility."
+            )
+
     def _build_jug_session(
         self,
         pta_name: str,
         compatibility: str,
         *,
-        tempo2_native: object | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: dict | None = None,
     ):
         if not self._session_files_available(pta_name):
             raise ValueError(
@@ -892,13 +914,15 @@ class MetaPulsar:
             verbose=False,
             compatibility=compatibility,
             tempo2_native=tempo2_native,
+            tempo2_jug_options=tempo2_jug_options,
         )
 
     def prime_jug_tempo2_sessions(
         self,
         engines: Mapping[str, str] | None = None,
         *,
-        tempo2_native: object | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: dict | None = None,
         subtract_tzr: bool = False,
         force_recompute: bool = False,
     ) -> list[str]:
@@ -914,7 +938,10 @@ class MetaPulsar:
             if _IMPL_FAMILY.get(engines.get(native, "jug")) != "jug":
                 continue
             session = self._build_jug_session(
-                pta_name, native, tempo2_native=tempo2_native
+                pta_name,
+                native,
+                tempo2_native=tempo2_native,
+                tempo2_jug_options=tempo2_jug_options,
             )
             session.compute_residuals(
                 subtract_tzr=subtract_tzr,
@@ -922,11 +949,11 @@ class MetaPulsar:
             )
             cached = session._cached_result_by_mode.get(subtract_tzr)
             td = (cached or {}).get("term_diagnostics") or {}
-            if "tempo2_obs_state" not in td:
-                raise RuntimeError(
-                    f"PTA {pta_name!r}: tempo2 JUG cache missing "
-                    "term_diagnostics['tempo2_obs_state'] after compute_residuals."
-                )
+            self._enforce_tempo2_native_cache_requirement(
+                td,
+                tempo2_jug_options=tempo2_jug_options,
+                context=f"PTA {pta_name!r}",
+            )
             primed.append(pta_name)
         return primed
 
@@ -936,7 +963,8 @@ class MetaPulsar:
         *,
         linearized: bool = False,
         design_matrix_method: str = "analytic",
-        tempo2_native: object | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: dict | None = None,
         prime_sessions: bool = True,
         verify_wiring: bool = False,
         subtract_tzr: bool = False,
@@ -950,11 +978,15 @@ class MetaPulsar:
                 f"engines {engines} cannot be honored for pulsar '{self.name}'"
             )
 
+        from jug.timing import resolve_tempo2_jug_options
+
+        resolved_options = resolve_tempo2_jug_options(tempo2_jug_options)
         cache_key = (
             tuple(sorted(engines.items())),
             linearized,
             design_matrix_method,
             str(tempo2_native),
+            tuple(sorted(resolved_options.items())),
             prime_sessions,
             verify_wiring,
             subtract_tzr,
@@ -989,13 +1021,14 @@ class MetaPulsar:
                 for pta in self._epulsars
             )
         ):
-            from jug.timing import normalize_tempo2_native
+            from jug.timing import resolve_tempo2_jug_options
 
-            cfg = normalize_tempo2_native(tempo2_native, compatibility="tempo2")
-            force = bool(getattr(cfg, "force_cache_refresh", False))
+            options = resolve_tempo2_jug_options(tempo2_jug_options)
+            force = bool(options.get("force_cache_refresh", False))
             self.prime_jug_tempo2_sessions(
                 engines,
                 tempo2_native=tempo2_native,
+                tempo2_jug_options=options,
                 subtract_tzr=subtract_tzr,
                 force_recompute=force,
             )
@@ -1049,7 +1082,23 @@ class MetaPulsar:
                     pta_name,
                     native_compat,
                     tempo2_native=tempo2_native,
+                    tempo2_jug_options=resolved_options,
                 )
+                if design_matrix_method == "autodiff" and str(
+                    native_compat
+                ).lower().startswith("tempo2"):
+                    cached = jug_session._cached_result_by_mode.get(subtract_tzr)
+                    if cached is None:
+                        jug_session.compute_residuals(
+                            subtract_tzr=subtract_tzr,
+                            force_recompute=False,
+                        )
+                        cached = jug_session._cached_result_by_mode.get(subtract_tzr)
+                    self._enforce_tempo2_native_cache_requirement(
+                        (cached or {}).get("term_diagnostics"),
+                        tempo2_jug_options=resolved_options,
+                        context=f"PTA {pta_name!r}",
+                    )
                 session_mapping = {
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
                     for name in session_fitpars

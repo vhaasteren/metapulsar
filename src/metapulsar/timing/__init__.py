@@ -10,7 +10,6 @@ from .artifacts import (
     save_discovery_checkpoint,
 )
 from .nonlinear_timing_model import NonLinearTimingModel
-from .policy import NLTTimingPolicy
 from .protocols import (
     EnterprisePulsarLike,
     EphemerisExtras,
@@ -22,7 +21,6 @@ from .space import ParameterSpace
 
 __all__ = [
     "NonLinearTimingModel",
-    "NLTTimingPolicy",
     "ParameterSpace",
     "NLTArtifactError",
     "NLTBinding",

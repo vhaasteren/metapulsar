@@ -147,15 +147,6 @@ def export_jax_timing_state(
         raise RuntimeError(
             "TimingSession cache is unavailable; call compute_residuals() first."
         )
-    if needs_native_payload:
-        td = cached.get("term_diagnostics") or {}
-        cfg = getattr(session, "tempo2_native", None)
-        require_native = bool(getattr(cfg, "require_native_cache", True))
-        if require_native and "tempo2_obs_state" not in td:
-            raise RuntimeError(
-                "Tempo2 JUG cache is missing term_diagnostics['tempo2_obs_state']; "
-                "call compute_residuals(force_recompute=True) with tempo2 compatibility."
-            )
 
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in session.toas_data])
     errors_us = np.array([toa.error_us for toa in session.toas_data])
@@ -182,6 +173,8 @@ def export_jax_timing_state(
         "tzr_phase": cached.get("tzr_phase"),
         "term_diagnostics": cached.get("term_diagnostics"),
         "toas": session.toas_data,
+        "tempo2_native": getattr(session, "tempo2_native", None),
+        "tempo2_jug_options": getattr(session, "tempo2_jug_options", None),
     }
 
     mapping = dict(param_mapping or {})
@@ -194,6 +187,7 @@ def export_jax_timing_state(
         compatibility=compatibility,
         design_matrix_method=design_matrix_method,
         tempo2_native=getattr(session, "tempo2_native", None),
+        tempo2_jug_options=getattr(session, "tempo2_jug_options", None),
     )
 
     ref_params = _normalize_ref_params(session.params)

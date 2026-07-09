@@ -26,7 +26,6 @@ from .space import ParameterSpace, default_coord_for_transform
 from .units import lookup_pint_param, native_physical_bounds, to_native
 from .whitening import diagonal_white, fixed_hyperparameters, schur_delta_wls
 from .backends import normalize_engines
-from .policy import NLTTimingPolicy
 
 _TRANSFORMS = {"none", "standardized", "whitening"}
 _DESIGN_MATRIX_METHODS = {"analytic", "autodiff"}
@@ -85,8 +84,8 @@ class NonLinearTimingModel:
         *,
         engines: str | Mapping[str, str] = "jug",
         design_matrix_method: str = "analytic",
-        tempo2_native: str | object | None = None,
-        timing_policy: NLTTimingPolicy | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: Mapping[str, Any] | None = None,
         transform: str = "whitening",
         analytically_marginalize: str | Sequence[str] | None = "default",
         prior_policy: PriorPolicy = "fallback",
@@ -95,11 +94,6 @@ class NonLinearTimingModel:
         whitening_config: Mapping[str, Any] | None = None,
         name: str = "nonlinear_timing_model",
     ):
-        if timing_policy is not None:
-            engines = timing_policy.engines
-            design_matrix_method = timing_policy.design_matrix_method
-            if tempo2_native is None:
-                tempo2_native = timing_policy.tempo2_native
         if transform not in _TRANSFORMS:
             raise ValueError(f"Unsupported transform: {transform}")
         if not (float(cheat_prior_scale) > 0.0):
@@ -114,8 +108,12 @@ class NonLinearTimingModel:
         self.design_matrix_method = _normalize_design_matrix_method(
             design_matrix_method
         )
+        from jug.timing import resolve_tempo2_jug_options
+
         self.tempo2_native = tempo2_native
-        self._timing_policy = timing_policy
+        self.tempo2_jug_options = resolve_tempo2_jug_options(
+            None if tempo2_jug_options is None else dict(tempo2_jug_options)
+        )
         self.prior_override_policy = override_policy
         self.transform = transform
         self.analytically_marginalize = analytically_marginalize
@@ -196,7 +194,7 @@ class NonLinearTimingModel:
             engines=engines,
             design_matrix_method=self.design_matrix_method,
             tempo2_native=self.tempo2_native,
-            timing_policy=self._timing_policy,
+            tempo2_jug_options=self.tempo2_jug_options,
             transform=self.transform,
             analytically_marginalize=self.analytically_marginalize,
             prior_policy=self.prior_policy,
@@ -213,6 +211,7 @@ class NonLinearTimingModel:
             "engines": sorted(self.engines.items()),
             "design_matrix_method": self.design_matrix_method,
             "tempo2_native": self._tempo2_native_fingerprint(),
+            "tempo2_jug_options": self.tempo2_jug_options,
             "transform": self.transform,
             "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
@@ -234,22 +233,12 @@ class NonLinearTimingModel:
     def _tempo2_native_fingerprint(self) -> str | None:
         if self.tempo2_native is None:
             return None
-        if isinstance(self.tempo2_native, str):
-            return self.tempo2_native
-        from dataclasses import asdict
-
-        return _stable_json(asdict(self.tempo2_native))
+        return str(self.tempo2_native)
 
     def _timing_backend_kwargs(self) -> dict[str, Any]:
-        if self._timing_policy is not None:
-            return {
-                "tempo2_native": self._timing_policy.tempo2_native,
-                "prime_sessions": self._timing_policy.prime_sessions,
-                "verify_wiring": self._timing_policy.verify_wiring,
-                "subtract_tzr": self._timing_policy.subtract_tzr,
-            }
         return {
             "tempo2_native": self.tempo2_native,
+            "tempo2_jug_options": self.tempo2_jug_options,
             "prime_sessions": True,
             "verify_wiring": False,
             "subtract_tzr": False,
