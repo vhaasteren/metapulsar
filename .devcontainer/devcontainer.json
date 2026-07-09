@@ -14,7 +14,7 @@
   "remoteEnv": {
     "HOME": "${containerEnv:HOME_OVERRIDE}",
     "PATH": "${containerEnv:PYTHONUSERBASE}/bin:${containerEnv:PATH}",
-    "DISPLAY": "host.docker.internal::0"
+    "DISPLAY": "host.docker.internal:0"
   },
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "onCreateCommand": "mkdir -p \"$HOME\" && git config --global --add safe.directory \"$PWD\" || true",
