@@ -93,6 +93,35 @@ def schur_delta_wls(
     return DeltaWLS(fisher=fisher_ss, covariance=covariance, mean=mean_delta)
 
 
+def schur_marginalized_mean_given_sampled(
+    *,
+    pulsar,
+    partition,
+    variance: np.ndarray,
+    design_matrix: np.ndarray,
+    sampled_mean: np.ndarray,
+) -> np.ndarray:
+    """Conditional WLS mean for the analytically marginalized block at ``sampled_mean``."""
+    mmat = np.asarray(design_matrix, dtype=float)
+    residuals = np.asarray(pulsar.residuals, dtype=float)
+    weights = 1.0 / np.asarray(variance, dtype=float)
+    sampled_mean = np.asarray(sampled_mean, dtype=float)
+
+    sampled = _as_columns(mmat, tuple(partition.idx_sampled))
+    marginalized = _as_columns(mmat, tuple(partition.idx_analytically_marginalized))
+    ndim = marginalized.shape[1]
+    if ndim == 0:
+        return np.zeros(0, dtype=float)
+
+    fisher_sm = _weighted_cross(sampled, weights, marginalized)
+    fisher_mm = _weighted_cross(marginalized, weights, marginalized)
+    rhs_m = marginalized.T @ (weights * residuals)
+    cf_mm = _cho_factor_pd(
+        fisher_mm, context="Analytically marginalized timing Fisher block"
+    )
+    return sl.cho_solve(cf_mm, rhs_m - fisher_sm.T @ sampled_mean)
+
+
 def _z_space_wls(wls: DeltaWLS, prior_bijector) -> tuple[np.ndarray, np.ndarray]:
     """Map delta-space WLS mean/covariance into local PIT z coordinates."""
     if prior_bijector is None:
