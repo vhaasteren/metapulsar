@@ -5,6 +5,7 @@ import numpy as np
 from metapulsar.timing.backends.base import LinearModel
 from metapulsar.timing.backends.jug import LinearizedJugEngine
 from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
+from metapulsar.timing.sampling.numpyro import contribute_timing, record_physical
 
 
 class _Host:
@@ -86,26 +87,26 @@ def test_multi_host_prefixes_and_cache_independence(monkeypatch):
         lambda name, value: deterministic_calls.append((name, value)),
     )
 
-    params_a = ntm.contribute_timing(host_a, {"efac": 1.0})
-    params_b = ntm.contribute_timing(host_b, {"efac": 1.0})
+    params_a = contribute_timing(ntm.bind(host_a), {"efac": 1.0})
+    params_b = contribute_timing(ntm.bind(host_b), {"efac": 1.0})
 
     assert f"{host_a.name}_timing_F1" in params_a
     assert f"{host_b.name}_timing_F1" not in params_a
     assert f"{host_b.name}_timing_F1" in params_b
     assert f"{host_a.name}_timing_F1" not in params_b
 
-    space_a_1 = ntm.space(host_a)
-    space_b_1 = ntm.space(host_b)
+    space_a_1 = ntm.bind(host_a).space
+    space_b_1 = ntm.bind(host_b).space
     assert space_a_1 is not space_b_1
-    assert ntm.space(host_a) is space_a_1
-    assert ntm.space(host_b) is space_b_1
+    assert ntm.bind(host_a).space is space_a_1
+    assert ntm.bind(host_b).space is space_b_1
 
     host_a._cache_token = "tok-a-updated"
-    assert ntm.space(host_a) is not space_a_1
-    assert ntm.space(host_b) is space_b_1
+    assert ntm.bind(host_a).space is not space_a_1
+    assert ntm.bind(host_b).space is space_b_1
 
-    ntm.record_physical(host_a, params_a, scope="timing")
-    ntm.record_physical(host_b, params_b, scope="timing")
+    record_physical(ntm.bind(host_a), params_a, scope="timing")
+    record_physical(ntm.bind(host_b), params_b, scope="timing")
     deterministic_names = {name for name, _ in deterministic_calls}
     assert f"{host_a.name}_timing_F1_theta_native" in deterministic_names
     assert f"{host_a.name}_timing_F1_theta_display" in deterministic_names

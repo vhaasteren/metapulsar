@@ -6,6 +6,7 @@ import pytest
 from metapulsar.timing.backends.base import LinearModel
 from metapulsar.timing.backends.jug import LinearizedJugEngine
 from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
+from metapulsar.timing.sampling.numpyro import contribute_timing, record_physical
 
 
 class _Host:
@@ -96,14 +97,14 @@ def test_record_physical_timing_scope_emits_prefixed_theta_sites(host, monkeypat
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.25]))
-    params = ntm.contribute_timing(host, {})
+    params = contribute_timing(ntm.bind(host), {})
 
-    ntm.record_physical(host, params, scope="timing")
+    record_physical(ntm.bind(host), params, scope="timing")
 
     det_names = [name for name, _ in calls["deterministic"]]
     assert f"{host.name}_timing_F1_theta_native" in det_names
     assert f"{host.name}_timing_F1_theta_display" in det_names
-    expected_theta = ntm.space(host).theta_from_delta(
+    expected_theta = ntm.bind(host).space.theta_from_delta(
         np.array([params[f"{host.name}_timing_F1"]])
     )
     native_call = next(
@@ -120,7 +121,7 @@ def test_record_physical_scope_all_raises(host):
         name="timing",
     )
     with pytest.raises(NotImplementedError, match="scope='all'"):
-        ntm.record_physical(host, {}, scope="all")
+        record_physical(ntm.bind(host), {}, scope="all")
 
 
 def test_record_physical_does_not_change_density_calls(host, monkeypatch):
@@ -131,11 +132,11 @@ def test_record_physical_does_not_change_density_calls(host, monkeypatch):
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.1]))
-    params = ntm.contribute_timing(host, {})
+    params = contribute_timing(ntm.bind(host), {})
     n_sample = len(calls["sample"])
     n_factor = len(calls["factor"])
 
-    ntm.record_physical(host, params, scope="timing")
+    record_physical(ntm.bind(host), params, scope="timing")
 
     assert len(calls["sample"]) == n_sample
     assert len(calls["factor"]) == n_factor
@@ -155,9 +156,9 @@ def test_record_physical_explicit_coord_handles_standardized_scalar_params(
     x_value = 0.25
     params = {f"{host.name}_timing_F1": x_value}
 
-    ntm.record_physical(host, params, scope="timing", coord="x")
+    record_physical(ntm.bind(host), params, scope="timing", coord="x")
 
-    space = ntm.space(host)
+    space = ntm.bind(host).space
     delta = space.delta_from_coord(np.array([x_value], dtype=float), np, coord="x")
     expected_theta = space.theta_from_delta(delta)
     det_names = [name for name, _ in calls["deterministic"]]
@@ -179,13 +180,13 @@ def test_record_physical_implicit_coord_handles_standardized_contribute_output(
         name="timing",
     )
     calls = _patch_numpyro(monkeypatch, sample_value=np.array([0.2]))
-    params = ntm.contribute_timing(host, {})
+    params = contribute_timing(ntm.bind(host), {})
 
-    ntm.record_physical(host, params, scope="timing")
+    record_physical(ntm.bind(host), params, scope="timing")
 
     # contribute_timing injects backend-facing delta keys; implicit standardized
     # record_physical should interpret those as delta, not as standardized x.
-    expected_theta = ntm.space(host).theta_from_delta(
+    expected_theta = ntm.bind(host).space.theta_from_delta(
         np.array([params[f"{host.name}_timing_F1"]], dtype=float)
     )
     det_names = [name for name, _ in calls["deterministic"]]
@@ -205,4 +206,4 @@ def test_record_physical_invalid_coord_raises(host):
         name="timing",
     )
     with pytest.raises(ValueError, match="coord must be one of"):
-        ntm.record_physical(host, {}, scope="timing", coord="invalid")
+        record_physical(ntm.bind(host), {}, scope="timing", coord="invalid")

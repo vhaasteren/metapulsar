@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from metapulsar.pint_helpers import (
+from .pint_compat import (
     get_parameters_by_type_from_models,
     resolve_parameter_alias,
 )
@@ -92,6 +92,61 @@ def _exact_linear_policy_candidates(pulsar, name: str) -> set[str]:
     return {name, resolve_parameter_alias(name)}
 
 
+def match_fitpars(pulsar, name: str, fitpars: tuple[str, ...]) -> tuple[str, ...]:
+    """Fitpars matching a requested base or exact (possibly suffixed) name.
+
+    ``"PB"`` matches the canonical fitpar ``PB`` and every PTA-suffixed variant
+    (``PB_epta``, ``PB_ppta``) exposed by a composite pulsar; an exact suffixed
+    name matches only itself. Returns matches in canonical fitpar order.
+    """
+    canonical = resolve_parameter_alias(name)
+    hits = []
+    for fitpar in fitpars:
+        if fitpar == canonical:
+            hits.append(fitpar)
+            continue
+        candidates = {
+            resolve_parameter_alias(c) for c in _base_param_candidates(pulsar, fitpar)
+        }
+        if canonical in candidates:
+            hits.append(fitpar)
+    return tuple(hits)
+
+
+def fitpar_suffixes(pulsar, fitpar: str) -> set[str]:
+    """PTA suffixes carried by a composite fitpar name (``{""}`` if unsuffixed)."""
+    mapping = getattr(pulsar, "_fitparameters", None) or {}
+    bases = set(mapping.get(fitpar, {}).values())
+    if not bases:
+        return {""}
+    suffixes: set[str] = set()
+    for base in bases:
+        if fitpar == base:
+            suffixes.add("")
+        elif fitpar.startswith(base):
+            suffixes.add(fitpar[len(base) :])
+    return suffixes or {""}
+
+
+def select_fitpars(pulsar, names) -> tuple[str, ...]:
+    """Resolve a sequence of base/exact names to fitpars, preserving fitpar order.
+
+    Raises if any requested name matches nothing — a silent miss would move a
+    parameter from the sampled set into analytical marginalization.
+    """
+    fitpars = tuple(resolve_parameter_alias(p) for p in pulsar.fitpars)
+    selected: set[str] = set()
+    for name in names:
+        hits = match_fitpars(pulsar, name, fitpars)
+        if not hits:
+            raise ValueError(
+                f"sample= entry {name!r} matches no fit parameter on this pulsar; "
+                f"fitpars: {list(fitpars)}"
+            )
+        selected.update(hits)
+    return tuple(p for p in fitpars if p in selected)
+
+
 def default_analytically_marginalized_fitpars(pulsar) -> tuple[str, ...]:
     """Default policy: linear timing nuisances plus astrometry positions."""
     model = pulsar.pint_model()
@@ -149,11 +204,30 @@ def default_analytically_marginalized_fitpars(pulsar) -> tuple[str, ...]:
 def resolve_partition(
     pulsar,
     analytically_marginalize: str | list[str] | tuple[str, ...] | None = "default",
+    *,
+    sample: str | list[str] | tuple[str, ...] | None = None,
 ) -> PartitionResult:
-    """Resolve numerically sampled vs analytically marginalized names and index mappings."""
+    """Resolve numerically sampled vs analytically marginalized names and index mappings.
+
+    ``sample`` takes base or exact fitpar names (suffix-aware) and marginalizes
+    the complement; it is mutually exclusive with an explicit
+    ``analytically_marginalize`` list.
+    """
     fitpars = tuple(resolve_parameter_alias(p) for p in pulsar.fitpars)
     if len(set(fitpars)) != len(fitpars):
         raise ValueError("Duplicate fit parameters after alias normalization")
+
+    if sample is not None and sample != "default":
+        if isinstance(sample, str):
+            raise ValueError(
+                "sample must be 'default', None, or a sequence of fitpar names"
+            )
+        if analytically_marginalize != "default":
+            raise ValueError(
+                "pass either sample= or analytically_marginalize=, not both"
+            )
+        sampled_set = set(select_fitpars(pulsar, sample))
+        analytically_marginalize = tuple(p for p in fitpars if p not in sampled_set)
 
     if analytically_marginalize == "default":
         analytically_marginalized = default_analytically_marginalized_fitpars(pulsar)

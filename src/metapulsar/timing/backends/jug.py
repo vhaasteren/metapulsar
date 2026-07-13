@@ -8,8 +8,12 @@ from typing import Any, Mapping
 import numpy as np
 
 from .engines import infer_jug_param_mapping
-from .base import LinearModel, LinearTimingBackend, is_exact_linear_param
-from .jug_jax_state import _NUMPY_RESIDUAL_DEPRECATION
+from .base import (
+    _NUMPY_RESIDUAL_DEPRECATION,
+    LinearModel,
+    LinearTimingBackend,
+    is_exact_linear_param,
+)
 
 _ECLIPTIC_FITPARS = frozenset(
     {

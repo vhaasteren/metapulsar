@@ -27,11 +27,7 @@ from jug.utils.constants import HOURANGLE_PER_RAD, RAD_TO_DEG
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 from jug.utils.units import validate_column_units
 
-_NUMPY_RESIDUAL_DEPRECATION = (
-    "JUG NumPy residual path (residual_delta_np) is deprecated and will be "
-    "removed once JAX residual_delta_jax reaches full parity. Use "
-    "residual_delta_jax for new code."
-)
+from .base import _NUMPY_RESIDUAL_DEPRECATION
 
 
 @dataclass(frozen=True)

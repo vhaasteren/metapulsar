@@ -10,8 +10,14 @@ from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
+from . import priors as prior_specs
 from .bijectors import AxisPrior, WhiteningLinear
-from .partition import PartitionResult, resolve_partition
+from .partition import (
+    PartitionResult,
+    fitpar_suffixes,
+    match_fitpars,
+    resolve_partition,
+)
 from .priors import (
     PriorBlock,
     PriorBuildContext,
@@ -57,11 +63,18 @@ def _stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-@dataclass(frozen=True)
-class BoundTiming:
-    """Pulsar-bound nonlinear timing context resolved from model config."""
+@dataclass(frozen=True, eq=False)
+class TimingBinding:
+    """Pulsar-bound nonlinear timing context resolved from model config.
 
-    backend: object
+    Produced by :meth:`NonLinearTimingModel.bind`; owns every pulsar-bound
+    query (sampled partition, priors, parameter space, frontend signals,
+    artifact snapshots). The model itself stays pure configuration.
+    """
+
+    model: "NonLinearTimingModel"
+    pulsar: Any
+    backend: Any
     partition: PartitionResult
     prior_block: PriorBlock
     space: ParameterSpace
@@ -69,6 +82,163 @@ class BoundTiming:
     site_name: str
     delay_keys: tuple[str, ...]
     design_matrix: np.ndarray
+
+    @property
+    def prefix(self) -> str:
+        """Site/deterministic name prefix: ``{pulsar}_{model.name}``."""
+        return f"{self.pulsar.name}_{self.model.name}"
+
+    @property
+    def sampled(self) -> tuple[str, ...]:
+        return self.partition.sampled
+
+    @property
+    def marginalized(self) -> tuple[str, ...]:
+        return self.partition.analytically_marginalized
+
+    @property
+    def priors(self) -> PriorBlock:
+        return self.prior_block
+
+    def timing_param_keys(self) -> tuple[str, ...]:
+        if not self.partition.sampled:
+            return tuple()
+        return (self.site_name, *self.delay_keys)
+
+    def non_timing_params(self, params: Sequence[str]) -> tuple[str, ...]:
+        owned = set(self.timing_param_keys())
+        return tuple(name for name in params if name not in owned)
+
+    def coord_site_name(self, coord: str | None = None) -> str:
+        default = default_coord_for_transform(self.model.transform)
+        coord = default if coord is None else coord
+        if coord not in {"delta", "z", "x"}:
+            raise ValueError(f"Unsupported coord: {coord}")
+        if coord == default:
+            return self.site_name
+        return f"{self.prefix}_{coord}"
+
+    def fingerprint(self) -> str:
+        """Identity of decoder + frontend config + pulsar/model state."""
+        payload = {
+            "config": self.model._config_fingerprint(),
+            "pulsar_state": self.model._pulsar_state_fingerprint(
+                self.pulsar, self.backend
+            ),
+            "space": self.space.fingerprint(),
+            "transform": self.model.transform,
+            "coord": default_coord_for_transform(self.model.transform),
+            "sampled": list(self.sampled),
+            "engines": sorted(self.model.engines.items()),
+            "design_matrix_method": self.model.design_matrix_method,
+        }
+        return (
+            "sha256:"
+            + hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+        )
+
+    def discovery_signals(self) -> list:
+        from .frontends.discovery import discovery_signals
+
+        return discovery_signals(
+            pulsar=self.pulsar,
+            space=self.space,
+            backend=self.backend,
+            partition=self.partition,
+            name=self.model.name,
+            design_matrix=self.design_matrix,
+        )
+
+    def delta_from_params(
+        self,
+        params: Mapping[str, Any],
+        *,
+        coord: str | None = None,
+        coord_explicit: bool = False,
+    ) -> np.ndarray:
+        """Extract sampled delta-theta values from a sampler parameter mapping.
+
+        Accepts either the joint coordinate site (``coord_site_name``), the
+        per-parameter delay keys, or Enterprise standardized scalar columns.
+        """
+        sampled = self.partition.sampled
+        if not sampled:
+            return np.zeros((0,), dtype=float)
+
+        if coord is not None and coord not in {"delta", "z", "x"}:
+            raise ValueError("coord must be one of {'delta', 'z', 'x'}")
+        coord = self.coord if coord is None else coord
+
+        site_name = self.coord_site_name(coord)
+
+        if site_name in params:
+            q = np.asarray(params[site_name], dtype=float)
+            return np.asarray(
+                self.space.delta_from_coord(q, np, coord=coord), dtype=float
+            )
+
+        if coord == "delta":
+            if all(key in params for key in self.delay_keys):
+                return np.asarray([params[key] for key in self.delay_keys], dtype=float)
+            raise ValueError(
+                "delta_from_params(coord='delta') requires injected delta keys "
+                "or a delta site"
+            )
+
+        # Enterprise standardized scalars reuse delay-key names for sampler x axes.
+        if (
+            coord == "x"
+            and self.model.transform == "standardized"
+            and all(key in params for key in self.delay_keys)
+        ):
+            values = np.asarray([params[key] for key in self.delay_keys], dtype=float)
+            # Implicit default coord corresponds to contribute_timing outputs
+            # where delay keys already carry delta values.
+            if not coord_explicit:
+                return values
+            # Explicit coord="x" keeps Enterprise standardized-scalar semantics.
+            return np.asarray(
+                self.space.delta_from_coord(values, np, coord="x"), dtype=float
+            )
+
+        raise ValueError(
+            f"delta_from_params(coord={coord!r}) could not find matching "
+            "timing coordinates"
+        )
+
+    def artifact(
+        self,
+        *,
+        frontend: str,
+        sampler: str,
+        scenario: str | None = None,
+        latent: dict[str, Any] | None = None,
+        checkpoint: dict[str, Any] | None = None,
+        chain_layout: dict[str, Any] | None = None,
+        git_commit: str | None = None,
+    ):
+        """Snapshot this binding as a write-side ``NLTBinding`` artifact."""
+        from .artifacts import build_binding
+
+        return build_binding(
+            self,
+            frontend=frontend,
+            sampler=sampler,
+            scenario=scenario,
+            latent=latent,
+            checkpoint=checkpoint,
+            chain_layout=chain_layout,
+            git_commit=git_commit,
+        )
+
+    def write(self, run_dir, **kwargs):
+        """Build the artifact and write sidecar + parameter space to ``run_dir``.
+
+        Returns the written ``NLTBinding`` (needed for checkpoint helpers).
+        """
+        binding = self.artifact(**kwargs)
+        binding.write(run_dir)
+        return binding
 
 
 class NonLinearTimingModel:
@@ -87,7 +257,9 @@ class NonLinearTimingModel:
         tempo2_native: str | None = None,
         tempo2_jug_options: Mapping[str, Any] | None = None,
         transform: str = "whitening",
+        sample: str | Sequence[str] | None = None,
         analytically_marginalize: str | Sequence[str] | None = "default",
+        priors: Mapping[str, PriorOverrideSpec] | None = None,
         prior_policy: PriorPolicy = "fallback",
         prior_override_policy: Literal["warn", "strict"] = "warn",
         cheat_prior_scale: float = 50.0,
@@ -104,18 +276,28 @@ class NonLinearTimingModel:
                 "prior_override_policy must be 'warn' or 'strict'; "
                 f"got {prior_override_policy!r}"
             )
+        if sample is not None and sample != "default":
+            if isinstance(sample, str):
+                raise ValueError(
+                    "sample must be 'default', None, or a sequence of fitpar names"
+                )
+            if analytically_marginalize != "default":
+                raise ValueError(
+                    "pass either sample= or analytically_marginalize=, not both"
+                )
+            sample = tuple(str(name) for name in sample)
         self.engines = normalize_engines(engines)
         self.design_matrix_method = _normalize_design_matrix_method(
             design_matrix_method
         )
-        from jug.timing import resolve_tempo2_jug_options
-
         self.tempo2_native = tempo2_native
-        self.tempo2_jug_options = resolve_tempo2_jug_options(
+        self._tempo2_jug_options_raw = (
             None if tempo2_jug_options is None else dict(tempo2_jug_options)
         )
+        self._tempo2_jug_options_resolved: dict[str, Any] | None = None
         self.prior_override_policy = override_policy
         self.transform = transform
+        self.sample = sample
         self.analytically_marginalize = analytically_marginalize
         self.prior_policy = validate_prior_policy(prior_policy)
         self.cheat_prior_scale = float(cheat_prior_scale)
@@ -124,7 +306,40 @@ class NonLinearTimingModel:
         )
         self.name = name
         self._prior_overrides: dict[str, PriorOverrideSpec] = {}
-        self._resolved_cache: dict[str, BoundTiming] = {}
+        self._resolved_cache: dict[str, TimingBinding] = {}
+        for prior_name, spec in dict(priors or {}).items():
+            if not isinstance(spec, PriorOverrideSpec):
+                raise TypeError(
+                    f"priors[{prior_name!r}] must be a PriorOverrideSpec (use the "
+                    "helpers in metapulsar.timing.priors, e.g. delta_uniform)"
+                )
+            self._prior_overrides = store_prior_override(
+                self._prior_overrides, prior_name, spec
+            )
+
+    def _uses_jug(self) -> bool:
+        return (
+            "jug" in self.engines.values()
+            or self.tempo2_native is not None
+            or self._tempo2_jug_options_raw is not None
+        )
+
+    @property
+    def tempo2_jug_options(self) -> dict[str, Any] | None:
+        """Resolved JUG tempo2 session options; ``None`` for JUG-free configs.
+
+        Resolution imports ``jug.timing`` lazily so that libstempo/PINT-only
+        configurations construct and bind without JUG installed.
+        """
+        if not self._uses_jug():
+            return None
+        if self._tempo2_jug_options_resolved is None:
+            from jug.timing import resolve_tempo2_jug_options
+
+            self._tempo2_jug_options_resolved = resolve_tempo2_jug_options(
+                self._tempo2_jug_options_raw
+            )
+        return self._tempo2_jug_options_resolved
 
     def set_prior(
         self,
@@ -143,37 +358,29 @@ class NonLinearTimingModel:
                (delta frame only).
         """
         if kind == "normal":
-            prior = AxisPrior(
-                family="normal",
-                mean=float(bounds["mean"]),
-                std=float(bounds["std"]),
+            spec = prior_specs.normal(
+                bounds["mean"], bounds["std"], frame=frame, scale=scale
             )
         elif kind == "uniform":
-            prior = AxisPrior(
-                family="uniform",
-                lower=float(bounds["lower"]),
-                upper=float(bounds["upper"]),
+            spec = prior_specs.uniform(
+                bounds["lower"], bounds["upper"], frame=frame, scale=scale
             )
         elif kind == "log_uniform":
             if scale is not None:
                 raise ValueError("scale=... is not supported for log_uniform priors")
-            prior = AxisPrior(
-                family="log_uniform",
-                lower=float(bounds["lower"]),
-                upper=float(bounds["upper"]),
-            )
+            spec = prior_specs.log_uniform(bounds["lower"], bounds["upper"])
         elif kind == "truncated_normal":
-            prior = AxisPrior(
-                family="truncated_normal",
-                lower=float(bounds["lower"]),
-                upper=float(bounds["upper"]),
-                mean=float(bounds["mean"]),
-                std=float(bounds["std"]),
+            spec = prior_specs.truncated_normal(
+                bounds["mean"],
+                bounds["std"],
+                bounds["lower"],
+                bounds["upper"],
+                frame=frame,
+                scale=scale,
             )
         else:
             raise ValueError(f"Unsupported prior kind: {kind}")
 
-        spec = PriorOverrideSpec(prior=prior, frame=frame, scale=scale)
         self._prior_overrides = store_prior_override(self._prior_overrides, name, spec)
         self._resolved_cache.clear()
 
@@ -194,8 +401,9 @@ class NonLinearTimingModel:
             engines=engines,
             design_matrix_method=self.design_matrix_method,
             tempo2_native=self.tempo2_native,
-            tempo2_jug_options=self.tempo2_jug_options,
+            tempo2_jug_options=self._tempo2_jug_options_raw,
             transform=self.transform,
+            sample=self.sample,
             analytically_marginalize=self.analytically_marginalize,
             prior_policy=self.prior_policy,
             prior_override_policy=self.prior_override_policy,
@@ -213,6 +421,9 @@ class NonLinearTimingModel:
             "tempo2_native": self._tempo2_native_fingerprint(),
             "tempo2_jug_options": self.tempo2_jug_options,
             "transform": self.transform,
+            "sample": (
+                list(self.sample) if isinstance(self.sample, tuple) else self.sample
+            ),
             "analytically_marginalize": self.analytically_marginalize,
             "prior_policy": self.prior_policy,
             "prior_override_policy": self.prior_override_policy,
@@ -253,21 +464,31 @@ class NonLinearTimingModel:
 
     def _partition(self, pulsar) -> PartitionResult:
         return resolve_partition(
-            pulsar, analytically_marginalize=self.analytically_marginalize
+            pulsar,
+            analytically_marginalize=self.analytically_marginalize,
+            sample=self.sample,
         )
 
     def _resolve_prior_overrides(
         self,
         *,
+        pulsar,
         backend,
         partition: PartitionResult,
     ) -> dict[str, AxisPrior]:
-        """Materialize stored override specs into delta-space AxisPrior values."""
-        fitpar_set = set(partition.fitpars)
+        """Materialize stored override specs into delta-space AxisPrior values.
+
+        Override keys may be base names (``"TASC"``); each expands to every
+        matching (possibly PTA-suffixed) sampled fitpar. ``scale=`` references
+        resolve suffix-consistently with the target parameter.
+        """
         sampled_set = set(partition.sampled)
-        unknown = sorted(
-            name for name in self._prior_overrides if name not in fitpar_set
-        )
+        expansion = {
+            name: match_fitpars(pulsar, name, partition.fitpars)
+            for name in self._prior_overrides
+        }
+
+        unknown = sorted(name for name, hits in expansion.items() if not hits)
         if unknown:
             if self.prior_override_policy == "strict":
                 raise ValueError(
@@ -282,8 +503,8 @@ class NonLinearTimingModel:
             )
         invalid = sorted(
             name
-            for name in self._prior_overrides
-            if name in fitpar_set and name not in sampled_set
+            for name, hits in expansion.items()
+            if hits and not any(hit in sampled_set for hit in hits)
         )
         if invalid:
             if self.prior_override_policy == "strict":
@@ -306,10 +527,45 @@ class NonLinearTimingModel:
         )
         resolved: dict[str, AxisPrior] = {}
         for name, spec in self._prior_overrides.items():
-            if name not in sampled_set:
-                continue
-            resolved[name] = materialize_prior_override(name, spec, ctx)
+            for target in expansion[name]:
+                if target not in sampled_set:
+                    continue
+                target_spec = self._spec_for_target(pulsar, spec, target, partition)
+                resolved[target] = materialize_prior_override(target, target_spec, ctx)
         return resolved
+
+    def _spec_for_target(
+        self,
+        pulsar,
+        spec: PriorOverrideSpec,
+        target: str,
+        partition: PartitionResult,
+    ) -> PriorOverrideSpec:
+        """Resolve a spec's ``scale=`` reference suffix-consistently with ``target``."""
+        if spec.scale is None:
+            return spec
+        scale_hits = match_fitpars(pulsar, spec.scale, partition.fitpars)
+        if not scale_hits:
+            # Preserve the standard missing-scale error from materialization.
+            return spec
+        if len(scale_hits) == 1:
+            resolved_scale = scale_hits[0]
+        else:
+            suffixes = fitpar_suffixes(pulsar, target)
+            matched = [
+                hit for hit in scale_hits if suffixes & fitpar_suffixes(pulsar, hit)
+            ]
+            if len(matched) != 1:
+                raise ValueError(
+                    f"Ambiguous prior scale {spec.scale!r} for parameter "
+                    f"{target!r}: candidates {list(scale_hits)}"
+                )
+            resolved_scale = matched[0]
+        if resolved_scale == spec.scale:
+            return spec
+        return PriorOverrideSpec(
+            prior=spec.prior, frame=spec.frame, scale=resolved_scale
+        )
 
     def _build_prior_block(
         self,
@@ -332,6 +588,7 @@ class NonLinearTimingModel:
             partition.sampled,
             policy=self.prior_policy,
             overrides=self._resolve_prior_overrides(
+                pulsar=pulsar,
                 backend=backend,
                 partition=partition,
             ),
@@ -496,7 +753,8 @@ class NonLinearTimingModel:
             ]
         )
 
-    def _resolve(self, pulsar) -> BoundTiming:
+    def bind(self, pulsar) -> TimingBinding:
+        """Resolve this model config against a pulsar (cached per state)."""
         backend = self._backend_for_pulsar(pulsar)
         key = self._resolved_cache_key(pulsar, backend)
         if key in self._resolved_cache:
@@ -535,7 +793,9 @@ class NonLinearTimingModel:
             pint_model=pulsar.pint_model(),
         )
         coord = default_coord_for_transform(self.transform)
-        resolved = BoundTiming(
+        resolved = TimingBinding(
+            model=self,
+            pulsar=pulsar,
             backend=backend,
             partition=partition,
             prior_block=prior_block,
@@ -550,216 +810,11 @@ class NonLinearTimingModel:
         self._resolved_cache[key] = resolved
         return resolved
 
-    def sampled(self, pulsar) -> tuple[str, ...]:
-        return self._resolve(pulsar).partition.sampled
-
-    def analytically_marginalized(self, pulsar) -> tuple[str, ...]:
-        return self._resolve(pulsar).partition.analytically_marginalized
-
-    def priors(self, pulsar) -> PriorBlock:
-        return self._resolve(pulsar).prior_block
-
-    def space(self, pulsar) -> ParameterSpace:
-        return self._resolve(pulsar).space
-
-    def binding_fingerprint(self, pulsar) -> str:
-        """Identity of decoder + frontend config + pulsar/model state."""
-        backend = self._backend_for_pulsar(pulsar)
-        payload = {
-            "config": self._config_fingerprint(),
-            "pulsar_state": self._pulsar_state_fingerprint(pulsar, backend),
-            "space": self.space(pulsar).fingerprint(),
-            "transform": self.transform,
-            "coord": default_coord_for_transform(self.transform),
-            "sampled": list(self.sampled(pulsar)),
-            "engines": sorted(self.engines.items()),
-            "design_matrix_method": self.design_matrix_method,
-        }
-        return (
-            "sha256:"
-            + hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
-        )
-
-    def discovery_signals(self, pulsar) -> list:
-        from .frontends.discovery import discovery_signals
-
-        resolved = self._resolve(pulsar)
-        return discovery_signals(
-            pulsar=pulsar,
-            space=resolved.space,
-            backend=resolved.backend,
-            partition=resolved.partition,
-            name=self.name,
-            design_matrix=resolved.design_matrix,
-        )
-
     def enterprise_signal(self):
         from .frontends.enterprise import enterprise_signal
 
         return enterprise_signal(
-            space_fn=self.space,
-            engines=self.engines,
-            design_matrix_method=self.design_matrix_method,
-            partition_spec=self._partition,
+            binding_fn=self.bind,
             name=self.name,
             transform=self.transform,
         )
-
-    def _coord_site_name(self, pulsar, coord: str | None = None) -> str:
-        coord = default_coord_for_transform(self.transform) if coord is None else coord
-        if coord not in {"delta", "z", "x"}:
-            raise ValueError(f"Unsupported coord: {coord}")
-        if coord == default_coord_for_transform(self.transform):
-            return self._resolve(pulsar).site_name
-        return f"{pulsar.name}_{self.name}_{coord}"
-
-    def _delay_keys(self, pulsar) -> tuple[str, ...]:
-        return self._resolve(pulsar).delay_keys
-
-    def timing_param_keys(self, pulsar) -> tuple[str, ...]:
-        resolved = self._resolve(pulsar)
-        if not resolved.partition.sampled:
-            return tuple()
-        keys = [resolved.site_name, *resolved.delay_keys]
-        return tuple(keys)
-
-    def non_timing_params(self, pulsar, params: Sequence[str]) -> tuple[str, ...]:
-        owned = set(self.timing_param_keys(pulsar))
-        return tuple(name for name in params if name not in owned)
-
-    def contribute_timing(
-        self,
-        pulsar,
-        params: Mapping[str, Any],
-        *,
-        coord: str | None = None,
-    ) -> Mapping[str, Any]:
-        resolved = self._resolve(pulsar)
-        sampled = resolved.partition.sampled
-        if not sampled:
-            return params
-
-        coord = resolved.coord if coord is None else coord
-        if coord not in {"delta", "z", "x"}:
-            raise ValueError(f"Unsupported coord: {coord}")
-
-        import jax.numpy as jnp
-        import numpyro
-        from numpyro import distributions as dist
-        from numpyro.distributions import constraints
-
-        space = resolved.space
-        site_name = self._coord_site_name(pulsar, coord=coord)
-        q = numpyro.sample(
-            site_name,
-            dist.ImproperUniform(constraints.real, (), (len(sampled),)),
-        )
-        numpyro.factor(
-            f"{site_name}_logprior", space.logprior_coord(q, jnp, coord=coord)
-        )
-        delta = space.delta_from_coord(q, jnp, coord=coord)
-
-        out = dict(params)
-        for i, name in enumerate(sampled):
-            out[f"{pulsar.name}_{self.name}_{name}"] = delta[i]
-        return out
-
-    def _delta_from_params(
-        self,
-        pulsar,
-        params: Mapping[str, Any],
-        *,
-        coord: str | None = None,
-        coord_explicit: bool = False,
-    ) -> np.ndarray:
-        resolved = self._resolve(pulsar)
-        sampled = resolved.partition.sampled
-        if not sampled:
-            return np.zeros((0,), dtype=float)
-
-        if coord is not None and coord not in {"delta", "z", "x"}:
-            raise ValueError("coord must be one of {'delta', 'z', 'x'}")
-        coord = resolved.coord if coord is None else coord
-
-        delay_keys = resolved.delay_keys
-        site_name = self._coord_site_name(pulsar, coord=coord)
-        space = resolved.space
-
-        if site_name in params:
-            q = np.asarray(params[site_name], dtype=float)
-            return np.asarray(space.delta_from_coord(q, np, coord=coord), dtype=float)
-
-        if coord == "delta":
-            if all(key in params for key in delay_keys):
-                return np.asarray([params[key] for key in delay_keys], dtype=float)
-            raise ValueError(
-                "record_physical(coord='delta') requires injected delta keys "
-                "or a delta site"
-            )
-
-        # Enterprise standardized scalars reuse delay-key names for sampler x axes.
-        if (
-            coord == "x"
-            and self.transform == "standardized"
-            and all(key in params for key in delay_keys)
-        ):
-            values = np.asarray([params[key] for key in delay_keys], dtype=float)
-            # Implicit default coord (record_physical called without coord) corresponds
-            # to contribute_timing outputs where delay keys already carry delta values.
-            if not coord_explicit:
-                return values
-            # Explicit coord="x" keeps Enterprise standardized-scalar semantics.
-            return np.asarray(
-                space.delta_from_coord(values, np, coord="x"), dtype=float
-            )
-
-        raise ValueError(
-            f"record_physical(coord={coord!r}) could not find matching timing coordinates"
-        )
-
-    def record_physical(
-        self,
-        pulsar,
-        params: Mapping[str, Any],
-        *,
-        scope: str = "timing",
-        coord: str | None = None,
-    ) -> None:
-        coord_was_explicit = coord is not None
-        if coord is not None and coord not in {"delta", "z", "x"}:
-            raise ValueError("coord must be one of {'delta', 'z', 'x'}")
-        if coord is None:
-            coord = default_coord_for_transform(self.transform)
-
-        if scope == "all":
-            raise NotImplementedError("scope='all' is deferred")
-        if scope != "timing":
-            raise ValueError("scope must be one of {'timing', 'all'}")
-
-        resolved = self._resolve(pulsar)
-        sampled = resolved.partition.sampled
-        if not sampled:
-            return
-
-        import numpyro
-
-        delta = self._delta_from_params(
-            pulsar,
-            params,
-            coord=coord,
-            coord_explicit=coord_was_explicit,
-        )
-        prefix = f"{pulsar.name}_{self.name}"
-        theta_native = resolved.space.to_physical(
-            delta[None, :], units="native", coord="delta"
-        )
-        theta_display = resolved.space.to_physical(
-            delta[None, :], units="display", coord="delta"
-        )
-        for name in sampled:
-            numpyro.deterministic(
-                f"{prefix}_{name}_theta_native", theta_native[name][0]
-            )
-            numpyro.deterministic(
-                f"{prefix}_{name}_theta_display", theta_display[name][0]
-            )

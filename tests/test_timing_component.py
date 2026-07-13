@@ -10,6 +10,8 @@ from metapulsar.timing.backends.base import LinearModel
 from metapulsar.timing.backends.jug import LinearizedJugEngine
 from metapulsar.timing.backends.pint import LinearizedPintEngine
 from metapulsar.timing.nonlinear_timing_model import NonLinearTimingModel
+from metapulsar.timing.whitening import normalized_basis
+from metapulsar.timing.sampling.numpyro import contribute_timing
 from metapulsar.timing.partition import resolve_partition
 from metapulsar.timing.whitening import schur_delta_wls
 
@@ -170,12 +172,12 @@ def test_space_cached_and_invalidated_by_cache_token(host):
         analytically_marginalize=["F0", "DM"],
         name="timing",
     )
-    first = ntm.space(host)
-    second = ntm.space(host)
+    first = ntm.bind(host).space
+    second = ntm.bind(host).space
     assert first is second
 
     host._cache_token = "token-v2"
-    third = ntm.space(host)
+    third = ntm.bind(host).space
     assert third is not first
 
 
@@ -194,8 +196,8 @@ def test_whitening_named_builders_bind_from_serializable_configs(host):
             "hyperparameters": {"efac": {"demo": 1.2}, "equad": {"demo": 1.0e-7}},
         },
     )
-    sp_default = ntm_default.space(host)
-    sp_fixed = ntm_fixed.space(host)
+    sp_default = ntm_default.bind(host).space
+    sp_fixed = ntm_fixed.bind(host).space
 
     assert sp_default.linear.C.shape == (1, 1)
     assert sp_fixed.linear.C.shape == (1, 1)
@@ -233,8 +235,8 @@ def test_whitening_builders_condition_fisher_to_unit_scale(host):
     )
 
     for space, fisher in (
-        (ntm_default.space(host), default_fisher),
-        (ntm_fixed.space(host), fixed_fisher),
+        (ntm_default.bind(host).space, default_fisher),
+        (ntm_fixed.bind(host).space, fixed_fisher),
     ):
         fisher_z = _z_space_fisher(space, fisher)
         conditioned = space.linear.C.T @ fisher_z @ space.linear.C
@@ -257,7 +259,7 @@ def test_autodiff_design_matrix_method_feeds_whitening(host):
         name="timing",
     )
 
-    resolved = ntm._resolve(host)
+    resolved = ntm.bind(host)
     np.testing.assert_allclose(resolved.design_matrix, autodiff_matrix)
 
     part = resolve_partition(host, analytically_marginalize=["F0", "DM"])
@@ -284,7 +286,7 @@ def test_standardized_builder_uses_z_space_marginal_scales(host):
         analytically_marginalize=None,
         name="timing",
     )
-    space = ntm.space(host)
+    space = ntm.bind(host).space
     fisher = _schur_fisher(
         host,
         analytically_marginalize=None,
@@ -307,7 +309,7 @@ def test_cheat_wls_prior_is_wide_uniform_box(host):
         analytically_marginalize=None,
         name="timing",
     )
-    block = ntm.priors(host)
+    block = ntm.bind(host).priors
     fisher = _schur_fisher(
         host,
         analytically_marginalize=None,
@@ -342,7 +344,7 @@ def test_autodiff_design_matrix_method_feeds_cheat_prior_widths(host):
         name="timing",
     )
 
-    block = ntm.priors(host)
+    block = ntm.bind(host).priors
     part = resolve_partition(host, analytically_marginalize=None)
     expected_fisher = schur_delta_wls(
         pulsar=host,
@@ -379,7 +381,7 @@ def test_cheat_prior_box_clipped_to_physical_bounds():
         analytically_marginalize=["F1", "DM"],
         name="timing",
     )
-    block = ntm.priors(bounded)
+    block = ntm.bind(bounded).priors
     fisher = _schur_fisher(
         bounded,
         analytically_marginalize=["F1", "DM"],
@@ -403,7 +405,7 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
         analytically_marginalize=["F0", "DM"],
         name="timing",
     )
-    signals = ntm.discovery_signals(host)
+    signals = ntm.bind(host).discovery_signals()
     delay = signals[-1]
     output = np.asarray(delay({f"{host.name}_timing_F1": 0.25}), dtype=float)
     expected = -host._jug_backend.residual_delta(np.array([0.0, 0.25, 0.0]))
@@ -416,7 +418,7 @@ def test_discovery_signals_delta_only_and_jax_gate(host):
         name="timing",
     )
     with pytest.raises(ValueError, match="JAX-capable backend"):
-        ntm_nonjax.discovery_signals(host)
+        ntm_nonjax.bind(host).discovery_signals()
 
 
 def test_autodiff_design_matrix_method_feeds_discovery_gp_basis(host, monkeypatch):
@@ -439,10 +441,12 @@ def test_autodiff_design_matrix_method_feeds_discovery_gp_basis(host, monkeypatc
         name="timing",
     )
 
-    signals = ntm.discovery_signals(host)
+    signals = ntm.bind(host).discovery_signals()
 
     assert signals[0] == "gp"
-    np.testing.assert_allclose(captured["basis"], autodiff_matrix[:, [0, 2]])
+    np.testing.assert_allclose(
+        captured["basis"], normalized_basis(autodiff_matrix[:, [0, 2]])
+    )
     assert not hasattr(host, "iisort")
 
 
@@ -453,11 +457,11 @@ def test_all_analytically_marginalized_paths(host):
         analytically_marginalize=["F0", "F1", "DM"],
         name="timing",
     )
-    assert len(ntm.discovery_signals(host)) == 1
+    assert len(ntm.bind(host).discovery_signals()) == 1
     ent = ntm.enterprise_signal()
     bound = ent(host)
     assert hasattr(bound, "get_basis")
-    assert ntm.timing_param_keys(host) == ()
+    assert ntm.bind(host).timing_param_keys() == ()
 
 
 def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host):
@@ -467,11 +471,11 @@ def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host)
         analytically_marginalize=["F0", "DM"],
         name="timing",
     )
-    keys = ntm.timing_param_keys(host)
+    keys = ntm.bind(host).timing_param_keys()
     assert keys[0] == f"{host.name}_timing_x"
     assert keys[1:] == (f"{host.name}_timing_F1",)
     params = ("efac", keys[0], "gamma", keys[1], "log10_A")
-    assert ntm.non_timing_params(host, params) == ("efac", "gamma", "log10_A")
+    assert ntm.bind(host).non_timing_params(params) == ("efac", "gamma", "log10_A")
 
     ntm_all_marg = NonLinearTimingModel(
         engines="jug",
@@ -480,8 +484,8 @@ def test_non_timing_params_and_timing_param_keys_are_plain_set_subtraction(host)
         name="timing",
     )
     plain = ("efac", "gamma", "log10_A")
-    assert ntm_all_marg.timing_param_keys(host) == ()
-    assert ntm_all_marg.non_timing_params(host, plain) == plain
+    assert ntm_all_marg.bind(host).timing_param_keys() == ()
+    assert ntm_all_marg.bind(host).non_timing_params(plain) == plain
 
 
 def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
@@ -495,7 +499,7 @@ def test_contribute_timing_samples_joint_site_factors_prior_and_injects_delta(
     )
     calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([0.2]))
 
-    out = ntm.contribute_timing(host, {"efac": 1.0})
+    out = contribute_timing(ntm.bind(host), {"efac": 1.0})
 
     assert f"{host.name}_timing_F1" in out
     assert out["efac"] == 1.0
@@ -513,7 +517,7 @@ def test_contribute_timing_noop_when_no_sampled(host, monkeypatch):
     )
     calls = _monkeypatch_numpyro(monkeypatch, sample_value=np.array([]))
     params = {"efac": 1.0}
-    out = ntm.contribute_timing(host, params)
+    out = contribute_timing(ntm.bind(host), params)
     assert out is params
     assert calls["sample"] == []
     assert calls["factor"] == []
@@ -529,7 +533,7 @@ def test_set_prior_validated_against_sampled_partition(host):
     )
     ntm.set_prior("F0", "uniform", lower=-1.0, upper=1.0)
     with pytest.raises(ValueError, match="non-sampled"):
-        ntm.space(host)
+        ntm.bind(host).space
 
 
 def test_set_prior_unknown_name_raises(host):
@@ -542,7 +546,7 @@ def test_set_prior_unknown_name_raises(host):
     )
     ntm.set_prior("F11", "uniform", lower=-1.0, upper=1.0)
     with pytest.raises(ValueError, match="unknown fit parameters"):
-        ntm.space(host)
+        ntm.bind(host).space
 
 
 def test_enterprise_signal_forwards_engines(host):
@@ -554,10 +558,12 @@ def test_enterprise_signal_forwards_engines(host):
     )
     ent = ntm.enterprise_signal()
     _ = ent(host)
-    assert (
-        {"tempo2": "jug", "pint": "jug"},
-        {"design_matrix_method": "analytic"},
-    ) in host.backend_calls
+    # The Enterprise frontend consumes the binding, so its backend is built
+    # with the model's full timing_backend kwargs (not a bare re-query).
+    engines_seen, kwargs_seen = host.backend_calls[-1]
+    assert engines_seen == {"tempo2": "jug", "pint": "jug"}
+    assert kwargs_seen["design_matrix_method"] == "analytic"
+    assert kwargs_seen["subtract_tzr"] is False
 
 
 def test_autodiff_design_matrix_method_feeds_enterprise_gp_basis(host):
@@ -574,7 +580,9 @@ def test_autodiff_design_matrix_method_feeds_enterprise_gp_basis(host):
     ent = ntm.enterprise_signal()
     bound = ent(host)
 
-    np.testing.assert_allclose(bound.get_basis(), autodiff_matrix[:, [0, 2]])
+    np.testing.assert_allclose(
+        bound.get_basis(), normalized_basis(autodiff_matrix[:, [0, 2]])
+    )
 
 
 def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
@@ -586,7 +594,7 @@ def test_contribute_timing_improper_uniform_site_has_vector_event_shape(host):
     )
 
     def model():
-        ntm.contribute_timing(host, {})
+        contribute_timing(ntm.bind(host), {})
 
     substituted = handlers.substitute(
         model,

@@ -97,8 +97,7 @@ def ntm():
 @pytest.fixture
 def binding(host, ntm):
     return build_binding(
-        ntm,
-        host,
+        ntm.bind(host),
         frontend="discovery",
         sampler="numpyro-nuts",
         scenario="demo",
@@ -130,9 +129,9 @@ def test_space_fingerprint_changes_when_C_changes(binding):
 
 
 def test_binding_fingerprint_changes_with_pulsar_state(host, ntm):
-    fp_a = ntm.binding_fingerprint(host)
+    fp_a = ntm.bind(host).fingerprint()
     host._cache_token = "artifact-token-updated"
-    fp_b = ntm.binding_fingerprint(host)
+    fp_b = ntm.bind(host).fingerprint()
     assert fp_a != fp_b
 
 
@@ -199,10 +198,9 @@ def test_load_display_prefers_latent_over_checkpoint(tmp_path, binding):
 
 
 def test_load_latent_prefers_chain_txt_over_npz(tmp_path, host, ntm):
-    ndim = len(ntm.sampled(host))
+    ndim = len(ntm.bind(host).sampled)
     binding = build_binding(
-        ntm,
-        host,
+        ntm.bind(host),
         frontend="enterprise",
         sampler="ptmcmc",
         chain_layout={
@@ -234,10 +232,9 @@ def test_load_latent_prefers_chain_txt_over_npz(tmp_path, host, ntm):
 
 
 def test_load_latent_returns_raw_chain_including_burn(tmp_path, host, ntm):
-    ndim = len(ntm.sampled(host))
+    ndim = len(ntm.bind(host).sampled)
     binding = build_binding(
-        ntm,
-        host,
+        ntm.bind(host),
         frontend="enterprise",
         sampler="ptmcmc",
         chain_layout={
@@ -259,10 +256,9 @@ def test_load_latent_returns_raw_chain_including_burn(tmp_path, host, ntm):
 
 
 def test_enterprise_sidecar_omits_latent_by_default(tmp_path, host, ntm):
-    ndim = len(ntm.sampled(host))
+    ndim = len(ntm.bind(host).sampled)
     binding = build_binding(
-        ntm,
-        host,
+        ntm.bind(host),
         frontend="enterprise",
         sampler="ptmcmc",
         chain_layout={
@@ -278,10 +274,9 @@ def test_enterprise_sidecar_omits_latent_by_default(tmp_path, host, ntm):
 
 
 def test_ptmcmc_chain_decodes_with_sidecar(tmp_path, host, ntm):
-    ndim = len(ntm.sampled(host))
+    ndim = len(ntm.bind(host).sampled)
     binding = build_binding(
-        ntm,
-        host,
+        ntm.bind(host),
         frontend="enterprise",
         sampler="ptmcmc",
         chain_layout={
@@ -301,6 +296,63 @@ def test_ptmcmc_chain_decodes_with_sidecar(tmp_path, host, ntm):
     phys = bundle.load_display()
     assert "F1" in phys
     assert phys["F1"].shape == (2,)
+
+
+def test_posterior_applies_burn_and_thin_consistently(tmp_path, host, ntm):
+    ndim = len(ntm.bind(host).sampled)
+    binding = build_binding(
+        ntm.bind(host),
+        frontend="enterprise",
+        sampler="ptmcmc",
+        chain_layout={
+            "kind": "ptmcmc",
+            "file": "chains/chain_1.txt",
+            "columns": list(range(ndim)),
+            "coord": "x",
+        },
+    )
+    binding.write(tmp_path)
+    chains_dir = tmp_path / "chains"
+    chains_dir.mkdir(parents=True, exist_ok=True)
+    x = np.linspace(0.01, 0.08, 8).reshape(-1, 1)
+    meta = np.zeros((8, 4))
+    np.savetxt(chains_dir / "chain_1.txt", np.hstack([x, meta]))
+
+    bundle = NLTChainBundle.load(tmp_path)
+
+    latent = bundle.latent(burn=4, thin=2)
+    assert latent.shape == (2, 1)
+    np.testing.assert_allclose(latent[:, 0], x[4::2, 0])
+
+    phys = bundle.posterior(burn=4, thin=2)
+    expected = bundle.space.to_physical(latent, units="display")
+    np.testing.assert_allclose(phys["F1"], expected["F1"])
+
+    frac = bundle.latent(burn=0.5)
+    assert frac.shape == (4, 1)
+
+    with pytest.raises(ValueError, match="fractional burn"):
+        bundle.latent(burn=1.5)
+    with pytest.raises(ValueError, match="thin"):
+        bundle.latent(thin=0)
+
+
+def test_truths_return_reference_values(tmp_path, binding):
+    binding.write(tmp_path)
+    x = np.array([[0.1], [0.2]], dtype=float)
+    save_discovery_checkpoint(tmp_path, x, binding, final=True, n_target=2)
+    bundle = NLTChainBundle.load(tmp_path)
+    truths = bundle.truths()
+    # F1 reference is 1.0 in the host's theta_exact; zero delta must decode to it.
+    assert truths == {"F1": pytest.approx(1.0)}
+
+
+def test_sidecar_schema_is_v2_and_code_block_names_owning_package(tmp_path, binding):
+    binding.write(tmp_path)
+    sidecar = json.loads((tmp_path / "nlt_sidecar.json").read_text())
+    assert sidecar["schema"] == "nlt-sidecar-v2"
+    assert sidecar["code"]["package"] == "metapulsar"
+    assert sidecar["code"]["version"]
 
 
 def test_display_units_recorded_without_pint_model(tmp_path, binding):

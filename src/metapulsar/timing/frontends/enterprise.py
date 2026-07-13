@@ -24,24 +24,10 @@ preconditioning only and does not alter the physical prior density.
 
 from __future__ import annotations
 
-from typing import Callable
-
 import numpy as np
 
 from metapulsar.timing.bijectors import PriorBijector
-from metapulsar.timing.partition import PartitionResult, resolve_partition
 from metapulsar.timing.space import default_coord_for_transform
-
-
-def _resolve_partition(pulsar, partition_spec) -> PartitionResult:
-    if isinstance(partition_spec, PartitionResult):
-        return partition_spec
-    if callable(partition_spec):
-        resolved = partition_spec(pulsar)
-        if not isinstance(resolved, PartitionResult):
-            raise TypeError("partition_spec(pulsar) must return PartitionResult")
-        return resolved
-    return resolve_partition(pulsar, analytically_marginalize=partition_spec)
 
 
 def _coord_from_transform(transform: str) -> str:
@@ -50,21 +36,17 @@ def _coord_from_transform(transform: str) -> str:
     return default_coord_for_transform(transform)
 
 
-def _get_backend(pulsar, engines, *, design_matrix_method: str):
-    return pulsar.timing_backend(engines, design_matrix_method=design_matrix_method)
+def _residual_delta(backend, full_delta: np.ndarray) -> np.ndarray:
+    """Evaluate residual delta, preferring the JAX path when available.
 
-
-def _selected_design_matrix(pulsar, engines, *, design_matrix_method: str):
-    if design_matrix_method != "autodiff":
-        return np.asarray(pulsar.Mmat, dtype=float)
-    backend = _get_backend(pulsar, engines, design_matrix_method=design_matrix_method)
-    matrix_fn = getattr(backend, "linearized_design_matrix", None)
-    if matrix_fn is None:
-        raise ValueError(
-            "design_matrix_method='autodiff' requires a backend that exposes "
-            "linearized_design_matrix()."
-        )
-    return np.asarray(matrix_fn(), dtype=float)
+    The JUG NumPy residual path is deprecated and less accurate at large
+    deltas; using the JAX path keeps the Enterprise likelihood consistent
+    with the Discovery frontend on JAX-capable backends.
+    """
+    fn = getattr(backend, "residual_delta_jax", None)
+    if fn is not None:
+        return np.asarray(fn(full_delta), dtype=float)
+    return np.asarray(backend.residual_delta(full_delta), dtype=float)
 
 
 def _axis_bijector(*, space, idx: int) -> PriorBijector:
@@ -157,10 +139,7 @@ def _explicit_scalar_delay_function(sampled_names: tuple[str, ...], evaluator):
 
 def _make_waveform(
     *,
-    space_fn: Callable,
-    engines,
-    design_matrix_method: str,
-    partition_spec,
+    binding_fn,
     coord: str,
 ):
     from enterprise.signals import parameter
@@ -168,11 +147,12 @@ def _make_waveform(
     def waveform(signal_name, psr=None):
         if psr is None:
             raise ValueError("enterprise waveform requires psr binding")
-        space = space_fn(psr)
-        partition = _resolve_partition(psr, partition_spec)
+        binding = binding_fn(psr)
+        space = binding.space
+        partition = binding.partition
+        backend = binding.backend
         sampled_names = tuple(partition.sampled)
         sampled_indices = tuple(partition.idx_sampled)
-        backend = _get_backend(psr, engines, design_matrix_method=design_matrix_method)
         ndim = len(partition.fitpars)
 
         if coord in {"delta", "z", "standardized"}:
@@ -189,7 +169,7 @@ def _make_waveform(
                 full_delta = np.zeros((ndim,), dtype=float)
                 for i, col in enumerate(sampled_indices):
                     full_delta[col] = delta_sampled[i]
-                return -backend.residual_delta(full_delta)
+                return -_residual_delta(backend, full_delta)
 
             delay_body = _explicit_scalar_delay_function(sampled_names, _evaluate)
             kwargs = {
@@ -211,7 +191,7 @@ def _make_waveform(
             full_delta = np.zeros((ndim,), dtype=float)
             for i, col in enumerate(sampled_indices):
                 full_delta[col] = delta_sampled[i]
-            return -backend.residual_delta(full_delta)
+            return -_residual_delta(backend, full_delta)
 
         kwargs = {"x": _vector_user_parameter(space=space)}
         return parameter.Function(_delay_body, **kwargs)(signal_name, psr=psr)
@@ -221,10 +201,8 @@ def _make_waveform(
 
 def _make_marginalizing_signal(
     *,
-    partition_spec,
+    binding_fn,
     name: str,
-    engines,
-    design_matrix_method: str,
 ):
     from enterprise.signals import gp_signals, signal_base
 
@@ -237,15 +215,15 @@ def _make_marginalizing_signal(
 
         def __init__(self, psr):
             super().__init__(psr)
-            partition = _resolve_partition(psr, partition_spec)
-            selected_matrix = _selected_design_matrix(
-                psr,
-                engines,
-                design_matrix_method=design_matrix_method,
+            from metapulsar.timing.whitening import normalized_basis
+
+            binding = binding_fn(psr)
+            partition = binding.partition
+            # Column-normalized: span-preserving under the improper prior, and
+            # required for float64 conditioning with the 1e40 prior weight.
+            self._basis = normalized_basis(
+                binding.design_matrix[:, list(partition.idx_analytically_marginalized)]
             )
-            self._basis = selected_matrix[
-                :, list(partition.idx_analytically_marginalized)
-            ]
             base = gp_signals.TimingModel(
                 name=f"{name}_timingmodel",
                 idx_exclude=partition.idx_sampled,
@@ -281,10 +259,7 @@ def _make_marginalizing_signal(
 
 def enterprise_signal(
     *,
-    space_fn,
-    engines,
-    design_matrix_method: str,
-    partition_spec,
+    binding_fn,
     name: str,
     transform: str,
 ):
@@ -292,17 +267,12 @@ def enterprise_signal(
 
     Parameters
     ----------
-    space_fn
-        Callable ``pulsar -> ParameterSpace`` (typically ``NonLinearTimingModel.space``).
-        Supplies per-axis priors and the whitening/standardized linear map used
-        by ``UserParameter`` log-prior and PPF hooks.
-    engines
-        Engine-selection mapping forwarded to ``pulsar.timing_backend``.
-    design_matrix_method
-        Design-matrix method forwarded to ``pulsar.timing_backend``.
-    partition_spec
-        ``PartitionResult``, ``analytically_marginalize`` spec, or callable
-        ``pulsar -> PartitionResult``.
+    binding_fn
+        Callable ``pulsar -> TimingBinding`` (typically
+        ``NonLinearTimingModel.bind``). All pulsar-bound state — parameter
+        space, partition, timing backend, design matrix — comes from the
+        binding, so the Enterprise likelihood shares the exact backend
+        configuration used by the Discovery frontend and the artifacts.
     name
         Enterprise signal / component name prefix.
     transform
@@ -319,26 +289,16 @@ def enterprise_signal(
     Notes
     -----
     Delay parameters are mapped from the sampling coordinate back to native
-    ``delta_theta`` via ``space.delta_from_coord`` before calling
-    ``backend.residual_delta``. Prior terms follow ``space`` exactly, so
-    fallback cheat priors are the wide uniform boxes described in the module
-    docstring—not informative Gaussians tied to the WLS covariance.
+    ``delta_theta`` via ``space.delta_from_coord`` before evaluating the
+    backend residual delta (JAX path when available). Prior terms follow
+    ``space`` exactly, so fallback cheat priors are the wide uniform boxes
+    described in the module docstring—not informative Gaussians tied to the
+    WLS covariance.
     """
     from enterprise.signals import deterministic_signals
 
     coord = _coord_from_transform(transform)
-    waveform = _make_waveform(
-        space_fn=space_fn,
-        engines=engines,
-        design_matrix_method=design_matrix_method,
-        partition_spec=partition_spec,
-        coord=coord,
-    )
+    waveform = _make_waveform(binding_fn=binding_fn, coord=coord)
     delay_signal = deterministic_signals.Deterministic(waveform, name=name)
-    timing_model = _make_marginalizing_signal(
-        partition_spec=partition_spec,
-        name=name,
-        engines=engines,
-        design_matrix_method=design_matrix_method,
-    )
+    timing_model = _make_marginalizing_signal(binding_fn=binding_fn, name=name)
     return delay_signal + timing_model

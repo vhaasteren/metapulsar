@@ -32,7 +32,9 @@ def test_prior_override_warn_skips_unknown_fitpar():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        resolved = ntm._resolve_prior_overrides(backend=backend, partition=partition)
+        resolved = ntm._resolve_prior_overrides(
+            pulsar=pulsar, backend=backend, partition=partition
+        )
 
     assert resolved == {}
     assert any("ECC" in str(w.message) for w in caught)
@@ -54,4 +56,6 @@ def test_prior_override_strict_raises_unknown_fitpar():
     backend = _StubBackend()
 
     with pytest.raises(ValueError, match="unknown fit parameters"):
-        ntm._resolve_prior_overrides(backend=backend, partition=partition)
+        ntm._resolve_prior_overrides(
+            pulsar=pulsar, backend=backend, partition=partition
+        )

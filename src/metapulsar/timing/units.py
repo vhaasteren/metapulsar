@@ -7,7 +7,7 @@ from typing import Any
 import astropy.units as u
 import numpy as np
 
-from metapulsar.pint_helpers import (
+from .pint_compat import (
     get_aliases_for_parameter,
     pint_parameter_name,
     resolve_parameter_alias,

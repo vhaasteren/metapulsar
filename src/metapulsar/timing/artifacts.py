@@ -18,7 +18,7 @@ import numpy as np
 from .space import ParameterSpace, default_coord_for_transform
 from .units import units_map
 
-SIDECAR_SCHEMA = "nlt-sidecar-v1"
+SIDECAR_SCHEMA = "nlt-sidecar-v2"
 SIDECAR_FILENAME = "nlt_sidecar.json"
 PARAMETER_SPACE_STEM = "nlt_parameter_space"
 ENTERPRISE_NPZ_NAME = "enterprise_x.npz"
@@ -45,10 +45,31 @@ class NLTArtifactError(RuntimeError):
     """Raised when NLT artifacts are missing, mismatched, or unreadable."""
 
 
-def _code_block(git_commit: str | None) -> dict[str, Any]:
-    from metapulsar import __version__
+def _slice_draws(x: np.ndarray, *, burn: int | float, thin: int) -> np.ndarray:
+    """Apply burn-in (count or leading fraction) and thinning to sample rows."""
+    n = int(x.shape[0])
+    if isinstance(burn, float):
+        if not (0.0 <= burn < 1.0):
+            raise ValueError("fractional burn must be in [0, 1)")
+        burn = int(burn * n)
+    burn = int(burn)
+    if burn < 0 or burn > n:
+        raise ValueError(f"burn={burn} out of range for {n} draws")
+    thin = int(thin)
+    if thin < 1:
+        raise ValueError("thin must be >= 1")
+    return x[burn::thin]
 
-    return {"package": "metapulsar", "version": __version__, "git_commit": git_commit}
+
+def _code_block(git_commit: str | None) -> dict[str, Any]:
+    from importlib.metadata import PackageNotFoundError, version
+
+    package = __package__.split(".")[0]
+    try:
+        pkg_version = version(package)
+    except PackageNotFoundError:
+        pkg_version = "0.0.0"
+    return {"package": package, "version": pkg_version, "git_commit": git_commit}
 
 
 def deterministic_site_name(prefix: str, fitpar: str, units: str) -> str:
@@ -151,8 +172,7 @@ class NLTBinding:
 
 
 def build_binding(
-    ntm,
-    pulsar,
+    binding,
     *,
     frontend: str,
     sampler: str,
@@ -162,16 +182,17 @@ def build_binding(
     chain_layout: dict[str, Any] | None = None,
     git_commit: str | None = None,
 ) -> NLTBinding:
-    """Materialize an NLTBinding from a bound NonLinearTimingModel + pulsar."""
-    space = ntm.space(pulsar)
-    sampled = tuple(ntm.sampled(pulsar))
-    keys = ntm.timing_param_keys(pulsar)
+    """Materialize an NLTBinding artifact snapshot from a ``TimingBinding``."""
+    ntm = binding.model
+    pulsar = binding.pulsar
+    space = binding.space
+    sampled = tuple(binding.sampled)
+    keys = binding.timing_param_keys()
     if not keys:
         raise NLTArtifactError(
             f"pulsar {pulsar.name!r} has no sampled timing parameters to bind"
         )
     pint_model = pulsar.pint_model()
-    prefix = f"{pulsar.name}_{ntm.name}"
     tempo2_native = _sidecar_tempo2_native(ntm)
     return NLTBinding(
         space=space,
@@ -188,9 +209,9 @@ def build_binding(
         prior_override_policy=ntm.prior_override_policy,
         native_units=units_map(sampled, pint_model, kind="native"),
         display_units=units_map(sampled, pint_model, kind="display"),
-        binding_fingerprint=ntm.binding_fingerprint(pulsar),
+        binding_fingerprint=binding.fingerprint(),
         space_fingerprint=space.fingerprint(),
-        deterministic_prefix=prefix,
+        deterministic_prefix=binding.prefix,
         scenario=scenario,
         latent=latent,
         checkpoint=checkpoint,
@@ -311,6 +332,36 @@ class NLTChainBundle:
         raise NLTArtifactError(
             "sidecar has no readable latent source (chain_layout, latent, or checkpoint)"
         )
+
+    def latent(self, *, burn: int | float = 0, thin: int = 1) -> np.ndarray:
+        """Latent sample rows with burn-in and thinning applied.
+
+        ``burn`` is a draw count (int) or a leading fraction (float in [0, 1)).
+        """
+        x = self.load_latent()
+        return _slice_draws(x, burn=burn, thin=thin)
+
+    def posterior(
+        self,
+        *,
+        burn: int | float = 0,
+        thin: int = 1,
+        units: str = "display",
+    ) -> dict[str, np.ndarray]:
+        """Physical timing-parameter samples decoded from the latent chain.
+
+        Burn/thin are applied to the latent draws before decoding, so latent
+        and physical views stay consistent.
+        """
+        x = self.latent(burn=burn, thin=thin)
+        return self.space.to_physical(x, units=units)
+
+    def truths(self, *, units: str = "display") -> dict[str, float]:
+        """Par-file reference values (zero delta) for overlay markers."""
+        ndim = len(self.sidecar["sampled"])
+        zero = np.zeros((1, ndim), dtype=float)
+        phys = self.space.to_physical(zero, units=units, coord="delta")
+        return {name: float(np.asarray(arr)[0]) for name, arr in phys.items()}
 
     def _load_theta(self, unit_mode: str) -> dict[str, np.ndarray]:
         suffix = _DISPLAY_SUFFIX if unit_mode == "display" else _NATIVE_SUFFIX

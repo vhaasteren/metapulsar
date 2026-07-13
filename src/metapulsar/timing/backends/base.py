@@ -14,6 +14,13 @@ from metapulsar.timing.protocols import EnterprisePulsarLike, TimingBackend
 # JUG(tempo2) G1: reference vs _update_param longdouble promotion is ~1e-8 s on
 # real IPTA data. See ref-packages/jug/PARITY_ROADMAP.md (G1).
 _JUG_TEMPO2_ZERO_DELTA_TOL_SEC = 1e-7
+
+# Lives here (not in jug_jax_state) so importing it never pulls in jax/jug.
+_NUMPY_RESIDUAL_DEPRECATION = (
+    "JUG NumPy residual path (residual_delta_np) is deprecated and will be "
+    "removed once JAX residual_delta_jax reaches full parity. Use "
+    "residual_delta_jax for new code."
+)
 _JUG_TEMPO2_COMPAT_MODES = frozenset(
     {"tempo2", "tempo2-compatible", "tempo2_compatible"}
 )

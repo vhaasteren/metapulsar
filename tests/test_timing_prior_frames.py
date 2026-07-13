@@ -135,7 +135,9 @@ def test_ntm_resolve_prior_overrides(composite_binary_ctx):
         scale="PB_epta",
     )
     partition = resolve_partition(pulsar, analytically_marginalize=[])
-    resolved = ntm._resolve_prior_overrides(backend=backend, partition=partition)
+    resolved = ntm._resolve_prior_overrides(
+        pulsar=pulsar, backend=backend, partition=partition
+    )
     half = 0.5 * 1.19851257519955
     assert resolved["TASC_epta"].lower == pytest.approx(-half, rel=1e-12)
     assert resolved["TASC_epta"].upper == pytest.approx(+half, rel=1e-12)

@@ -8,9 +8,8 @@ from typing import Literal, Mapping
 
 import numpy as np
 
-from metapulsar.pint_helpers import resolve_parameter_alias
-
 from .bijectors import AxisPrior, PriorBijector
+from .pint_compat import resolve_parameter_alias
 from .precision import ExactNativeRef
 
 PriorPolicy = Literal["fallback", "strict", "explicit"]
@@ -56,6 +55,89 @@ def store_prior_override(
     merged = dict(overrides)
     merged[canonical] = spec
     return merged
+
+
+def _make_spec(
+    prior: AxisPrior, frame: PriorFrame, scale: str | None
+) -> PriorOverrideSpec:
+    if frame not in {"absolute", "delta"}:
+        raise ValueError(f"frame must be 'absolute' or 'delta'; got {frame!r}")
+    if scale is not None:
+        if frame != "delta":
+            raise ValueError("scale=... is only supported with frame='delta'")
+        if prior.family not in _SCALE_SUPPORTED_FAMILIES:
+            raise ValueError(
+                f"Prior family '{prior.family}' does not support scale=..."
+            )
+    return PriorOverrideSpec(prior=prior, frame=frame, scale=scale)
+
+
+def uniform(
+    lower: float,
+    upper: float,
+    *,
+    frame: PriorFrame = "absolute",
+    scale: str | None = None,
+) -> PriorOverrideSpec:
+    """Uniform prior spec (bounds in native/physical or delta units per ``frame``)."""
+    prior = AxisPrior(family="uniform", lower=float(lower), upper=float(upper))
+    return _make_spec(prior, frame, scale)
+
+
+def normal(
+    mean: float,
+    std: float,
+    *,
+    frame: PriorFrame = "absolute",
+    scale: str | None = None,
+) -> PriorOverrideSpec:
+    """Normal prior spec."""
+    prior = AxisPrior(family="normal", mean=float(mean), std=float(std))
+    return _make_spec(prior, frame, scale)
+
+
+def log_uniform(lower: float, upper: float) -> PriorOverrideSpec:
+    """Log-uniform prior spec (absolute frame only)."""
+    prior = AxisPrior(family="log_uniform", lower=float(lower), upper=float(upper))
+    return _make_spec(prior, "absolute", None)
+
+
+def truncated_normal(
+    mean: float,
+    std: float,
+    lower: float,
+    upper: float,
+    *,
+    frame: PriorFrame = "absolute",
+    scale: str | None = None,
+) -> PriorOverrideSpec:
+    """Truncated-normal prior spec."""
+    prior = AxisPrior(
+        family="truncated_normal",
+        lower=float(lower),
+        upper=float(upper),
+        mean=float(mean),
+        std=float(std),
+    )
+    return _make_spec(prior, frame, scale)
+
+
+def delta_uniform(
+    lower: float, upper: float, *, scale: str | None = None
+) -> PriorOverrideSpec:
+    """Uniform prior on offsets from the backend reference (delta frame).
+
+    With ``scale="PB"`` the bounds are multiplied by that parameter's reference
+    value at bind time (e.g. a TASC window of ±half an orbit).
+    """
+    return uniform(lower, upper, frame="delta", scale=scale)
+
+
+def delta_normal(
+    mean: float, std: float, *, scale: str | None = None
+) -> PriorOverrideSpec:
+    """Normal prior on offsets from the backend reference (delta frame)."""
+    return normal(mean, std, frame="delta", scale=scale)
 
 
 def _axis_prior_from_object(prior_obj) -> AxisPrior | None:

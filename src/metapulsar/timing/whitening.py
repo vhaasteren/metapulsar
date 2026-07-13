@@ -25,6 +25,20 @@ def _as_columns(matrix: np.ndarray, indices: tuple[int, ...]) -> np.ndarray:
     return np.asarray(matrix[:, indices], dtype=float)
 
 
+def normalized_basis(matrix: np.ndarray) -> np.ndarray:
+    """Unit-normalize basis columns for stable improper-GP marginalization.
+
+    Timing design-matrix column norms span ~15 orders of magnitude; with a
+    large finite prior weight (``1e40``) the unnormalized Woodbury/Cholesky
+    solve loses the marginalization to float64 roundoff. Normalization leaves
+    the column span (and hence the improper-prior marginalization) unchanged.
+    """
+    basis = np.asarray(matrix, dtype=float)
+    norms = np.linalg.norm(basis, axis=0)
+    norms = np.where(norms > 0.0, norms, 1.0)
+    return basis / norms
+
+
 def _weighted_cross(
     left: np.ndarray, weights: np.ndarray, right: np.ndarray
 ) -> np.ndarray:
