@@ -1050,13 +1050,32 @@ class MetaPulsar:
 
             native_compat = self._native_compat(pta_name)
             family = _IMPL_FAMILY[engines[native_compat]]
-            if linearized and family == "pint":
+            if linearized and family in ("pint", "vela"):
                 backend = LinearizedPintEngine.from_linear_model(linear_model)
             elif linearized and family == "tempo2":
                 backend = LinearizedLibstempoEngine.from_linear_model(linear_model)
             elif linearized:
                 backend = LinearizedJugEngine.from_linear_model(
                     linear_model, compatibility=native_compat
+                )
+            elif family == "vela":
+                if not self._session_files_available(pta_name):
+                    raise ValueError(
+                        f"Cannot build Vela timing session for '{pta_name}': "
+                        "missing par/tim inputs"
+                    )
+                from nltiming.backends.vela import VelaEngine
+
+                files = self._session_files[pta_name]
+                session_mapping = {
+                    name: self._fitparameters.get(name, {}).get(pta_name, name)
+                    for name in session_fitpars
+                }
+                backend = VelaEngine.from_files(
+                    files.par_path,
+                    files.tim_path,
+                    linear_model=linear_model,
+                    param_mapping=session_mapping,
                 )
             elif family == "pint":
                 source = self._pulsars[pta_name]
