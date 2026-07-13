@@ -26,7 +26,7 @@ import numpy as np
 
 # Parameter-name utilities live in the timing package (self-contained for the
 # future ``nltiming`` split); re-exported here for the rest of MetaPulsar.
-from metapulsar.timing.pint_compat import (
+from nltiming.pint_compat import (
     KeyReturningDict as KeyReturningDict,
     _get_all_components as _get_all_components,
     get_aliases_for_parameter as get_aliases_for_parameter,

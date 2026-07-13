@@ -802,7 +802,7 @@ class MetaPulsar:
 
     def can_use_engines(self, engines="jug", *, linearized: bool = False) -> bool:
         """Return whether every pulsar session can honor the engine selection."""
-        from .timing.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.backends import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
         for pta_name in self._epulsars:
@@ -927,7 +927,7 @@ class MetaPulsar:
         force_recompute: bool = False,
     ) -> list[str]:
         """Refresh tempo2 JUG session caches so native_chain_static can be built."""
-        from .timing.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.backends import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines or {"tempo2": "jug", "pint": "jug"})
         primed: list[str] = []
@@ -970,7 +970,7 @@ class MetaPulsar:
         subtract_tzr: bool = False,
     ):
         """Return a TimingBackend in canonical pulsar row order."""
-        from .timing.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.backends import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
         if not self.can_use_engines(engines, linearized=linearized):
@@ -995,7 +995,7 @@ class MetaPulsar:
         if cache_key in self._timing_backend_cache:
             return self._timing_backend_cache[cache_key]
 
-        from .timing.backends import (
+        from nltiming.backends import (
             JugEngine,
             LibstempoEngine,
             LinearizedJugEngine,
@@ -1005,7 +1005,7 @@ class MetaPulsar:
             PulsarSession,
             build_backend,
         )
-        from .timing.backends.base import LinearModel, validate_backend_against_pulsar
+        from nltiming.backends.base import LinearModel, validate_backend_against_pulsar
 
         pta_slices = self._get_pta_slices()
         fitpars = tuple(self.fitpars)
@@ -1132,7 +1132,7 @@ class MetaPulsar:
         )
         validate_backend_against_pulsar(backend, self, tol=1e-9)
         if verify_wiring:
-            from .timing.backends.jug import verify_jug_native_chain_wiring
+            from nltiming.backends.jug import verify_jug_native_chain_wiring
 
             verify_jug_native_chain_wiring(
                 backend, design_matrix_method=design_matrix_method

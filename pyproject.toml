@@ -36,6 +36,7 @@ dependencies = [
     "pint-pulsar>=0.9.0",
     "enterprise-pulsar>=3.0.0",
     "loguru>=0.7.3",
+    "nltiming",
 ]
 
 [project.optional-dependencies]

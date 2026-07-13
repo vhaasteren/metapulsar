@@ -3,7 +3,7 @@
 import numpy as np
 
 from metapulsar.metapulsar import MetaPulsar, SessionFiles
-from metapulsar.timing.backends.composite import PulsarTimingBackend
+from nltiming.backends.composite import PulsarTimingBackend
 
 
 class _SessionPulsar:

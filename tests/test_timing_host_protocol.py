@@ -5,11 +5,11 @@ import pytest
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
-from metapulsar.timing.backends.base import (
+from nltiming.backends.base import (
     validate_backend_against_pulsar,
     validate_enterprise_pulsar,
 )
-from metapulsar.timing.protocols import EnterprisePulsarLike, PulsarInterface
+from nltiming.protocols import EnterprisePulsarLike, PulsarInterface
 
 
 def test_fake_host_satisfies_protocol_and_shape_validators(fake_pulsar_interface):
@@ -205,9 +205,9 @@ def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
     """LibstempoEngine should accept A1DOT->XDOT mapping built by ParameterManager."""
     from metapulsar.mockpulsar import MockParameter
     from metapulsar.parameter_manager import ParameterManager
-    from metapulsar.timing.backends.base import LinearModel
-    from metapulsar.timing.backends.engines import Tempo2DeltaEngine
-    from metapulsar.timing.backends.tempo2 import LibstempoEngine
+    from nltiming.backends.base import LinearModel
+    from nltiming.backends.engines import Tempo2DeltaEngine
+    from nltiming.backends.tempo2 import LibstempoEngine
 
     file_data = {
         "epta": {

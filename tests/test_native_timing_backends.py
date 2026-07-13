@@ -7,11 +7,11 @@ import pytest
 
 from metapulsar.metapulsar import MetaPulsar, SessionFiles
 from metapulsar.metapulsar_factory import MetaPulsarFactory
-from metapulsar.timing.backends.base import LinearModel
-from metapulsar.timing.backends.jug import JugEngine
-from metapulsar.timing.backends.pint import PintEngine
-from metapulsar.timing.backends.tempo2 import LibstempoEngine
-from metapulsar.timing.protocols import JaxTimingBackend
+from nltiming.backends.base import LinearModel
+from nltiming.backends.jug import JugEngine
+from nltiming.backends.pint import PintEngine
+from nltiming.backends.tempo2 import LibstempoEngine
+from nltiming.protocols import JaxTimingBackend
 
 
 class _FakeJaxState:

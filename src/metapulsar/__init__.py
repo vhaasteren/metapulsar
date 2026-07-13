@@ -55,31 +55,31 @@ from .pint_helpers import PINTDiscoveryError
 
 _TIMING_LAZY_EXPORTS = {
     "NonLinearTimingModel": (
-        "metapulsar.timing.nonlinear_timing_model",
+        "nltiming.nonlinear_timing_model",
         "NonLinearTimingModel",
     ),
-    "ParameterSpace": ("metapulsar.timing.space", "ParameterSpace"),
-    "NLTArtifactError": ("metapulsar.timing.artifacts", "NLTArtifactError"),
-    "NLTBinding": ("metapulsar.timing.artifacts", "NLTBinding"),
-    "NLTChainBundle": ("metapulsar.timing.artifacts", "NLTChainBundle"),
-    "build_binding": ("metapulsar.timing.artifacts", "build_binding"),
+    "ParameterSpace": ("nltiming.space", "ParameterSpace"),
+    "NLTArtifactError": ("nltiming.artifacts", "NLTArtifactError"),
+    "NLTBinding": ("nltiming.artifacts", "NLTBinding"),
+    "NLTChainBundle": ("nltiming.artifacts", "NLTChainBundle"),
+    "build_binding": ("nltiming.artifacts", "build_binding"),
     "deterministic_site_name": (
-        "metapulsar.timing.artifacts",
+        "nltiming.artifacts",
         "deterministic_site_name",
     ),
     "physical_deterministics": (
-        "metapulsar.timing.artifacts",
+        "nltiming.artifacts",
         "physical_deterministics",
     ),
     "save_discovery_checkpoint": (
-        "metapulsar.timing.artifacts",
+        "nltiming.artifacts",
         "save_discovery_checkpoint",
     ),
-    "EnterprisePulsarLike": ("metapulsar.timing.protocols", "EnterprisePulsarLike"),
-    "EphemerisExtras": ("metapulsar.timing.protocols", "EphemerisExtras"),
-    "TimingBackend": ("metapulsar.timing.protocols", "TimingBackend"),
-    "JaxTimingBackend": ("metapulsar.timing.protocols", "JaxTimingBackend"),
-    "PulsarInterface": ("metapulsar.timing.protocols", "PulsarInterface"),
+    "EnterprisePulsarLike": ("nltiming.protocols", "EnterprisePulsarLike"),
+    "EphemerisExtras": ("nltiming.protocols", "EphemerisExtras"),
+    "TimingBackend": ("nltiming.protocols", "TimingBackend"),
+    "JaxTimingBackend": ("nltiming.protocols", "JaxTimingBackend"),
+    "PulsarInterface": ("nltiming.protocols", "PulsarInterface"),
 }
 
 
@@ -123,7 +123,7 @@ __all__ = [
     "pta_summary",
     "get_pulsar_names_from_file_data",
     "filter_file_data_by_pulsars",
-    # Nonlinear timing (lazy; see metapulsar.timing)
+    # Nonlinear timing (lazy; see nltiming)
     "NonLinearTimingModel",
     "ParameterSpace",
     "NLTArtifactError",

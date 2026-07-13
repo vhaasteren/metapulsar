@@ -340,7 +340,7 @@ class TestGetParametersByTypeFromParfiles:
         }
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.timing.pint_compat.get_category_mapping_from_pint")
+    @patch("nltiming.pint_compat.get_category_mapping_from_pint")
     def test_spindown_parameters_with_dynamic_derivatives_and_pepoch(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -377,7 +377,7 @@ class TestGetParametersByTypeFromParfiles:
         # The specific aliases depend on the mock alias data provided
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.timing.pint_compat.get_category_mapping_from_pint")
+    @patch("nltiming.pint_compat.get_category_mapping_from_pint")
     def test_dispersion_parameters_with_dynamic_derivatives_and_dmepoch(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -412,7 +412,7 @@ class TestGetParametersByTypeFromParfiles:
         assert "DMEPOCH" in result  # Required epoch parameter
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.timing.pint_compat.get_category_mapping_from_pint")
+    @patch("nltiming.pint_compat.get_category_mapping_from_pint")
     def test_binary_parameters_with_complete_bt_model(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -448,7 +448,7 @@ class TestGetParametersByTypeFromParfiles:
         assert "E" in result  # Alias for ECC (from mock data)
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.timing.pint_compat.get_category_mapping_from_pint")
+    @patch("nltiming.pint_compat.get_category_mapping_from_pint")
     def test_parfile_parsing_failure_handled(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):

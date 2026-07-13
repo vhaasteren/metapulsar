@@ -4,6 +4,9 @@ astropy>=5.0.0
 scipy>=1.7.0
 pint-pulsar>=0.9.0
 enterprise-pulsar>=3.0.0
+# Nonlinear timing stack (extracted from src/metapulsar/timing); from git
+# until the first PyPI release.
+nltiming @ git+https://github.com/vhaasteren/nltiming.git
 
 # Optional dependencies (uncomment as needed)
 # libstempo>=2.0.0
