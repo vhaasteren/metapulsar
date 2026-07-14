@@ -50,12 +50,49 @@ def test_make_uind_empty_columns():
     assert uind.dtype == int
 
 
-def test_timing_init_params_shapes():
-    from validation.sampler_discovery import _timing_init_params
+def test_timing_init_values_use_bound_site():
+    from nltiming import sampling
 
     key = "J0613-0200_timing_x"
-    one = _timing_init_params(key, 7, num_chains=1)[key]
-    assert one.shape == (7,)
+    binding = type(
+        "Binding",
+        (),
+        {
+            "sampled": tuple(f"P{i}" for i in range(7)),
+            "coord_site_name": lambda self: key,
+        },
+    )()
+    init = sampling.numpyro.timing_init_values(binding)
+    assert init[key].shape == (7,)
 
-    two = _timing_init_params(key, 7, num_chains=2)[key]
-    assert two.shape == (2, 7)
+
+def test_binding_nuts_initializes_multiple_chains():
+    import jax.random as jr
+    import numpyro
+    import numpyro.distributions as dist
+    from nltiming import sampling
+
+    key = "J0613-0200_timing_x"
+    binding = type(
+        "Binding",
+        (),
+        {
+            "sampled": ("F0",),
+            "coord_site_name": lambda self: key,
+        },
+    )()
+
+    def model():
+        numpyro.sample(key, dist.Normal(0.0, 1.0).expand((1,)).to_event(1))
+
+    mcmc = sampling.numpyro.nuts(
+        model,
+        binding,
+        num_warmup=2,
+        num_samples=2,
+        num_chains=2,
+        chain_method="sequential",
+        progress_bar=False,
+    )
+    mcmc.run(jr.PRNGKey(0))
+    assert mcmc.get_samples()[key].shape == (4, 1)
