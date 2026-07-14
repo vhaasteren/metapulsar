@@ -4,7 +4,7 @@
 
 # MetaPulsar
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/metapulsar.svg)](https://pypi.org/project/metapulsar/)
 [![DOI](https://zenodo.org/badge/727659043.svg)](https://doi.org/10.5281/zenodo.17626664)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -83,52 +83,60 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 
 ### Nonlinear timing (`NonLinearTimingModel`)
 
-For sampler-facing nonlinear timing on a `MetaPulsar` host, build a config-only
-`NonLinearTimingModel` and drop it into Discovery or Enterprise models:
+MetaPulsar is a live timing host as well as an Enterprise/Discovery-compatible
+frozen pulsar. Open its engine-independent evaluator for parameter inspection,
+residual evaluation, scans, Jacobians, and immutable local fits:
+
+```python
+from metapulsar import create_metapulsar
+
+mp = create_metapulsar(...)
+timing = mp.timing(
+    engines={"pint": "jug", "tempo2": "jug"},
+    design_matrix_method="autodiff",
+)
+
+print(timing.parameters.names)
+shifted = timing.evaluate({"TASC": 1e-3}, frame="delta")
+scan = timing.scan("TASC", [-0.5, 0.0, 0.5], scale="PB")
+J = timing.jacobian(method="autodiff")
+fit = timing.fit(["F0", "F1"])
+```
+
+The evaluator never mutates the pulsar, TOAs, timing sessions, or par files.
+Its residual convention is explicit: `residual_delta = r(theta) - r(theta_ref)`,
+`residuals = mp.residuals + residual_delta`, and `delay = -residual_delta`.
+
+For sampler-facing nonlinear timing, bind a config-only nltiming model to the
+same host:
 
 ```python
 import discovery as ds
-import numpyro
-import numpyro.distributions as dist
-from discovery import prior as ds_prior
-from metapulsar import create_metapulsar
-from metapulsar.timing import NonLinearTimingModel
-
-mp = create_metapulsar(...)  # MetaPulsar host (TimingHost)
+from nltiming import NonLinearTimingModel, sampling
 
 ntm = NonLinearTimingModel(
-    backend="jug",
-    jug_compatibility="auto",
-    transform="whitening",  # or "standardized" | "none"
+    engines="jug",
+    sample=["PB", "TASC", "A1"],
+    transform="whitening",
 )
+binding = ntm.bind(mp)
 
 likelihood = ds.PulsarLikelihood([
     mp.residuals,
-    ds.makenoise_measurement(mp, noisedict, ecorr=True, enterprise=True),
-    ds.makegp_fourier(mp, ds.powerlaw, components=30, name="red_noise"),
-    *ntm.discovery_signals(mp),
+    ds.makenoise_measurement_simple(mp, noisedict),
+    *binding.discovery_signals(),
 ])
 
-def model():
-    params = {
-        par: numpyro.sample(
-            par, dist.Uniform(*ds_prior.getprior_uniform(par, noisedict))
-        )
-        for par in ntm.non_timing_params(mp, likelihood.logL.params)
-    }
-    params = ntm.contribute_timing(mp, params)
-    numpyro.factor("ll", likelihood.logL(params))
-
-# Post-processing: convert sampled coordinates to physical timing parameters
-# physical = ntm.space(mp).to_physical(samples, units="display")
+model = sampling.numpyro.model(likelihood, binding, fixed=noisedict)
+mcmc = sampling.numpyro.nuts(model, binding)
 ```
 
 Install timing extras with `pip install "metapulsar[timing]"`.
-`jug-timing` is intentionally not included in `pyproject.toml` extras for now.
-If you use the default `backend="jug"` path, install `jug-timing` separately
-(typically from source in development environments).
+The JUG extra currently requires Python 3.12. The package base and nltiming
+require Python 3.11 or newer.
 
-Dev walkthrough notebooks live under `examples/notebooks-dev/` (local-only).
+The distributed end-to-end walkthrough is
+[`examples/notebooks/nonlinear_timing.ipynb`](examples/notebooks/nonlinear_timing.ipynb).
 
 ## Documentation
 

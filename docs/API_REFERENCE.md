@@ -20,12 +20,12 @@ Complete API documentation for the MetaPulsar package.
 The main class for combining pulsar timing data from multiple PTA collaborations.
 
 ```python
-class MetaPulsar(enterprise.pulsar.BasePulsar):
+class MetaPulsar:
     """Elegant composite pulsar for multi-PTA data combination.
     
     This class combines pulsar timing data from multiple PTA collaborations
     into a unified object suitable for gravitational wave detection analysis.
-    Inherits from enterprise.pulsar.BasePulsar for full Enterprise compatibility.
+    Implements the Enterprise/Discovery pulsar surface by duck typing.
     
     Supports two combination strategies:
     - "consistent": Astrophysical consistency (modifies par files for consistency)
@@ -44,7 +44,7 @@ class MetaPulsar(enterprise.pulsar.BasePulsar):
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
-        sort=True,
+        sort=False,
     ):
         """Initialize MetaPulsar.
         
@@ -65,6 +65,31 @@ class MetaPulsar(enterprise.pulsar.BasePulsar):
             sort: Whether to sort data by time
         """
 ```
+
+### Interactive timing evaluation
+
+`MetaPulsar.timing()` opens nltiming's immutable, engine-independent evaluator:
+
+```python
+timing = metapulsar.timing(
+    engines={"pint": "jug", "tempo2": "jug"},
+    design_matrix_method="autodiff",
+)
+
+timing.parameters["F0"]       # reference, units, uncertainty, PTA aliases
+evaluation = timing.evaluate({"F0": 1e-10}, frame="delta")
+evaluation.residual_delta     # r(theta) - r(theta_ref), seconds
+evaluation.residuals          # absolute residuals, seconds
+evaluation.delay              # -residual_delta, likelihood convention
+
+scan = timing.scan("TASC", [-0.5, 0.0, 0.5], scale="PB")
+jacobian = timing.jacobian(method="autodiff")
+fit = timing.fit(["F0", "F1"])
+```
+
+The evaluator and its result objects live in the standalone `nltiming`
+package. MetaPulsar owns only host construction, multi-PTA parameter/session
+mapping, and the convenience constructor.
 
 ### MetaPulsarFactory
 
