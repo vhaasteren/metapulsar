@@ -2,6 +2,10 @@
   "name": "anpta dev",
   "image": "vhaasteren/anpta:cpu",
   "overrideCommand": false,
+  "runArgs": [
+    "--security-opt=seccomp=unconfined",
+    "--security-opt=apparmor=unconfined"
+  ],
   "containerEnv": {
     "HOST_UID": "${localEnv:UID}",
     "HOST_GID": "${localEnv:GID}",
