@@ -80,6 +80,15 @@ _TIMING_LAZY_EXPORTS = {
     "TimingBackend": ("nltiming.protocols", "TimingBackend"),
     "JaxTimingBackend": ("nltiming.protocols", "JaxTimingBackend"),
     "PulsarInterface": ("nltiming.protocols", "PulsarInterface"),
+    "PulsarData": ("nltiming.protocols", "PulsarData"),
+    "TimingHost": ("nltiming.protocols", "TimingHost"),
+    "TimingCapabilities": ("nltiming.evaluator", "TimingCapabilities"),
+    "TimingEvaluation": ("nltiming.evaluator", "TimingEvaluation"),
+    "TimingEvaluator": ("nltiming.evaluator", "TimingEvaluator"),
+    "TimingFitResult": ("nltiming.evaluator", "TimingFitResult"),
+    "TimingParameter": ("nltiming.evaluator", "TimingParameter"),
+    "TimingParameters": ("nltiming.evaluator", "TimingParameters"),
+    "TimingScan": ("nltiming.evaluator", "TimingScan"),
 }
 
 
@@ -138,6 +147,15 @@ __all__ = [
     "TimingBackend",
     "JaxTimingBackend",
     "PulsarInterface",
+    "PulsarData",
+    "TimingHost",
+    "TimingCapabilities",
+    "TimingEvaluation",
+    "TimingEvaluator",
+    "TimingFitResult",
+    "TimingParameter",
+    "TimingParameters",
+    "TimingScan",
 ]
 
 

@@ -90,6 +90,7 @@ class MetaPulsar:
         self._clock_dir = None if clock_dir is None else Path(clock_dir)
         self._sort = sort
         self._timing_backend_cache = {}
+        self._timing_rows_filtered = False
         self._pint_model_cache = None
 
         # Elegant initialization flow
@@ -800,8 +801,32 @@ class MetaPulsar:
         )
         return self._pint_model_cache
 
+    def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
+        """Return canonical fitpars mapped to their per-PTA parameter names.
+
+        The returned dictionaries are copies so interactive timing clients can
+        inspect provenance without mutating the host's canonical mapping.
+        """
+        return {name: dict(self._fitparameters.get(name, {})) for name in self.fitpars}
+
+    def timing(self, engines="jug", **backend_kwargs):
+        """Open an immutable, engine-independent timing evaluator.
+
+        This is a convenience facade over :class:`nltiming.TimingEvaluator`;
+        all evaluation, scan, Jacobian, and fit logic remains in ``nltiming``.
+        """
+        from nltiming import TimingEvaluator
+
+        return TimingEvaluator(
+            self,
+            engines=engines,
+            **backend_kwargs,
+        )
+
     def can_use_engines(self, engines="jug", *, linearized: bool = False) -> bool:
         """Return whether every pulsar session can honor the engine selection."""
+        if getattr(self, "_timing_rows_filtered", False):
+            return False
         from nltiming.backends import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
@@ -970,6 +995,12 @@ class MetaPulsar:
         subtract_tzr: bool = False,
     ):
         """Return a TimingBackend in canonical pulsar row order."""
+        if getattr(self, "_timing_rows_filtered", False):
+            raise ValueError(
+                "nonlinear timing backends are not available after filter_data(); "
+                "the retained engine sessions still describe the original TOA rows. "
+                "Filter the input tim files before constructing MetaPulsar."
+            )
         from nltiming.backends import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
@@ -1203,8 +1234,7 @@ class MetaPulsar:
         self._planetssb = self._planetssb[mask, :, :]
         self._sunssb = self._sunssb[mask, :]
 
-        dmx_mask = np.sum(self._designmatrix, axis=0) != 0.0
-        self._designmatrix = self._designmatrix[:, dmx_mask]
+        self._remove_nonidentifiable_parameters()
 
         if isinstance(self._flags, np.ndarray):
             self._flags = self._flags[mask]
@@ -1213,6 +1243,7 @@ class MetaPulsar:
                 self._flags[key] = self._flags[key][mask]
 
         self.sort_data()
+        self._timing_rows_filtered = True
         self._invalidate_timing_caches()
 
     @property

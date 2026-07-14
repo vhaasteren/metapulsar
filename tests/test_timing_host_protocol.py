@@ -201,6 +201,39 @@ def test_metapulsar_timing_backend_cache_tracks_host_state():
     assert changed is not backend
 
 
+def test_metapulsar_timing_opens_nltiming_evaluator():
+    from nltiming import TimingEvaluator
+
+    host = _build_real_host()
+    timing = host.timing(
+        {"tempo2": "libstempo", "pint": "jug"},
+        linearized=True,
+    )
+
+    assert isinstance(timing, TimingEvaluator)
+    assert timing.pulsar is host
+    assert timing.parameters.names == tuple(host.fitpars)
+    assert timing.reference_exact == timing.backend.reference_theta_exact()
+    assert timing.pulsar.timing_parameter_mapping() == {
+        name: dict(host._fitparameters[name]) for name in host.fitpars
+    }
+
+
+def test_filtered_host_rejects_unaligned_live_timing_sessions():
+    host = _build_real_host()
+    host.filter_data(mask=np.arange(len(host.toas)) % 2 == 0)
+
+    assert not host.can_use_engines(
+        {"tempo2": "libstempo", "pint": "jug"}, linearized=True
+    )
+    with pytest.raises(ValueError, match="after filter_data"):
+        host.timing(
+            {"tempo2": "libstempo", "pint": "jug"},
+            linearized=True,
+        )
+    assert host.Mmat.shape[1] == len(host.fitpars)
+
+
 def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
     """LibstempoEngine should accept A1DOT->XDOT mapping built by ParameterManager."""
     from metapulsar.mockpulsar import MockParameter
