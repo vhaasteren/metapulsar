@@ -27,6 +27,21 @@ enterprise, PINT). Datasets are simulated with PINT — no external data.
   charts — the `F0` axis that broke the earlier decentering run), and the
   `identically_linear=` knob turns it into a clean, `Hessian ≈ identity` pass.
 
-Non-sampling API calls have been smoke-tested end to end; the NUTS/PTMCMC cells
-follow the same patterns as `tests/test_joint_timing.py`. Outputs are not
+Two **validation notebooks** run the new-API workflow on the real IPTA-DR2
+J1640+2224 data (they supersede the old-API `notebooks-dev/nlt_ipta_dr2_*`
+prototypes, which are left intact):
+
+- **`03_j1640_decentering_validation.ipynb`** — the joint full-basis decentering
+  validation: charts read chart-type-first, the `identically_linear` geometry fix
+  on real data (Hessian eigenvalues collapse toward 1; the report still doesn't
+  fully pass because the binary parameters stay nonlinear — the honest residual),
+  expansion refinement, certification + standalone report, block-dense-mass NUTS
+  with each chain plotted separately, and pivoted vs 1/yr red-noise amplitude.
+- **`04_j1640_marginalization_validation.ipynb`** — delta-flat vs z-prior
+  marginalization as distinct first-class records (different GP, different
+  log-likelihood, different fingerprint), and sampling the z-prior coefficients.
+
+Requires the EPTA-DR2 J1640 par/tim under `data/ipta-dr2/`. Non-sampling API
+calls have been smoke-tested end to end (incl. on real J1640); the NUTS/PTMCMC
+cells follow the same patterns as `tests/test_joint_timing.py`. Outputs are not
 committed — regenerate by running the notebooks.
