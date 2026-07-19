@@ -2,7 +2,7 @@
 
 The engine-neutral unit tests live in the nltiming repo
 (``tests/test_joint_model.py``). These exercise the whole stack on a
-discovery-native simulated pulsar: three-way partition, the dynamic transport,
+discovery-native simulated pulsar: the typed inference plan, the dynamic transport,
 target exactness against a dense oracle, whitening geometry, decoding, the
 soft-clamp, and the dynamic run manifest.
 """
@@ -28,7 +28,7 @@ from pint.models import get_model  # noqa: E402
 from pint.simulation import make_fake_toas_uniform  # noqa: E402
 
 from metapulsar import create_metapulsar  # noqa: E402
-from nltiming import NonLinearTimingModel  # noqa: E402
+from nltiming import NonLinearTimingModel, TimingInference  # noqa: E402
 from nltiming.sampling import numpyro as N  # noqa: E402
 
 pytestmark = [
@@ -43,8 +43,9 @@ GAMMA, LOG10_A = 3.0, -14.0
 
 @pytest.fixture(scope="module")
 def joint_setup():
-    """Build a simulated pulsar, a joint (transform='none') context, a
-    residual-form discovery likelihood, and the joint model once."""
+    """Build a simulated pulsar, a joint (whitening=None / identity static
+    layer) sample_all context, a residual-form discovery likelihood, and the
+    joint model once."""
     ds.config(kernels="metamath")
     workdir = Path(tempfile.mkdtemp(prefix="j1_it_"))
     np.random.seed(42)
@@ -75,9 +76,7 @@ def joint_setup():
 
     ntm = NonLinearTimingModel(
         engines="jug",
-        sample=["F0", "F1"],
-        sample_linear="remaining",
-        transform="none",
+        inference=TimingInference.sample_all(),
         name="timing",
     )
     ctx = ntm.for_pulsar(mp)
@@ -147,9 +146,7 @@ def joint_multi_setup():
     for mp in (mp_a, mp_b):
         ntm = NonLinearTimingModel(
             engines="jug",
-            sample=["F0", "F1"],
-            sample_linear="remaining",
-            transform="none",
+            inference=TimingInference.sample_all(),
             name="timing",
         )
         ctx = ntm.for_pulsar(mp)
@@ -253,9 +250,7 @@ def joint_hd_setup():
     for i, mp in enumerate(mps):
         ntm = NonLinearTimingModel(
             engines="jug",
-            sample=["F0", "F1"],
-            sample_linear="remaining",
-            transform="none",
+            inference=TimingInference.sample_all(),
             name="timing",
         )
         ctx = ntm.for_pulsar(mp)
@@ -342,8 +337,8 @@ def test_hd_target_matches_dense_oracle(joint_hd_setup):
             c_gw = np.asarray(parts[gw_keys[i]])
             c_gw_flat.append(c_gw)
             delta = np.asarray(ctx.space.delta_from_z(jnp.asarray(z), jnp))
-            idx = np.asarray(ctx.partition.idx_sampled)
-            full = np.zeros(len(ctx.partition.fitpars))
+            idx = np.asarray(ctx.plan.idx_sampled)
+            full = np.zeros(len(ctx.plan.fitpars))
             full[idx] = delta
             detres = (
                 e["y"]
@@ -480,8 +475,13 @@ def test_cw_template_subtracted_centering(joint_setup):
 
 def test_partition_and_transport_structure(joint_setup):
     ctx, jm = joint_setup["ctx"], joint_setup["jm"]
-    assert ctx.partition.nonlinear_sampled == ("F0", "F1")
-    assert set(ctx.partition.linear_sampled) == set(ctx.sampled) - {"F0", "F1"}
+    # sample_all: every timing axis is sampled; linearity is engine/registry-
+    # derived (not an explicit choice) and partitions the sampled set into
+    # identically-linear and non-identically-linear axes.
+    linear_sampled = {p for p in ctx.sampled if p in set(ctx.identically_linear)}
+    nonlinear_sampled = set(ctx.sampled) - linear_sampled
+    assert linear_sampled | nonlinear_sampled == set(ctx.sampled)
+    assert not (linear_sampled & nonlinear_sampled)
     tr = jm.transport
     diag = tr.diagnostics()
     names = [b["name"] for b in diag["blocks"]]
@@ -546,8 +546,8 @@ def test_target_density_is_exact(joint_setup):
         c = np.asarray(parts[gp_key])
         delta = np.asarray(ctx.space.delta_from_z(jnp.asarray(z), jnp))
         # exact nonlinear detres = y + residual_delta(full_delta)
-        idx = np.asarray(ctx.partition.idx_sampled)
-        full = np.zeros(len(ctx.partition.fitpars))
+        idx = np.asarray(ctx.plan.idx_sampled)
+        full = np.zeros(len(ctx.plan.fitpars))
         full[idx] = delta
         detres = y0 + np.asarray(ctx.engine.residual_delta_jax(jnp.asarray(full)))
         detres = detres - np.asarray(gp.F) @ c
@@ -584,17 +584,16 @@ def test_transport_jacobian_matches_ldj(joint_setup):
 
 
 def test_exact_linear_param_is_linear(joint_setup):
-    """A genuinely-linear sample_linear parameter's engine residual is exactly
-    linear in its delta (``residual_delta(2δ) == 2·residual_delta(δ)``): the
-    exact-linear design-column path (§6.2). (``sample_linear='remaining'`` also
-    sweeps in nonlinear astrometry like RAJ/DECJ, which the engine evaluates
-    natively — those are exact but not linear, so we test DM, a true linear
-    dispersion term.)"""
+    """A genuinely-linear timing axis's engine residual is exactly linear in its
+    delta (``residual_delta(2δ) == 2·residual_delta(δ)``): the exact-linear
+    design-column path (§6.2). DM is a true linear dispersion term and lives in
+    nltiming's identical-linearity fallback registry (nonlinear astrometry like
+    RAJ/DECJ is exact but not linear)."""
     ctx = joint_setup["ctx"]
     lin = "DM"
-    assert lin in ctx.partition.linear_sampled
-    col = ctx.partition.idx_sampled[list(ctx.sampled).index(lin)]
-    nfit = len(ctx.partition.fitpars)
+    assert lin in ctx.identically_linear
+    col = ctx.plan.idx_sampled[list(ctx.sampled).index(lin)]
+    nfit = len(ctx.plan.fitpars)
 
     def resid(scale):
         full = np.zeros(nfit)
