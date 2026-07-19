@@ -22,6 +22,10 @@ enterprise, PINT). Datasets are simulated with PINT — no external data.
   transport-center report, and pivot-amplitude red noise
   (`make_powerlaw_pivot`, sensitivity-weighted pivot frequency, decode to
   1/yr, and wiring the pivot PSD into a real `makegp_fourier` GP).
+  **Section 2b is the feature's headline demonstration**: the certifier catches a
+  ~million-fold off-mode geometry defect (spin parameters sampled on wide uniform
+  charts — the `F0` axis that broke the earlier decentering run), and the
+  `identically_linear=` knob turns it into a clean, `Hessian ≈ identity` pass.
 
 Non-sampling API calls have been smoke-tested end to end; the NUTS/PTMCMC cells
 follow the same patterns as `tests/test_joint_timing.py`. Outputs are not
