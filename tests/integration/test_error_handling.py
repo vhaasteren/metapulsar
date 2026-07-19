@@ -3,8 +3,8 @@
 import pytest
 import tempfile
 from pathlib import Path
-from metapulsar import MetaPulsarFactory, FileDiscoveryService
-from metapulsar.file_discovery_service import PTA_DATA_RELEASES
+from metapulsar import MetaPulsarFactory, FileDiscovery
+from metapulsar.file_discovery import PTA_DATA_RELEASES
 from metapulsar.pint_helpers import PINTDiscoveryError
 from metapulsar.sandbox_tempo2 import Tempo2Error
 from tests.helpers import make_tim_metadata
@@ -17,7 +17,7 @@ class TestErrorHandling:
     def test_missing_data_directory(self):
         """Test handling of missing data directories."""
         # Test with non-existent PTA
-        discovery_service = FileDiscoveryService(working_dir="../../data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="../../data/ipta-dr2")
         with pytest.raises(KeyError):
             discovery_service.discover_files(["nonexistent_config"])
 

@@ -18,7 +18,7 @@ except ImportError:
     Tempo2Pulsar = None
 
 # Import MetaPulsar and ParameterManager
-from .metapulsar import MetaPulsar
+from .metapulsar import MetaPulsar, normalize_combination_strategy
 from .parameter_manager import ParameterManager
 from .position_helpers import discover_pulsars_by_coordinates_optimized
 
@@ -81,7 +81,7 @@ def _collect_included_tim_rel_paths(tim_path: Path) -> frozenset[Path]:
     return frozenset(included)
 
 
-# Default components for consistent combination strategy
+# Default components for the shared combination strategy
 DEFAULT_COMBINE_COMPONENTS: List[str] = [
     "astrometry",
     "spindown",
@@ -101,7 +101,7 @@ class MetaPulsarFactory:
     def __init__(self):
         """Initialize the MetaPulsar factory.
 
-        Note: File discovery should be handled separately using FileDiscoveryService.
+        Note: File discovery should be handled separately using FileDiscovery.
         This factory only handles object creation from provided file paths.
         """
         self.logger = logger
@@ -183,7 +183,7 @@ class MetaPulsarFactory:
     def create_metapulsar(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
@@ -194,15 +194,18 @@ class MetaPulsarFactory:
         """Create MetaPulsar using specified combination strategy.
 
         Args:
-            file_data: File data from FileDiscoveryService (should contain data for single pulsar only)
+            file_data: File data from FileDiscovery (should contain data for single pulsar only)
             combination_strategy: Strategy for combining PTAs:
-                - "consistent": Astrophysical consistency (modifies par files for consistency, the default)
-                - "composite": Multi-PTA composition (preserves original parameters, Borg/FrankenStat methods)
-            reference_pta: PTA to use as reference (for consistent strategy). If None, uses first PTA in file_data.
-            combine_components: List of components to make consistent (for consistent strategy).
+                - "shared": shared timing-model params across PTAs (modifies par
+                  files for consistency; default; ex-"consistent")
+                - "per_pta": per-PTA timing-model params preserved (ex-"composite").
+                The legacy "consistent"/"composite" spellings are accepted as
+                deprecated aliases.
+            reference_pta: PTA to use as reference (for the shared strategy). If None, uses first PTA in file_data.
+            combine_components: List of components to share (for the shared strategy).
                 Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
-            add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
-            parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+            add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for the shared strategy)
+            parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk.
             use_pulse_numbers: Pulse-number mode (string only; default ``"yes"``):
 
@@ -222,6 +225,7 @@ class MetaPulsarFactory:
             ValueError: If no files found, multiple pulsars detected, or invalid parameters
             RuntimeError: If Enterprise Pulsar creation fails
         """
+        combination_strategy = normalize_combination_strategy(combination_strategy)
         self.logger.info(f"Creating MetaPulsar using {combination_strategy} strategy")
         pulse_mode = validate_pulse_number_mode(use_pulse_numbers)
 
@@ -263,12 +267,10 @@ class MetaPulsarFactory:
         if parfile_output_dir:
             parfile_output_dir = Path(parfile_output_dir).resolve()
             parfile_output_dir.mkdir(parents=True, exist_ok=True)
-        session_file_dir = Path(
-            tempfile.mkdtemp(prefix="metapulsar_session_files_")
-        ).resolve()
+        pta_file_dir = Path(tempfile.mkdtemp(prefix="metapulsar_pta_files_")).resolve()
 
         # Process par files based on strategy
-        if combination_strategy == "consistent":
+        if combination_strategy == "shared":
             # Create ParameterManager for parfile consistency
             parameter_manager = ParameterManager(
                 file_data=single_file_data,
@@ -279,16 +281,16 @@ class MetaPulsarFactory:
             )
 
             # Make par files consistent
-            consistent_parfiles = parameter_manager.make_parfiles_consistent()
+            shared_parfiles = parameter_manager.make_parfiles_shared()
 
-            # Update file_pairs with consistent par files
+            # Update file_pairs with shared par files
             file_pairs = {
-                pta: (consistent_parfiles[pta], single_file_data[pta]["tim"])
+                pta: (shared_parfiles[pta], single_file_data[pta]["tim"])
                 for pta in single_file_data.keys()
-                if pta in consistent_parfiles
+                if pta in shared_parfiles
             }
         elif parfile_output_dir:
-            # For composite strategy, write original par files
+            # For per_pta strategy, write original par files
             self._write_original_parfiles(
                 single_file_data, parfile_output_dir, pulsar_name
             )
@@ -298,20 +300,20 @@ class MetaPulsarFactory:
             file_pairs=file_pairs,
             file_data=single_file_data,
             use_pulse_numbers=pulse_mode,
-            session_file_dir=session_file_dir,
-            return_session_files=True,
+            pta_file_dir=pta_file_dir,
+            return_pta_files=True,
         )
         if isinstance(created, tuple) and len(created) == 2:
-            pulsars, session_files = created
+            pulsars, pta_files = created
         else:
-            pulsars, session_files = created, {}
+            pulsars, pta_files = created, {}
 
         return MetaPulsar(
             pulsars=pulsars,
             combination_strategy=combination_strategy,
             combine_components=combine_components,
             add_dm_derivatives=add_dm_derivatives,
-            session_files=session_files,
+            pta_files=pta_files,
             clock_dir=clock_dir,
         )
 
@@ -354,7 +356,7 @@ class MetaPulsarFactory:
         making it suitable for creating individual MetaPulsars.
 
         Args:
-            file_data: File data from FileDiscoveryService containing multiple pulsars
+            file_data: File data from FileDiscovery containing multiple pulsars
 
         Returns:
             Dictionary mapping pulsar names to their respective file data:
@@ -393,7 +395,7 @@ class MetaPulsarFactory:
         """Group files by pulsar with reference PTA ordering.
 
         Args:
-            file_data: File data from FileDiscoveryService (per data release)
+            file_data: File data from FileDiscovery (per data release)
             reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
 
         Returns:
@@ -493,7 +495,7 @@ class MetaPulsarFactory:
     def create_all_metapulsars(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
@@ -504,17 +506,18 @@ class MetaPulsarFactory:
         """Create MetaPulsars for all available pulsars using file data.
 
         Args:
-            file_data: File data from FileDiscoveryService (per data release)
+            file_data: File data from FileDiscovery (per data release)
             combination_strategy: Strategy for combining PTAs
             reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
-            combine_components: List of components to make consistent
+            combine_components: List of components to share
             add_dm_derivatives: Whether to ensure DM1, DM2 are present
-            parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+            parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk. Creates subdirectories for each pulsar.
 
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
         """
+        combination_strategy = normalize_combination_strategy(combination_strategy)
         # 1. Ensure parfile content and TIM metadata are loaded
         validated_data = self._ensure_parfile_content(file_data)
         validated_data = self._ensure_tim_metadata(validated_data)
@@ -615,7 +618,7 @@ class MetaPulsarFactory:
         timespan statistics for each pulsar and PTA combination.
 
         Args:
-            file_data: File data from FileDiscoveryService (per data release)
+            file_data: File data from FileDiscovery (per data release)
         """
         import warnings
 
@@ -725,28 +728,28 @@ class MetaPulsarFactory:
         file_pairs: Dict[str, Tuple[Path, Path]],
         file_data: Dict[str, Dict[str, Any]],
         use_pulse_numbers: PulseNumberMode = "yes",
-        session_file_dir: Path | None = None,
-        return_session_files: bool = False,
+        pta_file_dir: Path | None = None,
+        return_pta_files: bool = False,
     ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
         """Create PINT/Tempo2 objects from file pairs using file data.
 
         Args:
             file_pairs: Dictionary mapping PTA names to (parfile, timfile) tuples
             file_data: Dictionary mapping PTA names to file dictionaries
-                      Contains timing_package info from FileDiscoveryService
+                      Contains timing_package info from FileDiscovery
             use_pulse_numbers: Pulse-number mode (``no``, ``yes``, ``reuse``, ``overwrite``)
 
         Returns:
             Dictionary mapping PTA names to PINT/Tempo2 objects
         """
         pulsar_objects = {}
-        session_files: Dict[str, Dict[str, Any]] = {}
+        pta_files: Dict[str, Dict[str, Any]] = {}
         track_pn = pulse_number_tracking_enabled(use_pulse_numbers)
-        if session_file_dir is None:
-            session_file_dir = Path(
-                tempfile.mkdtemp(prefix="metapulsar_session_files_")
+        if pta_file_dir is None:
+            pta_file_dir = Path(
+                tempfile.mkdtemp(prefix="metapulsar_pta_files_")
             ).resolve()
-        session_file_dir.mkdir(parents=True, exist_ok=True)
+        pta_file_dir.mkdir(parents=True, exist_ok=True)
 
         for pta_name, (parfile, timfile) in file_pairs.items():
             # Get timing package info from file data
@@ -777,13 +780,13 @@ class MetaPulsarFactory:
                         )
                         if track_pn:
                             ensure_pint_track_minus_2(model)
-                        if return_session_files:
-                            session_files[pta_name] = self._retain_session_files(
+                        if return_pta_files:
+                            pta_files[pta_name] = self._retain_pta_files(
                                 pta_name=pta_name,
                                 timing_package=timing_package,
                                 par_path=parfile,
                                 tim_path=Path(tim_path),
-                                session_file_dir=session_file_dir,
+                                pta_file_dir=pta_file_dir,
                             )
                     pulsar_objects[pta_name] = (model, toas)
 
@@ -805,15 +808,13 @@ class MetaPulsarFactory:
                                     timfile=tim_path,
                                     dofit=False,
                                 )
-                                if return_session_files:
-                                    session_files[pta_name] = (
-                                        self._retain_session_files(
-                                            pta_name=pta_name,
-                                            timing_package=timing_package,
-                                            par_path=Path(par_for_tempo2),
-                                            tim_path=Path(tim_path),
-                                            session_file_dir=session_file_dir,
-                                        )
+                                if return_pta_files:
+                                    pta_files[pta_name] = self._retain_pta_files(
+                                        pta_name=pta_name,
+                                        timing_package=timing_package,
+                                        par_path=Path(par_for_tempo2),
+                                        tim_path=Path(tim_path),
+                                        pta_file_dir=pta_file_dir,
                                     )
                         else:
                             t2_psr = tempopulsar(
@@ -821,13 +822,13 @@ class MetaPulsarFactory:
                                 timfile=tim_path,
                                 dofit=False,
                             )
-                            if return_session_files:
-                                session_files[pta_name] = self._retain_session_files(
+                            if return_pta_files:
+                                pta_files[pta_name] = self._retain_pta_files(
                                     pta_name=pta_name,
                                     timing_package=timing_package,
                                     par_path=parfile,
                                     tim_path=Path(tim_path),
-                                    session_file_dir=session_file_dir,
+                                    pta_file_dir=pta_file_dir,
                                 )
                     pulsar_objects[pta_name] = t2_psr
 
@@ -837,18 +838,18 @@ class MetaPulsarFactory:
                 self.logger.error(f"Failed to create pulsar for {pta_name}: {e}")
                 raise RuntimeError(f"Failed to create pulsar for {pta_name}: {e}")
 
-        if return_session_files:
-            return pulsar_objects, session_files
+        if return_pta_files:
+            return pulsar_objects, pta_files
         return pulsar_objects
 
-    def _retain_session_files(
+    def _retain_pta_files(
         self,
         *,
         pta_name: str,
         timing_package: str,
         par_path: Path,
         tim_path: Path,
-        session_file_dir: Path,
+        pta_file_dir: Path,
     ) -> Dict[str, Any]:
         """Copy exact timing-package input files into durable pulsar-owned paths."""
         pta_safe = "".join(
@@ -860,14 +861,14 @@ class MetaPulsarFactory:
             raise FileNotFoundError(f"Session par file does not exist: {par_src}")
         if not tim_src.is_file():
             raise FileNotFoundError(f"Session tim file does not exist: {tim_src}")
-        session_file_dir.mkdir(parents=True, exist_ok=True)
-        par_dst = session_file_dir / f"{pta_safe}.par"
-        tim_dst = session_file_dir / f"{pta_safe}.tim"
+        pta_file_dir.mkdir(parents=True, exist_ok=True)
+        par_dst = pta_file_dir / f"{pta_safe}.par"
+        tim_dst = pta_file_dir / f"{pta_safe}.tim"
         shutil.copy2(par_src, par_dst)
         shutil.copy2(tim_src, tim_dst)
         for rel in _collect_included_tim_rel_paths(tim_src):
             inc_src = (tim_src.parent / rel).resolve()
-            inc_dst = session_file_dir / rel
+            inc_dst = pta_file_dir / rel
             inc_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(inc_src, inc_dst)
         return {
@@ -946,7 +947,7 @@ class MetaPulsarFactory:
         parfile_output_dir: Path,
         pulsar_name: str,
     ) -> None:
-        """Write original par files to output directory for composite strategy.
+        """Write original par files to output directory for the per_pta strategy.
 
         Args:
             single_file_data: Single file per PTA data
@@ -992,7 +993,7 @@ def reorder_ptas_for_pulsar(
 # Convenience functions for user-facing API
 def create_metapulsar(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
@@ -1003,15 +1004,18 @@ def create_metapulsar(
     """Create MetaPulsar using specified combination strategy.
 
     Args:
-        file_data: File data from FileDiscoveryService (should contain data for single pulsar only)
+        file_data: File data from FileDiscovery (should contain data for single pulsar only)
         combination_strategy: Strategy for combining PTAs:
-            - "consistent": Astrophysical consistency (modifies par files for consistency, the default)
-            - "composite": Multi-PTA composition (preserves original parameters, Borg/FrankenStat methods)
-        reference_pta: PTA to use as reference (for consistent strategy). If None, uses first PTA in file_data.
-        combine_components: List of components to make consistent (for consistent strategy).
+            - "shared": shared timing-model params across PTAs (modifies par files
+              for consistency; default; ex-"consistent")
+            - "per_pta": per-PTA timing-model params preserved (ex-"composite").
+            The legacy "consistent"/"composite" spellings are accepted as
+            deprecated aliases.
+        reference_pta: PTA to use as reference (for the shared strategy). If None, uses first PTA in file_data.
+        combine_components: List of components to share (for the shared strategy).
             Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
-        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for the shared strategy)
+        parfile_output_dir: Directory to save shared par files (for the shared strategy only).
             If None, par files are not saved to disk.
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
             or ``"overwrite"``. See ``MetaPulsarFactory.create_metapulsar`` for semantics.
@@ -1038,7 +1042,7 @@ def create_metapulsar(
 
 def create_all_metapulsars(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
@@ -1049,12 +1053,12 @@ def create_all_metapulsars(
     """Create MetaPulsars for all available pulsars using file data.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
         combination_strategy: Strategy for combining PTAs
         reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
-        combine_components: List of components to make consistent
+        combine_components: List of components to share
         add_dm_derivatives: Whether to ensure DM1, DM2 are present
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+        parfile_output_dir: Directory to save shared par files (for the shared strategy only).
             If None, par files are not saved to disk. Creates subdirectories for each pulsar.
         use_pulse_numbers: Pulse-number mode passed to each ``create_metapulsar`` call
             (``"no"``, ``"yes"``, ``"reuse"``, or ``"overwrite"``; default ``"yes"``).
@@ -1082,7 +1086,7 @@ def pta_summary(file_data: Dict[str, List[Dict[str, Any]]]) -> None:
     timespan statistics for each pulsar and PTA combination.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
     """
     factory = MetaPulsarFactory()
     factory.pta_summary(file_data)

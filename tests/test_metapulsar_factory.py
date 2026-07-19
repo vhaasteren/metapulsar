@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from metapulsar.metapulsar_factory import MetaPulsarFactory
-from metapulsar.file_discovery_service import FileDiscoveryService
+from metapulsar.file_discovery import FileDiscovery
 from tests.helpers import make_tim_metadata
 
 
@@ -104,7 +104,7 @@ class TestMetaPulsarFactory:
     def setup_method(self):
         """Set up test fixtures."""
         self.factory = MetaPulsarFactory()
-        self.discovery_service = FileDiscoveryService(working_dir="../../data/ipta-dr2")
+        self.discovery_service = FileDiscovery(working_dir="../../data/ipta-dr2")
 
     def test_initialization(self):
         """Test factory initialization without ParFileManager."""
@@ -132,7 +132,7 @@ class TestMetaPulsarFactory:
         from metapulsar.metapulsar import MetaPulsar
 
         pulsars = {"test_pta": mock_psr}
-        metapulsar = MetaPulsar(pulsars=pulsars, combination_strategy="composite")
+        metapulsar = MetaPulsar(pulsars=pulsars, combination_strategy="per_pta")
 
         assert metapulsar is not None
         assert hasattr(metapulsar, "_pulsars")
@@ -309,9 +309,9 @@ class TestMetaPulsarFactory:
                 with pytest.raises(ValueError, match="Multiple pulsars detected"):
                     self.factory.create_metapulsar(file_data)
 
-    def test_file_discovery_service_integration(self):
-        """Test integration with FileDiscoveryService."""
-        # Test that FileDiscoveryService can be used independently
+    def test_file_discovery_integration(self):
+        """Test integration with FileDiscovery."""
+        # Test that FileDiscovery can be used independently
         assert self.discovery_service is not None
         assert hasattr(self.discovery_service, "discover_files")
         assert hasattr(self.discovery_service, "list_data_releases")
@@ -326,7 +326,7 @@ class TestMetaPulsarFactory:
         """Test create_metapulsar with consistent strategy using ParameterManager."""
         # Mock ParameterManager
         mock_manager_instance = Mock()
-        mock_manager_instance.make_parfiles_consistent.return_value = {
+        mock_manager_instance.make_parfiles_shared.return_value = {
             "epta_dr2": Path("/tmp/consistent_epta_dr2.par")
         }
         mock_param_manager.return_value = mock_manager_instance
@@ -358,7 +358,7 @@ class TestMetaPulsarFactory:
                 # Test the ParameterManager integration
                 result = self.factory.create_metapulsar(
                     file_data,
-                    combination_strategy="consistent",
+                    combination_strategy="shared",
                     combine_components=["astrometry", "spindown"],
                 )
 

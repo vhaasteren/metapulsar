@@ -76,8 +76,8 @@ def timing_minimal_par_tim_paths(timing_fixtures_dir: Path) -> dict[str, Path]:
     }
 
 
-class FakeTimingBackend:
-    """Minimal backend scaffold for early timing unit tests."""
+class FakeTimingEngine:
+    """Minimal engine stub for early timing unit tests."""
 
     def __init__(self, fitpars: list[str]):
         self.fitpars = tuple(fitpars)
@@ -97,8 +97,8 @@ class FakeTimingBackend:
         return np.zeros((4, len(self.fitpars)), dtype=float)
 
 
-class FakePulsarInterface:
-    """Minimal host scaffold implementing the expected timing host shape."""
+class FakeTimingPulsar:
+    """Minimal pulsar stub implementing the expected timing pulsar shape."""
 
     def __init__(self) -> None:
         self.name = "FAKEPSR"
@@ -142,17 +142,17 @@ class FakePulsarInterface:
     def pint_model(self):  # pragma: no cover - placeholder for Slice 3b.
         return None
 
-    def timing_backend(self, engines="jug") -> FakeTimingBackend:
-        return FakeTimingBackend(self.fitpars)
+    def timing_engine(self, engines="jug") -> FakeTimingEngine:
+        return FakeTimingEngine(self.fitpars)
 
     def can_use_engines(self, engines="jug") -> bool:
         return True
 
-    def cache_token(self) -> str:
+    def state_id(self) -> str:
         return "fake-pulsar-v1"
 
 
 @pytest.fixture
-def fake_pulsar_interface() -> FakePulsarInterface:
+def fake_timing_pulsar() -> FakeTimingPulsar:
     """Provide a deterministic fake pulsar interface for early timing tests."""
-    return FakePulsarInterface()
+    return FakeTimingPulsar()

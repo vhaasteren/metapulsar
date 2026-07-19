@@ -13,7 +13,7 @@ from loguru import logger
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 
 __all__ = [
-    "FileDiscoveryService",
+    "FileDiscovery",
     "PTA_DATA_RELEASES",
     "discover_files",
     "get_pulsar_names_from_file_data",
@@ -114,7 +114,7 @@ def extract_pulsar_name_from_path(
     return pulsar_name
 
 
-class FileDiscoveryService:
+class FileDiscovery:
     """Independent service for discovering PTA data files and managing data release directory layouts.
 
     This service handles all data release-related operations and can be used
@@ -444,7 +444,7 @@ def discover_files(
     Returns:
         Dictionary mapping data release names to lists of file dictionaries
     """
-    service = FileDiscoveryService(working_dir, pta_data_releases, verbose)
+    service = FileDiscovery(working_dir, pta_data_releases, verbose)
     return service.discover_files(data_release_names, verbose)
 
 
@@ -455,7 +455,7 @@ def get_pulsar_names_from_file_data(
     Extract canonical pulsar names from file data using coordinate-based discovery.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
 
     Returns:
         List of canonical J-names (e.g., ['J0613-0200', 'J1857+0943'])
@@ -484,7 +484,7 @@ def filter_file_data_by_pulsars(
     the conversion between them using coordinate-based matching.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
         pulsar_names: Single pulsar name or list of pulsar names (J or B format)
 
     Returns:

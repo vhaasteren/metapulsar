@@ -1,19 +1,19 @@
-"""Tests for FileDiscoveryService."""
+"""Tests for FileDiscovery."""
 
 import pytest
 from pathlib import Path
 from unittest.mock import patch
-from metapulsar.file_discovery_service import FileDiscoveryService, PTA_DATA_RELEASES
+from metapulsar.file_discovery import FileDiscovery, PTA_DATA_RELEASES
 from metapulsar import discover_files
 from tests.helpers import make_tim_metadata
 
 
-class TestFileDiscoveryService:
-    """Test FileDiscoveryService functionality."""
+class TestFileDiscovery:
+    """Test FileDiscovery functionality."""
 
     def test_init_default_configs(self):
         """Test initialization with default configurations."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
         assert service.data_releases == PTA_DATA_RELEASES
 
     def test_init_custom_configs(self):
@@ -26,12 +26,12 @@ class TestFileDiscoveryService:
                 "timing_package": "pint",
             }
         }
-        service = FileDiscoveryService(pta_data_releases=custom_data_releases)
+        service = FileDiscovery(pta_data_releases=custom_data_releases)
         assert service.data_releases == custom_data_releases
 
     def test_discover_patterns_in_data_release_success(self):
         """Test discovering patterns in a single data release."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(
             service, "_discover_patterns_in_data_release"
@@ -45,14 +45,14 @@ class TestFileDiscoveryService:
 
     def test_discover_patterns_in_data_release_not_found(self):
         """Test discovering patterns with non-existent data release."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with pytest.raises(KeyError, match="Data release 'nonexistent' not found"):
             service.discover_patterns_in_data_release("nonexistent")
 
     def test_discover_patterns_in_data_releases_success(self):
         """Test discovering patterns in multiple data releases."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(
             service, "discover_patterns_in_data_release"
@@ -70,7 +70,7 @@ class TestFileDiscoveryService:
 
     def test_discover_files_success(self):
         """Test discovering files in data releases."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(
             service, "_discover_all_file_pairs_in_data_release"
@@ -95,7 +95,7 @@ class TestFileDiscoveryService:
 
     def test_discover_files_all_data_releases(self):
         """Test discovering files in all data releases when no specific data releases provided."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(service, "list_data_releases") as mock_list:
             mock_list.return_value = ["epta_dr2", "ppta_dr2"]
@@ -112,7 +112,7 @@ class TestFileDiscoveryService:
 
     def test_discover_files_single_string_input(self):
         """Test discovering files with single string input."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(
             service, "_discover_all_file_pairs_in_data_release"
@@ -133,7 +133,7 @@ class TestFileDiscoveryService:
 
     def test_discover_files_verbose_output(self, capsys):
         """Test verbose output of discover_files method."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with patch.object(
             service, "_discover_all_files_in_data_releases"
@@ -159,7 +159,7 @@ class TestFileDiscoveryService:
 
     def test_list_data_releases_alphabetical(self):
         """Test listing data releases sorted alphabetically."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         result = service.list_data_releases()
 
@@ -169,7 +169,7 @@ class TestFileDiscoveryService:
 
     def test_add_data_release_success(self):
         """Test adding a new data release configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         new_config = {
             "base_dir": "/test/path",
@@ -185,14 +185,14 @@ class TestFileDiscoveryService:
 
     def test_add_data_release_duplicate(self):
         """Test adding duplicate data release configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         with pytest.raises(ValueError, match="Data release 'epta_dr2' already exists"):
             service.add_data_release("epta_dr2", {})
 
     def test_add_data_release_invalid_config(self):
         """Test adding data release with invalid configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         invalid_config = {
             "base_dir": "/test/path",
@@ -204,7 +204,7 @@ class TestFileDiscoveryService:
 
     def test_validate_config_success(self):
         """Test validating valid configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         valid_config = {
             "base_dir": "/test/path",
@@ -218,7 +218,7 @@ class TestFileDiscoveryService:
 
     def test_validate_config_missing_keys(self):
         """Test validating configuration with missing keys."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         invalid_config = {
             "base_dir": "/test/path",
@@ -230,7 +230,7 @@ class TestFileDiscoveryService:
 
     def test_validate_config_invalid_timing_package(self):
         """Test validating configuration with invalid timing package."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         invalid_config = {
             "base_dir": "/test/path",
@@ -244,7 +244,7 @@ class TestFileDiscoveryService:
 
     def test_validate_config_invalid_regex(self):
         """Test validating configuration with invalid regex patterns."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         invalid_config = {
             "base_dir": "/test/path",
@@ -260,7 +260,7 @@ class TestFileDiscoveryService:
     @patch("pathlib.Path.rglob")
     def test_discover_patterns_in_config_success(self, mock_rglob, mock_exists):
         """Test discovering patterns in a configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         mock_exists.return_value = True
         mock_rglob.return_value = [
@@ -278,7 +278,7 @@ class TestFileDiscoveryService:
     @patch("pathlib.Path.exists")
     def test_discover_patterns_in_config_no_base_dir(self, mock_exists):
         """Test discovering patterns when base directory doesn't exist."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         mock_exists.return_value = False
 
@@ -293,13 +293,13 @@ class TestFileDiscoveryService:
 
     @patch("pathlib.Path.exists")
     @patch("pathlib.Path.rglob")
-    @patch("metapulsar.file_discovery_service.FileDiscoveryService._get_tim_metadata")
+    @patch("metapulsar.file_discovery.FileDiscovery._get_tim_metadata")
     @patch("pathlib.Path.read_text")
     def test_discover_all_file_pairs_in_config_success(
         self, mock_read_text, mock_timespan, mock_rglob, mock_exists
     ):
         """Test discovering all file pairs in a configuration."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         mock_exists.return_value = True
         mock_rglob.return_value = [
@@ -331,7 +331,7 @@ class TestFileDiscoveryService:
     @patch("pathlib.Path.exists")
     def test_discover_all_file_pairs_in_config_no_base_dir(self, mock_exists):
         """Test discovering file pairs when base directory doesn't exist."""
-        service = FileDiscoveryService()
+        service = FileDiscovery()
 
         mock_exists.return_value = False
 
@@ -351,7 +351,7 @@ class TestConvenienceFunctions:
 
     def test_discover_files_convenience_function(self):
         """Test discover_files convenience function."""
-        with patch.object(FileDiscoveryService, "discover_files") as mock_discover:
+        with patch.object(FileDiscovery, "discover_files") as mock_discover:
             mock_discover.return_value = {"epta_dr2": []}
 
             # Mock data releases
@@ -365,7 +365,7 @@ class TestConvenienceFunctions:
 
     def test_discover_files_convenience_function_with_list(self):
         """Test discover_files convenience function with list input."""
-        with patch.object(FileDiscoveryService, "discover_files") as mock_discover:
+        with patch.object(FileDiscovery, "discover_files") as mock_discover:
             mock_discover.return_value = {"epta_dr2": [], "ppta_dr2": []}
 
             # Mock data releases
@@ -384,7 +384,7 @@ class TestConvenienceFunctions:
 
     def test_discover_files_convenience_function_verbose_false(self):
         """Test discover_files convenience function with verbose=False."""
-        with patch.object(FileDiscoveryService, "discover_files") as mock_discover:
+        with patch.object(FileDiscovery, "discover_files") as mock_discover:
             mock_discover.return_value = {"epta_dr2": []}
 
             # Mock data releases
@@ -405,7 +405,7 @@ class TestPulsarHelperFunctions:
 
     def test_get_pulsar_names_from_file_data_success(self):
         """Test getting pulsar names from file data successfully."""
-        from metapulsar.file_discovery_service import get_pulsar_names_from_file_data
+        from metapulsar.file_discovery import get_pulsar_names_from_file_data
 
         # Mock file data
         file_data = {
@@ -443,7 +443,7 @@ class TestPulsarHelperFunctions:
 
     def test_get_pulsar_names_from_file_data_no_pulsars(self):
         """Test getting pulsar names when no pulsars found."""
-        from metapulsar.file_discovery_service import get_pulsar_names_from_file_data
+        from metapulsar.file_discovery import get_pulsar_names_from_file_data
 
         file_data = {"epta_dr2": []}
 
@@ -458,7 +458,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_single_j_name(self):
         """Test filtering file data by single J-name."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [
@@ -510,7 +510,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_multiple_j_names(self):
         """Test filtering file data by multiple J-names."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [
@@ -568,7 +568,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_b_name(self):
         """Test filtering file data by B-name."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [
@@ -607,7 +607,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_mixed_names(self):
         """Test filtering file data by mixed J and B names."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [
@@ -663,7 +663,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_pulsar_not_found(self):
         """Test filtering file data when requested pulsar not found."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [
@@ -703,7 +703,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_no_pulsars_in_data(self):
         """Test filtering file data when no pulsars found in input data."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {"epta_dr2": []}
 
@@ -718,7 +718,7 @@ class TestPulsarHelperFunctions:
 
     def test_filter_file_data_by_pulsars_no_matching_pulsars(self):
         """Test filtering file data when no matching pulsars found."""
-        from metapulsar.file_discovery_service import filter_file_data_by_pulsars
+        from metapulsar.file_discovery import filter_file_data_by_pulsars
 
         file_data = {
             "epta_dr2": [

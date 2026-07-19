@@ -53,7 +53,7 @@ from metapulsar import create_metapulsar
 # Create MetaPulsar
 metapulsar = create_metapulsar(
     file_data=pulsar_data,
-    combination_strategy="consistent",
+    combination_strategy="shared",
     combine_components=["astrometry", "spindown", "binary", "dispersion"],
     add_dm_derivatives=True,
 )
@@ -65,7 +65,7 @@ print(f"PTA names: {list(metapulsar._pulsars.keys())}")
 
 ### Pulse-number tracking (`use_pulse_numbers`)
 
-When combining PTAs with `combination_strategy="consistent"`, merged par files can
+When combining PTAs with `combination_strategy="shared"`, merged par files can
 break per-PTA phase coherence. Pulse-number tracking preserves phase connectivity
 via `-pn` flags and `TRACK -2` on the timing model.
 
@@ -83,9 +83,10 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 
 ### Nonlinear timing (`NonLinearTimingModel`)
 
-MetaPulsar is a live timing host as well as an Enterprise/Discovery-compatible
-frozen pulsar. Open its engine-independent evaluator for parameter inspection,
-residual evaluation, scans, Jacobians, and immutable local fits:
+MetaPulsar exposes a live nonlinear-timing interface as well as an
+Enterprise/Discovery-compatible frozen-pulsar view. Open its engine-independent
+evaluator for parameter inspection, residual evaluation, scans, Jacobians, and
+immutable local fits:
 
 ```python
 from metapulsar import create_metapulsar
@@ -103,12 +104,12 @@ J = timing.jacobian(method="autodiff")
 fit = timing.fit(["F0", "F1"])
 ```
 
-The evaluator never mutates the pulsar, TOAs, timing sessions, or par files.
+The evaluator never mutates the pulsar, TOAs, per-PTA inputs, or par files.
 Its residual convention is explicit: `residual_delta = r(theta) - r(theta_ref)`,
 `residuals = mp.residuals + residual_delta`, and `delay = -residual_delta`.
 
-For sampler-facing nonlinear timing, bind a config-only nltiming model to the
-same host:
+For sampler-facing nonlinear timing, resolve a config-only nltiming model for the
+same pulsar:
 
 ```python
 import discovery as ds
@@ -119,16 +120,16 @@ ntm = NonLinearTimingModel(
     sample=["PB", "TASC", "A1"],
     transform="whitening",
 )
-binding = ntm.bind(mp)
+ctx = ntm.for_pulsar(mp)
 
 likelihood = ds.PulsarLikelihood([
     mp.residuals,
     ds.makenoise_measurement_simple(mp, noisedict),
-    *binding.discovery_signals(),
+    *ctx.discovery_signals(),
 ])
 
-model = sampling.numpyro.model(likelihood, binding, fixed=noisedict)
-mcmc = sampling.numpyro.nuts(model, binding)
+model = sampling.numpyro.model(likelihood, ctx, fixed=noisedict)
+mcmc = sampling.numpyro.nuts(model, ctx)
 ```
 
 Install timing extras with `pip install "metapulsar[timing]"`.

@@ -30,7 +30,7 @@ class TestMetaPulsarDataCombination:
         }
 
     def test_timing_data_combination_basic(self, mock_pulsars):
-        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="composite")
+        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="per_pta")
         assert len(metapulsar._toas) == 100
         assert len(metapulsar._residuals) == 100
         assert len(metapulsar._toaerrs) == 100
@@ -43,7 +43,7 @@ class TestMetaPulsarDataCombination:
         assert isinstance(metapulsar._telescope, np.ndarray)
 
     def test_flag_combination(self, mock_pulsars):
-        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="composite")
+        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="per_pta")
         assert isinstance(metapulsar._flags, np.ndarray)
         assert metapulsar._flags.dtype.names is not None
         assert "telescope" in metapulsar._flags.dtype.names
@@ -56,7 +56,7 @@ class TestMetaPulsarDataCombination:
         assert np.all(metapulsar._flags["pta_dataset"][50:] == "test_pta2")
 
     def test_pta_slice_calculation(self, mock_pulsars):
-        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="composite")
+        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="per_pta")
         slices = metapulsar._get_pta_slices()
         assert "test_pta1" in slices
         assert "test_pta2" in slices
@@ -65,7 +65,7 @@ class TestMetaPulsarDataCombination:
 
     def test_timing_data_combination_empty_pulsars(self):
         with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_timing_data_combination_single_pulsar(self):
         mock_psr = create_mock_libstempo(
@@ -77,7 +77,7 @@ class TestMetaPulsarDataCombination:
             seed=7,
         )
         metapulsar = MetaPulsar(
-            {"single_pta": mock_psr}, combination_strategy="composite"
+            {"single_pta": mock_psr}, combination_strategy="per_pta"
         )
         assert len(metapulsar._toas) == 25
         assert len(metapulsar._residuals) == 25
@@ -91,7 +91,7 @@ class TestMetaPulsarDataCombination:
                 n_toas=70, name="J1857+0943", telescope="large_pta", seed=2
             ),
         }
-        metapulsar = MetaPulsar(pulsars, combination_strategy="composite")
+        metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
         assert len(metapulsar._toas) == 100
         slices = metapulsar._get_pta_slices()
         assert slices["small_pta"] == slice(0, 30)

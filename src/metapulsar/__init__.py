@@ -14,7 +14,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0"
 
 # Core classes
-from .metapulsar import MetaPulsar
+from .metapulsar import MetaPulsar, normalize_combination_strategy
 from .metapulsar_factory import (
     MetaPulsarFactory,
     reorder_ptas_for_pulsar,
@@ -22,15 +22,15 @@ from .metapulsar_factory import (
     create_all_metapulsars,
     pta_summary,
 )
-from .file_discovery_service import (
-    FileDiscoveryService,
+from .file_discovery import (
+    FileDiscovery,
     PTA_DATA_RELEASES,
     discover_files,
     get_pulsar_names_from_file_data,
     filter_file_data_by_pulsars,
 )
-from .layout_discovery_service import (
-    LayoutDiscoveryService,
+from .layout_discovery import (
+    DataReleaseLayout,
     discover_layout,
     combine_layouts,
 )
@@ -59,29 +59,29 @@ _TIMING_LAZY_EXPORTS = {
         "NonLinearTimingModel",
     ),
     "ParameterSpace": ("nltiming.space", "ParameterSpace"),
-    "NLTArtifactError": ("nltiming.artifacts", "NLTArtifactError"),
-    "NLTBinding": ("nltiming.artifacts", "NLTBinding"),
-    "NLTChainBundle": ("nltiming.artifacts", "NLTChainBundle"),
-    "build_binding": ("nltiming.artifacts", "build_binding"),
-    "deterministic_site_name": (
-        "nltiming.artifacts",
-        "deterministic_site_name",
+    "RunIOError": ("nltiming.run_io", "RunIOError"),
+    "RunManifest": ("nltiming.run_io", "RunManifest"),
+    "RunResults": ("nltiming.run_io", "RunResults"),
+    "build_run_manifest": ("nltiming.run_io", "build_run_manifest"),
+    "derived_param_name": (
+        "nltiming.run_io",
+        "derived_param_name",
     ),
-    "physical_deterministics": (
-        "nltiming.artifacts",
-        "physical_deterministics",
+    "decode_physical": (
+        "nltiming.run_io",
+        "decode_physical",
     ),
     "save_discovery_checkpoint": (
-        "nltiming.artifacts",
+        "nltiming.run_io",
         "save_discovery_checkpoint",
     ),
+    "load_run": ("nltiming.run_io", "load_run"),
     "EnterprisePulsarLike": ("nltiming.protocols", "EnterprisePulsarLike"),
     "EphemerisExtras": ("nltiming.protocols", "EphemerisExtras"),
-    "TimingBackend": ("nltiming.protocols", "TimingBackend"),
-    "JaxTimingBackend": ("nltiming.protocols", "JaxTimingBackend"),
-    "PulsarInterface": ("nltiming.protocols", "PulsarInterface"),
+    "TimingEngine": ("nltiming.protocols", "TimingEngine"),
+    "JaxTimingEngine": ("nltiming.protocols", "JaxTimingEngine"),
+    "TimingPulsar": ("nltiming.protocols", "TimingPulsar"),
     "PulsarData": ("nltiming.protocols", "PulsarData"),
-    "TimingHost": ("nltiming.protocols", "TimingHost"),
     "TimingCapabilities": ("nltiming.evaluator", "TimingCapabilities"),
     "TimingEvaluation": ("nltiming.evaluator", "TimingEvaluation"),
     "TimingEvaluator": ("nltiming.evaluator", "TimingEvaluator"),
@@ -106,9 +106,9 @@ __all__ = [
     # Core classes
     "MetaPulsar",
     "MetaPulsarFactory",
-    "FileDiscoveryService",
+    "FileDiscovery",
     "PTA_DATA_RELEASES",
-    "LayoutDiscoveryService",
+    "DataReleaseLayout",
     "ParameterManager",
     "ParameterMapping",
     "ParameterInconsistencyError",
@@ -129,26 +129,27 @@ __all__ = [
     "reorder_ptas_for_pulsar",
     "create_metapulsar",
     "create_all_metapulsars",
+    "normalize_combination_strategy",
     "pta_summary",
     "get_pulsar_names_from_file_data",
     "filter_file_data_by_pulsars",
     # Nonlinear timing (lazy; see nltiming)
     "NonLinearTimingModel",
     "ParameterSpace",
-    "NLTArtifactError",
-    "NLTBinding",
-    "NLTChainBundle",
-    "build_binding",
-    "deterministic_site_name",
-    "physical_deterministics",
+    "RunIOError",
+    "RunManifest",
+    "RunResults",
+    "build_run_manifest",
+    "derived_param_name",
+    "decode_physical",
     "save_discovery_checkpoint",
+    "load_run",
     "EnterprisePulsarLike",
     "EphemerisExtras",
-    "TimingBackend",
-    "JaxTimingBackend",
-    "PulsarInterface",
+    "TimingEngine",
+    "JaxTimingEngine",
+    "TimingPulsar",
     "PulsarData",
-    "TimingHost",
     "TimingCapabilities",
     "TimingEvaluation",
     "TimingEvaluator",

@@ -1,4 +1,4 @@
-"""Enterprise ECORR construction smoke tests on unsorted standalone hosts."""
+"""Enterprise ECORR construction smoke tests on unsorted standalone pulsars."""
 
 import numpy as np
 import pytest
@@ -10,7 +10,7 @@ from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 
 
-def _build_unsorted_host():
+def _build_unsorted_pulsar():
     pulsars = {}
     for idx, pta in enumerate(["pta_a", "pta_b"], start=1):
         psr = create_mock_libstempo(
@@ -19,7 +19,7 @@ def _build_unsorted_host():
             telescope=pta,
             seed=idx,
         )
-        # Break monotonic TOA ordering to exercise unsorted-host ECORR setup paths.
+        # Break monotonic TOA ordering to exercise unsorted-pulsar ECORR setup paths.
         permutation = np.random.default_rng(idx + 100).permutation(len(psr._toas_mjd))
         psr._toas_mjd = psr._toas_mjd[permutation]
         psr._residuals_s = psr._residuals_s[permutation]
@@ -31,7 +31,7 @@ def _build_unsorted_host():
         psr._designmatrix = psr._designmatrix[permutation, :]
         psr._psrPos = psr._psrPos[permutation, :]
         pulsars[pta] = psr
-    return MetaPulsar(pulsars, combination_strategy="composite")
+    return MetaPulsar(pulsars, combination_strategy="per_pta")
 
 
 def _build_permuted_pulsars():
@@ -59,26 +59,26 @@ def _build_permuted_pulsars():
     return pulsars
 
 
-def test_ecorr_sherman_morrison_constructs_on_unsorted_host():
-    host = _build_unsorted_host()
+def test_ecorr_sherman_morrison_constructs_on_unsorted_pulsar():
+    pulsar = _build_unsorted_pulsar()
     ecorr = white_signals.EcorrKernelNoise(
         log10_ecorr=parameter.Constant(-7.0),
         method="sherman-morrison",
     )
 
-    signal = ecorr(host)
+    signal = ecorr(pulsar)
 
     assert signal is not None
 
 
-def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_host():
-    host = _build_unsorted_host()
+def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_pulsar():
+    pulsar = _build_unsorted_pulsar()
     ecorr = white_signals.EcorrKernelNoise(
         log10_ecorr=parameter.Constant(-7.0),
         method="fast-sherman-morrison",
     )
 
-    signal = ecorr(host)
+    signal = ecorr(pulsar)
 
     assert signal is not None
 
@@ -86,23 +86,23 @@ def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_host():
 @pytest.mark.parametrize("method", ["sherman-morrison", "fast-sherman-morrison"])
 def test_ecorr_unsorted_solve_matches_sorted_equivalent(method):
     pulsars = _build_permuted_pulsars()
-    unsorted_host = MetaPulsar(pulsars, combination_strategy="composite", sort=False)
-    sorted_host = MetaPulsar(pulsars, combination_strategy="composite", sort=True)
-    permutation = np.argsort(unsorted_host.toas, kind="mergesort")
-    np.testing.assert_allclose(sorted_host.toas, unsorted_host.toas[permutation])
+    unsorted_pulsar = MetaPulsar(pulsars, combination_strategy="per_pta", sort=False)
+    sorted_pulsar = MetaPulsar(pulsars, combination_strategy="per_pta", sort=True)
+    permutation = np.argsort(unsorted_pulsar.toas, kind="mergesort")
+    np.testing.assert_allclose(sorted_pulsar.toas, unsorted_pulsar.toas[permutation])
 
     ecorr = white_signals.EcorrKernelNoise(
         log10_ecorr=parameter.Constant(-7.0),
         method=method,
     )
-    unsorted_signal = ecorr(unsorted_host)
-    sorted_signal = ecorr(sorted_host)
-    nvec_unsorted = np.full(len(unsorted_host.toas), 1.0e-12, dtype=float)
+    unsorted_signal = ecorr(unsorted_pulsar)
+    sorted_signal = ecorr(sorted_pulsar)
+    nvec_unsorted = np.full(len(unsorted_pulsar.toas), 1.0e-12, dtype=float)
     nvec_sorted = nvec_unsorted[permutation]
     ndiag_unsorted = unsorted_signal.get_ndiag({}) + nvec_unsorted
     ndiag_sorted = sorted_signal.get_ndiag({}) + nvec_sorted
 
-    probe = np.linspace(-1.0, 1.0, len(unsorted_host.toas))
+    probe = np.linspace(-1.0, 1.0, len(unsorted_pulsar.toas))
     solved_unsorted, logdet_unsorted = ndiag_unsorted.solve(probe, logdet=True)
     solved_sorted, logdet_sorted = ndiag_sorted.solve(probe[permutation], logdet=True)
 

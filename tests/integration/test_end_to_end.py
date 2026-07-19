@@ -2,7 +2,7 @@
 
 import pytest
 import numpy as np
-from metapulsar import MetaPulsar, MetaPulsarFactory, FileDiscoveryService
+from metapulsar import MetaPulsar, MetaPulsarFactory, FileDiscovery
 
 
 @pytest.mark.integration
@@ -17,7 +17,7 @@ class TestEndToEnd:
             pytest.skip("No data available for testing")
 
         test_configs = ["epta_dr1_v2_2", "ppta_dr2", "nanograv_9y"]
-        discovery_service = FileDiscoveryService(working_dir="../../data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="../../data/ipta-dr2")
 
         for pulsar in test_pulsars[:1]:  # Test first pulsar
             # Test with different primary PTAs
@@ -75,7 +75,7 @@ class TestEndToEnd:
             "inpta_dr1",
             "mpta_dr1",
         ]
-        discovery_service = FileDiscoveryService(working_dir="../../data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="../../data/ipta-dr2")
 
         for pulsar in test_pulsars[:1]:  # Test first pulsar
             # Test PINT configurations
@@ -150,7 +150,7 @@ class TestEndToEnd:
             pytest.skip("No data available for testing")
 
         test_configs = ["epta_dr1_v2_2", "ppta_dr2", "nanograv_9y"]
-        discovery_service = FileDiscoveryService(working_dir="../../data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="../../data/ipta-dr2")
 
         for pulsar in test_pulsars[:1]:  # Test first pulsar
             # Discover files for the pulsar

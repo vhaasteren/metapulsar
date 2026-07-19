@@ -59,7 +59,7 @@ def test_timing_init_values_use_bound_site():
         (),
         {
             "sampled": tuple(f"P{i}" for i in range(7)),
-            "coord_site_name": lambda self: key,
+            "latent_name_for_coord": lambda self: key,
         },
     )()
     init = sampling.numpyro.timing_init_values(binding)
@@ -78,7 +78,7 @@ def test_binding_nuts_initializes_multiple_chains():
         (),
         {
             "sampled": ("F0",),
-            "coord_site_name": lambda self: key,
+            "latent_name_for_coord": lambda self: key,
         },
     )()
 

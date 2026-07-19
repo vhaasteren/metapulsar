@@ -10,27 +10,27 @@ from pathlib import Path
 from unittest.mock import patch
 import tempfile
 
-from metapulsar.layout_discovery_service import LayoutDiscoveryService, combine_layouts
+from metapulsar.layout_discovery import DataReleaseLayout, combine_layouts
 
 
-class TestLayoutDiscoveryService:
-    """Test cases for LayoutDiscoveryService (renamed from PatternDiscoveryEngine)."""
+class TestDataReleaseLayout:
+    """Test cases for DataReleaseLayout (renamed from PatternDiscoveryEngine)."""
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.engine = LayoutDiscoveryService(working_dir="../../data/ipta-dr2")
+        self.layout = DataReleaseLayout(working_dir="../../data/ipta-dr2")
 
     def test_init(self):
         """Test engine initialization."""
-        assert self.engine.logger is not None
-        assert len(self.engine.known_pulsar_patterns) > 0
-        assert len(self.engine.common_subdirs) > 0
-        assert self.engine.excluded_dirs is not None
+        assert self.layout.logger is not None
+        assert len(self.layout.known_pulsar_patterns) > 0
+        assert len(self.layout.common_subdirs) > 0
+        assert self.layout.excluded_dirs is not None
 
     def test_analyze_directory_structure_nonexistent(self):
         """Test analysis of non-existent directory."""
         with pytest.raises(ValueError, match="Directory .* does not exist"):
-            self.engine._analyze_directory_structure(Path("/nonexistent/path"))
+            self.layout._analyze_directory_structure(Path("/nonexistent/path"))
 
     def test_analyze_directory_structure_no_par_files(self):
         """Test analysis of directory with no par files."""
@@ -40,7 +40,7 @@ class TestLayoutDiscoveryService:
             (temp_path / "empty").mkdir()
 
             with pytest.raises(ValueError, match="No .par files found"):
-                self.engine._analyze_directory_structure(temp_path)
+                self.layout._analyze_directory_structure(temp_path)
 
     def test_analyze_directory_structure_with_files(self):
         """Test analysis of directory with par and tim files."""
@@ -59,7 +59,7 @@ class TestLayoutDiscoveryService:
             (temp_path / "tim" / "J1909-3744.tim").write_text("test tim content")
             (temp_path / "tim" / "J1713+0747.tim").write_text("test tim content")
 
-            structure = self.engine._analyze_directory_structure(temp_path)
+            structure = self.layout._analyze_directory_structure(temp_path)
 
             assert structure["base_path"] == str(temp_path)
             assert len(structure["par_files"]) == 2
@@ -81,7 +81,7 @@ class TestLayoutDiscoveryService:
         ]
 
         for path_str in wideband_paths:
-            assert self.engine._is_wideband_file(Path(path_str))
+            assert self.layout._is_wideband_file(Path(path_str))
 
         # Test non-wideband files
         normal_paths = [
@@ -91,7 +91,7 @@ class TestLayoutDiscoveryService:
         ]
 
         for path_str in normal_paths:
-            assert not self.engine._is_wideband_file(Path(path_str))
+            assert not self.layout._is_wideband_file(Path(path_str))
 
     def test_extract_pulsar_names(self):
         """Test pulsar name extraction."""
@@ -103,7 +103,7 @@ class TestLayoutDiscoveryService:
             Path("invalid_name.par"),
         ]
 
-        pulsar_names = self.engine._extract_pulsar_names(test_files)
+        pulsar_names = self.layout._extract_pulsar_names(test_files)
 
         # Should extract valid pulsar names
         assert "J1909-3744" in pulsar_names
@@ -122,7 +122,7 @@ class TestLayoutDiscoveryService:
         """
 
         with patch("pathlib.Path.read_text", return_value=mock_content):
-            result = self.engine._detect_timing_package(["test.par"])
+            result = self.layout._detect_timing_package(["test.par"])
             assert result == "tempo2"
 
     def test_detect_timing_package_pint(self):
@@ -135,19 +135,19 @@ class TestLayoutDiscoveryService:
         """
 
         with patch("pathlib.Path.read_text", return_value=mock_content):
-            result = self.engine._detect_timing_package(["test.par"])
+            result = self.layout._detect_timing_package(["test.par"])
             assert result == "pint"
 
     def test_detect_timing_package_nanograv(self):
         """Test NANOGrav PTA detection (defaults to PINT)."""
-        result = self.engine._detect_timing_package(["nanograv/test.par"])
+        result = self.layout._detect_timing_package(["nanograv/test.par"])
         assert result == "pint"
 
     def test_detect_timing_package_default(self):
         """Test default timing package fallback."""
         # Mock empty content
         with patch("pathlib.Path.read_text", return_value=""):
-            result = self.engine._detect_timing_package(["test.par"])
+            result = self.layout._detect_timing_package(["test.par"])
             assert result == "tempo2"
 
     def test_generate_par_pattern_simple(self):
@@ -158,7 +158,7 @@ class TestLayoutDiscoveryService:
             "par_files": ["/test/path/J1909-3744.par", "/test/path/J1713+0747.par"],
         }
 
-        pattern = self.engine._generate_par_pattern(structure)
+        pattern = self.layout._generate_par_pattern(structure)
         # Pattern should be a regex that matches pulsar names
         assert pattern.endswith(".par")
         assert "\\d{4}" in pattern  # Should contain regex for 4 digits
@@ -173,7 +173,7 @@ class TestLayoutDiscoveryService:
             "tim_files": ["/test/path/J1909-3744.tim"],
         }
 
-        pattern = self.engine._generate_tim_pattern(structure)
+        pattern = self.layout._generate_tim_pattern(structure)
         assert pattern.endswith(".tim")
 
     def test_calculate_confidence(self):
@@ -187,7 +187,7 @@ class TestLayoutDiscoveryService:
             },
         }
 
-        confidence = self.engine._calculate_confidence(minimal_structure)
+        confidence = self.layout._calculate_confidence(minimal_structure)
         assert 0.0 <= confidence <= 1.0
         assert confidence == 0.3  # Base confidence
 
@@ -200,7 +200,7 @@ class TestLayoutDiscoveryService:
             },
         }
 
-        confidence = self.engine._calculate_confidence(structure_with_pulsars)
+        confidence = self.layout._calculate_confidence(structure_with_pulsars)
         assert confidence > 0.3  # Should be higher with pulsars
 
     def test_generate_pta_data_release(self):
@@ -216,8 +216,8 @@ class TestLayoutDiscoveryService:
             },
         }
 
-        with patch.object(self.engine, "_detect_timing_package", return_value="tempo2"):
-            data_release = self.engine._generate_pta_data_release(structure)
+        with patch.object(self.layout, "_detect_timing_package", return_value="tempo2"):
+            data_release = self.layout._generate_pta_data_release(structure)
 
             assert "base_dir" in data_release
             assert "par_pattern" in data_release
@@ -240,7 +240,7 @@ class TestLayoutDiscoveryService:
             },
         }
 
-        data_release = self.engine._generate_pta_data_release(
+        data_release = self.layout._generate_pta_data_release(
             structure, timing_package="pint"
         )
         assert data_release["timing_package"] == "pint"
@@ -267,9 +267,9 @@ class TestLayoutDiscoveryService:
             (temp_path / "tim" / "J1713+0747.tim").write_text("test tim content")
 
             with patch.object(
-                self.engine, "_detect_timing_package", return_value="tempo2"
+                self.layout, "_detect_timing_package", return_value="tempo2"
             ):
-                result = self.engine.discover_layout(
+                result = self.layout.discover_layout(
                     working_dir=str(temp_path), verbose=True
                 )
 
@@ -301,9 +301,9 @@ class TestLayoutDiscoveryService:
             (temp_path / "tim" / "J1909-3744.tim").write_text("test tim content")
 
             with patch.object(
-                self.engine, "_detect_timing_package", return_value="tempo2"
+                self.layout, "_detect_timing_package", return_value="tempo2"
             ):
-                result = self.engine.discover_layout(
+                result = self.layout.discover_layout(
                     working_dir=str(temp_path), verbose=False
                 )
 
@@ -330,7 +330,7 @@ class TestLayoutDiscoveryService:
             (temp_path / "wideband" / "J1857+0943_wb.tim").write_text("wideband file")
 
             # Test with default excluded dirs
-            engine = LayoutDiscoveryService(working_dir=temp_dir)
+            engine = DataReleaseLayout(working_dir=temp_dir)
             structure = engine._analyze_directory_structure(temp_path)
 
             # Should only find the files not in excluded directories
@@ -341,7 +341,7 @@ class TestLayoutDiscoveryService:
             assert "wideband" not in str(structure["tim_files"][0])
 
             # Test with custom excluded dirs
-            engine_custom = LayoutDiscoveryService(
+            engine_custom = DataReleaseLayout(
                 working_dir=temp_dir, excluded_dirs=["custom_exclude"]
             )
             (temp_path / "custom_exclude").mkdir()
@@ -363,7 +363,7 @@ def test_pattern_discovery_integration():
     """Integration test for pattern discovery engine on IPTA data."""
     print("=== Pattern Discovery Engine Integration Test ===\n")
 
-    engine = LayoutDiscoveryService(working_dir="../../data/ipta-dr2")
+    engine = DataReleaseLayout(working_dir="../../data/ipta-dr2")
     data_root = Path("/workspaces/metapulsar/data/ipta-dr2")
 
     if not data_root.exists():

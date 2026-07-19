@@ -13,7 +13,7 @@ import astropy.units as u
 from astropy.coordinates import Angle
 from pint.models.model_builder import ModelBuilder
 
-from metapulsar.file_discovery_service import FileDiscoveryService
+from metapulsar.file_discovery import FileDiscovery
 from metapulsar.position_helpers import (
     bj_name_from_pulsar,
     discover_pulsars_by_coordinates_optimized,
@@ -26,9 +26,9 @@ from tests.helpers import make_tim_metadata
 
 
 @pytest.fixture
-def mock_file_discovery_service():
-    """Mock FileDiscoveryService with test configurations."""
-    service = FileDiscoveryService(pta_data_releases={})  # Start with empty config
+def mock_file_discovery():
+    """Mock FileDiscovery with test configurations."""
+    service = FileDiscovery(pta_data_releases={})  # Start with empty config
     service.add_data_release(
         "test_data_release1",
         {
@@ -169,7 +169,7 @@ class TestCoordinateBasedDiscovery:
         self,
         mock_model_builder_class,
         mock_parse_parfile,
-        mock_file_discovery_service,
+        mock_file_discovery,
         mock_file_system,
     ):
         """Test coordinate-based pulsar discovery."""
@@ -189,11 +189,11 @@ class TestCoordinateBasedDiscovery:
         mock_model_builder_class.return_value = mock_model_builder
 
         # Update registry with real paths
-        mock_file_discovery_service.data_releases["test_data_release1"]["base_dir"] = (
-            str(mock_file_system / "data1")
+        mock_file_discovery.data_releases["test_data_release1"]["base_dir"] = str(
+            mock_file_system / "data1"
         )
-        mock_file_discovery_service.data_releases["test_data_release2"]["base_dir"] = (
-            str(mock_file_system / "data2")
+        mock_file_discovery.data_releases["test_data_release2"]["base_dir"] = str(
+            mock_file_system / "data2"
         )
 
         # factory = MetaPulsarFactory()
@@ -237,7 +237,7 @@ class TestCoordinateBasedDiscovery:
             assert len(pulsar_info["test_data_release2"]) > 0
 
     def test_create_metapulsar_with_canonical_name(
-        self, mock_file_discovery_service, mock_file_system
+        self, mock_file_discovery, mock_file_system
     ):
         """Test MetaPulsar creation includes canonical name."""
         from metapulsar.mockpulsar import create_mock_libstempo
@@ -262,7 +262,7 @@ class TestCoordinateBasedDiscovery:
         }
         metapulsar = MetaPulsar(
             pulsars=adapted_pulsars,
-            combination_strategy="composite",
+            combination_strategy="per_pta",
         )
 
         assert isinstance(metapulsar, MetaPulsar)
@@ -271,10 +271,10 @@ class TestCoordinateBasedDiscovery:
         assert hasattr(metapulsar, "_pulsars")
         assert len(metapulsar._pulsars) == 2
 
-    def test_discover_files_coordinate_matching(self, mock_file_discovery_service):
-        """Test file discovery with coordinate matching using FileDiscoveryService."""
-        # Test that FileDiscoveryService can discover files for a pulsar
-        files = mock_file_discovery_service.discover_files(
+    def test_discover_files_coordinate_matching(self, mock_file_discovery):
+        """Test file discovery with coordinate matching using FileDiscovery."""
+        # Test that FileDiscovery can discover files for a pulsar
+        files = mock_file_discovery.discover_files(
             ["test_data_release1", "test_data_release2"]
         )
 
@@ -282,18 +282,18 @@ class TestCoordinateBasedDiscovery:
         assert "test_data_release1" in files
         assert "test_data_release2" in files
 
-    def test_discover_files_pulsar_not_found(self, mock_file_discovery_service):
-        """Test file discovery when pulsar not found using FileDiscoveryService."""
-        # Test that FileDiscoveryService handles unknown PTAs gracefully
+    def test_discover_files_pulsar_not_found(self, mock_file_discovery):
+        """Test file discovery when pulsar not found using FileDiscovery."""
+        # Test that FileDiscovery handles unknown PTAs gracefully
         with pytest.raises(KeyError):
-            mock_file_discovery_service.discover_files(["unknown_pta"])
+            mock_file_discovery.discover_files(["unknown_pta"])
 
 
 class TestEdgeCases:
     """Test edge cases and error conditions."""
 
     def test_coordinate_discovery_with_malformed_parfile(
-        self, mock_file_discovery_service, mock_file_system
+        self, mock_file_discovery, mock_file_system
     ):
         """Test coordinate discovery handles malformed parfiles gracefully."""
         # Create malformed parfile
@@ -301,8 +301,8 @@ class TestEdgeCases:
         malformed_par.write_text("This is not a valid parfile")
 
         # Update the mock service with the test directory
-        mock_file_discovery_service.data_releases["test_data_release1"]["base_dir"] = (
-            str(mock_file_system / "data1")
+        mock_file_discovery.data_releases["test_data_release1"]["base_dir"] = str(
+            mock_file_system / "data1"
         )
 
         # factory = MetaPulsarFactory()

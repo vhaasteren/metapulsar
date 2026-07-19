@@ -1,4 +1,4 @@
-"""Tests for standalone (non-BasePulsar) MetaPulsar host behavior."""
+"""Tests for standalone (non-BasePulsar) MetaPulsar pulsar behavior."""
 
 import numpy as np
 
@@ -32,12 +32,12 @@ def _build_unsorted_mock(name: str, telescope: str, seed: int):
     return psr
 
 
-def test_metapulsar_is_standalone_host():
+def test_metapulsar_is_standalone_pulsar():
     pulsars = {
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="composite")
+    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
 
     assert not isinstance(metapulsar, ep.BasePulsar)
     assert metapulsar.__class__.__mro__[1] is object
@@ -48,7 +48,7 @@ def test_metapulsar_preserves_storage_row_order_by_default():
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="composite")
+    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
 
     assert isinstance(metapulsar.isort, slice)
     assert metapulsar.isort == slice(None, None, None)
@@ -66,7 +66,7 @@ def test_metapulsar_surface_arrays_are_row_aligned():
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="composite")
+    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
 
     ntoas = len(metapulsar._toas)
     assert len(metapulsar.toas) == ntoas

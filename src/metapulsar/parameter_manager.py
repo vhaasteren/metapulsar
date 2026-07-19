@@ -43,12 +43,12 @@ class ParameterManager:
     """
 
     _EQUATORIAL_WARNING = (
-        "Equatorial astrometry detected. PINT/tempo2 parity after T2CMETHOD "
+        "Equatorial astrometry detected. PINT/tempo2 agreement after T2CMETHOD "
         "modification is typically a few ns (about 6 ns on NG5 J1600), "
         "slightly larger than ecliptic pars with full convention alignment "
         "(about 1 ns on NG11 J1600). Reason: no explicit ECL obliquity "
         "convention to align; residual differences from ecliptic-frame "
-        "geometry entering delay terms may remain. For best parity, prefer "
+        "geometry entering delay terms may remain. For best agreement, prefer "
         "ecliptic coordinates in new timing solutions."
     )
 
@@ -68,7 +68,7 @@ class ParameterManager:
         """Initialize with file data and configuration.
 
         Args:
-            file_data: File data from FileDiscoveryService
+            file_data: File data from FileDiscovery
             combine_components: List of components to make consistent
             add_dm_derivatives: Whether to add DM1, DM2 parameters
             output_dir: Directory for output files
@@ -108,7 +108,7 @@ class ParameterManager:
 
     # ===== MAIN PUBLIC METHODS =====
 
-    def make_parfiles_consistent(self) -> Dict[str, Path]:
+    def make_parfiles_shared(self) -> Dict[str, Path]:
         """Make par files consistent across PTAs so that the certain model
         components (astrometry, spindown, binary, dispersion) are have
         consistent values between PTAs.
@@ -131,10 +131,10 @@ class ParameterManager:
         converted_parfiles = self._convert_units_if_needed(parfile_dicts)
 
         # 3. Make parameters consistent
-        consistent_parfiles = self._make_parameters_consistent(converted_parfiles)
+        shared_parfiles = self._make_parameters_consistent(converted_parfiles)
 
         # 4. Write consistent par files to output directory
-        output_files = self._write_consistent_parfiles(consistent_parfiles)
+        output_files = self._write_shared_parfiles(shared_parfiles)
 
         self.logger.info(
             f"Successfully created {len(output_files)} consistent par files"
@@ -445,7 +445,7 @@ class ParameterManager:
 
             self.logger.info(
                 f"PTA {pta_name}: consistent convention rules applied "
-                f"(reason=cross_engine_parity, style={style}); "
+                f"(reason=cross_engine_agreement, style={style}); "
                 f"actions: {', '.join(actions) if actions else 'none'}"
             )
 
@@ -666,11 +666,11 @@ class ParameterManager:
             raise RuntimeError(f"Consistent convention rules failed: {e}") from e
 
         # Convert back to par file strings
-        consistent_parfiles = {}
+        shared_parfiles = {}
         for pta_name, parfile_dict in parfile_dicts.items():
             try:
                 consistent_content = dict_to_parfile_string(parfile_dict, format="pint")
-                consistent_parfiles[pta_name] = consistent_content
+                shared_parfiles[pta_name] = consistent_content
                 self.logger.debug(f"Converted PTA {pta_name} par file back to string")
             except Exception as e:
                 self.logger.error(f"Error converting par file for PTA {pta_name}: {e}")
@@ -678,7 +678,7 @@ class ParameterManager:
                     f"Failed to convert par file for PTA {pta_name}"
                 ) from e
 
-        return consistent_parfiles
+        return shared_parfiles
 
     def _make_component_parameters_consistent(
         self,
@@ -787,17 +787,17 @@ class ParameterManager:
 
         return dmx_params
 
-    def _write_consistent_parfiles(
-        self, consistent_parfiles: Dict[str, str]
+    def _write_shared_parfiles(
+        self, shared_parfiles: Dict[str, str]
     ) -> Dict[str, Path]:
         """Write consistent par files to output directory."""
         if self.output_dir is None:
-            self.output_dir = Path(tempfile.mkdtemp(prefix="consistent_parfiles_"))
+            self.output_dir = Path(tempfile.mkdtemp(prefix="shared_parfiles_"))
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         output_files = {}
 
-        for pta_name, parfile_content in consistent_parfiles.items():
+        for pta_name, parfile_content in shared_parfiles.items():
             output_filename = self._get_output_filename(pta_name)
             output_path = self.output_dir / output_filename
 
@@ -934,12 +934,12 @@ class ParameterManager:
         self,
         meta_parname: str,
         pta_name: str,
-        host_param_name: str,
+        meta_param_name: str,
         mapped_param_name: str,
         target_dict: Dict,
     ) -> None:
         """Add a PTA-specific parameter to target dictionary."""
-        full_parname = f"{host_param_name}_{pta_name}"
+        full_parname = f"{meta_param_name}_{pta_name}"
         target_dict[full_parname] = {pta_name: mapped_param_name}
 
     def _validate_parameter_consistency(

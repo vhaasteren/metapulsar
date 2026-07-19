@@ -25,7 +25,7 @@ class TestMetaPulsarPositionAndFinalization:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.metapulsar = MetaPulsar(self.pulsars, combination_strategy="composite")
+        self.metapulsar = MetaPulsar(self.pulsars, combination_strategy="per_pta")
 
     def test_setup_position_and_planets_basic(self):
         """Test basic position and planetary data setup."""
@@ -57,7 +57,7 @@ class TestMetaPulsarPositionAndFinalization:
         """Test position setup with empty pulsar list."""
         # Empty pulsars should raise an exception
         with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_validate_consistency_success(self):
         """Test successful consistency validation."""
@@ -75,7 +75,7 @@ class TestMetaPulsarPositionAndFinalization:
                     n_toas=10, name="J1900+0000", telescope="test_pta2", seed=2
                 ),
             },
-            combination_strategy="composite",
+            combination_strategy="per_pta",
         )
 
         with pytest.raises(ValueError, match="Not all the same pulsar"):
@@ -85,7 +85,7 @@ class TestMetaPulsarPositionAndFinalization:
         """Test consistency validation with no pulsars."""
         # Empty pulsars should raise an exception during construction
         with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_validate_consistency_no_epulsars(self):
         """Test consistency validation before Enterprise Pulsars are created."""
@@ -163,7 +163,7 @@ class TestMetaPulsarPositionAndFinalization:
 
         # This should raise an AttributeError when trying to access the missing name
         with pytest.raises(AttributeError):
-            MetaPulsar({"test_pta": adapted_pulsar}, combination_strategy="composite")
+            MetaPulsar({"test_pta": adapted_pulsar}, combination_strategy="per_pta")
 
     def test_all_equal_helper_method(self):
         """Test the _all_equal helper method."""

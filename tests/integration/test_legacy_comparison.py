@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 from pathlib import Path
 from metapulsar import (
-    FileDiscoveryService,
+    FileDiscovery,
     get_pulsar_names_from_file_data,
     filter_file_data_by_pulsars,
 )
@@ -72,7 +72,7 @@ class TestLegacyComparison:
         self, pulsar_name, pta_data_releases, available_data_sets
     ):
         """Prepare input files for legacy implementation using the same discovery as new system."""
-        discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
 
         # Discover files for all PTAs
         file_data = discovery_service.discover_files(pta_data_releases)
@@ -122,7 +122,7 @@ class TestLegacyComparison:
         test_pta_data_releases = ["epta_dr1_v2_2", "ppta_dr2", "nanograv_9y"]
 
         # Get available pulsars and use the first 2 that have data
-        discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
         file_data = discovery_service.discover_files(test_pta_data_releases)
         all_pulsar_names = get_pulsar_names_from_file_data(file_data)
 
@@ -166,7 +166,7 @@ class TestLegacyComparison:
             # Create legacy MetaPulsar
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
-            discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+            discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
             file_data = discovery_service.discover_files(test_pta_data_releases)
 
             # Use proper pulsar selection methods like using_metapulsar.py
@@ -211,7 +211,7 @@ class TestLegacyComparison:
             new_dm_reordered = new_dm[:, new_to_legacy_indices]
 
             # Compare design matrices in a row-order agnostic way.
-            # PR-A intentionally changes host row ordering semantics.
+            # PR-A intentionally changes pulsar row ordering semantics.
             legacy_dm_sorted = np.sort(legacy_dm, axis=0)
             new_dm_sorted = np.sort(new_dm_reordered, axis=0)
 
@@ -467,7 +467,7 @@ class TestLegacyComparison:
             # Create both implementations
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
-            discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+            discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
             file_data = discovery_service.discover_files(test_pta_data_releases)
 
             # Use proper pulsar selection methods like using_metapulsar.py
@@ -589,7 +589,7 @@ class TestLegacyComparison:
     @pytest.mark.legacy_comparison
     @pytest.mark.legacy_sorted_row_order
     @pytest.mark.xfail(
-        reason="PR-A intentionally drops legacy globally-sorted host row-order contract",
+        reason="PR-A intentionally drops legacy globally-sorted pulsar row-order contract",
         strict=False,
     )
     def test_metapulsar_creation_equivalence_legacy_sorted_row_order(
@@ -600,7 +600,7 @@ class TestLegacyComparison:
             pytest.skip("No data available for testing")
 
         test_pta_data_releases = ["epta_dr1_v2_2", "ppta_dr2", "nanograv_9y"]
-        discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
         file_data = discovery_service.discover_files(test_pta_data_releases)
         all_pulsar_names = get_pulsar_names_from_file_data(file_data)
         if not all_pulsar_names:
@@ -656,7 +656,7 @@ class TestLegacyComparison:
     @pytest.mark.legacy_comparison
     @pytest.mark.legacy_sorted_row_order
     @pytest.mark.xfail(
-        reason="PR-A intentionally drops legacy globally-sorted host row-order contract",
+        reason="PR-A intentionally drops legacy globally-sorted pulsar row-order contract",
         strict=False,
     )
     def test_design_matrix_construction_legacy_sorted_row_order(
@@ -691,7 +691,7 @@ class TestLegacyComparison:
             pytest.skip("No valid input files for row-order comparison")
 
         legacy_mp = legacy_module.create_metapulsar(input_files)
-        discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
         file_data = discovery_service.discover_files(test_pta_data_releases)
         filtered_file_data = filter_file_data_by_pulsars(file_data, [pulsar])
         if not filtered_file_data:
@@ -763,7 +763,7 @@ class TestLegacyComparison:
             # Create both implementations
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
-            discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+            discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
             file_data = discovery_service.discover_files(test_pta_data_releases)
 
             # Use proper pulsar selection methods like using_metapulsar.py
@@ -875,7 +875,7 @@ class TestLegacyComparison:
             # Create both implementations
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
-            discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+            discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
             file_data = discovery_service.discover_files(test_pta_data_releases)
 
             # Use proper pulsar selection methods like using_metapulsar.py
@@ -982,7 +982,7 @@ class TestLegacyComparison:
             # Create both implementations
             legacy_mp = legacy_module.create_metapulsar(input_files)
 
-            discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+            discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
             file_data = discovery_service.discover_files(test_pta_data_releases)
 
             # Use proper pulsar selection methods like using_metapulsar.py
@@ -1042,7 +1042,7 @@ class TestLegacyComparison:
             pytest.skip("No data available for testing")
 
         test_pta_data_releases = ["epta_dr1_v2_2", "ppta_dr2", "nanograv_9y"]
-        discovery_service = FileDiscoveryService(working_dir="data/ipta-dr2")
+        discovery_service = FileDiscovery(working_dir="data/ipta-dr2")
         file_data = discovery_service.discover_files(test_pta_data_releases)
         all_pulsar_names = get_pulsar_names_from_file_data(file_data)
 

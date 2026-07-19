@@ -1,9 +1,9 @@
-"""Mixed-engine routing tests for MetaPulsar timing backends."""
+"""Mixed-engine routing tests for MetaPulsar timing engines."""
 
 import numpy as np
 
-from metapulsar.metapulsar import MetaPulsar, SessionFiles
-from nltiming.backends.composite import PulsarTimingBackend
+from metapulsar.metapulsar import MetaPulsar, PtaFiles
+from nltiming.engines.composite import PulsarTimingEngine
 
 
 class _SessionPulsar:
@@ -20,9 +20,9 @@ def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
     pulsar = MetaPulsar.__new__(MetaPulsar)
     pulsar.name = "J0000+0000"
     pulsar._epulsars = {"epta": _SessionPulsar(2), "ng9": _SessionPulsar(2)}
-    pulsar._session_files = {
-        "epta": SessionFiles(par_path=par, tim_path=tim, timing_package="tempo2"),
-        "ng9": SessionFiles(par_path=par, tim_path=tim, timing_package="pint"),
+    pulsar._pta_files = {
+        "epta": PtaFiles(par_path=par, tim_path=tim, timing_package="tempo2"),
+        "ng9": PtaFiles(par_path=par, tim_path=tim, timing_package="pint"),
     }
     pulsar._fitparameters = {"F0": {"epta": "F0", "ng9": "F0"}}
     pulsar.fitpars = ["F0"]
@@ -35,15 +35,15 @@ def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
     pulsar._backend_flags = np.array(["a", "a", "b", "b"])
     pulsar._flags = {"f": pulsar._backend_flags}
     pulsar._isort = slice(None, None, None)
-    pulsar._timing_backend_cache = {}
+    pulsar._timing_engine_cache = {}
 
-    backend = pulsar.timing_backend(
+    engine = pulsar.timing_engine(
         {"tempo2": "libstempo", "pint": "jug"}, linearized=True
     )
 
-    assert isinstance(backend, PulsarTimingBackend)
-    assert [session.backend.backend_name for session in backend._sessions] == [
+    assert isinstance(engine, PulsarTimingEngine)
+    assert [session.engine.engine_name for session in engine._contributions] == [
         "tempo2",
         "jug",
     ]
-    np.testing.assert_allclose(backend.residual_delta(np.zeros(1)), 0.0)
+    np.testing.assert_allclose(engine.residual_delta(np.zeros(1)), 0.0)

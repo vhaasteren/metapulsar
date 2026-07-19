@@ -1,5 +1,6 @@
 """Main MetaPulsar class for combining multi-PTA pulsar timing data."""
 
+import warnings
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
@@ -22,12 +23,41 @@ from .position_helpers import bj_name_from_pulsar
 
 
 @dataclass(frozen=True)
-class SessionFiles:
-    """Durable timing-package input files for one PTA session."""
+class PtaFiles:
+    """Durable timing-package input files for one PTA."""
 
     par_path: Path
     tim_path: Path
     timing_package: str
+
+
+_COMBINATION_STRATEGY_ALIASES = {"consistent": "shared", "composite": "per_pta"}
+_COMBINATION_STRATEGIES = ("shared", "per_pta")
+
+
+def normalize_combination_strategy(value: str) -> str:
+    """Normalize a ``combination_strategy`` value to its canonical spelling.
+
+    Canonical values are ``"shared"`` (merge shared timing-model params across
+    PTAs, ex-``"consistent"``) and ``"per_pta"`` (keep per-PTA params,
+    ex-``"composite"``). The legacy ``"consistent"``/``"composite"`` spellings
+    are still accepted as deprecated aliases and emit a ``DeprecationWarning``.
+    """
+    if value in _COMBINATION_STRATEGY_ALIASES:
+        canonical = _COMBINATION_STRATEGY_ALIASES[value]
+        warnings.warn(
+            f"combination_strategy={value!r} is deprecated; use {canonical!r}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return canonical
+    if value not in _COMBINATION_STRATEGIES:
+        raise ValueError(
+            "combination_strategy must be one of "
+            f"{_COMBINATION_STRATEGIES} (deprecated aliases: "
+            f"{sorted(_COMBINATION_STRATEGY_ALIASES)}); got {value!r}"
+        )
+    return value
 
 
 class MetaPulsar:
@@ -38,15 +68,16 @@ class MetaPulsar:
     This class implements the EnterprisePulsar-like surface directly.
 
     Supports two combination strategies:
-    - "consistent": Astrophysical consistency (modifies par files for consistency)
-    - "composite": Multi-PTA composition (preserves original parameters)
+    - "shared": shared timing-model params across PTAs (modifies par files for
+      consistency; ex-"consistent")
+    - "per_pta": per-PTA timing-model params preserved (ex-"composite")
     """
 
     def __init__(
         self,
         pulsars,
         *,  # Remove parfile_dicts parameter
-        combination_strategy="consistent",
+        combination_strategy="shared",
         combine_components: List[str] = [
             "astrometry",
             "spindown",
@@ -54,7 +85,7 @@ class MetaPulsar:
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
-        session_files: dict[str, dict] | None = None,
+        pta_files: dict[str, dict] | None = None,
         clock_dir: str | Path | None = None,
         sort=False,
     ):
@@ -65,31 +96,34 @@ class MetaPulsar:
                 - PINT: {pta: (pint_model, pint_toas)}
                 - Tempo2: {pta: tempo2_psr}
             combination_strategy: Strategy for combining PTAs:
-                - "consistent": Astrophysical consistency (modifies par files for consistency)
-                - "composite": Multi-PTA composition (preserves original parameters)
-            combine_components: List of components to make consistent (consistent strategy only):
+                - "shared": shared timing-model params across PTAs (modifies par
+                  files for consistency; ex-"consistent")
+                - "per_pta": per-PTA timing-model params preserved (ex-"composite")
+                The legacy "consistent"/"composite" spellings are accepted as
+                deprecated aliases.
+            combine_components: List of components to share ("shared" strategy only):
                 - "astrometry": Position and proper motion parameters
                 - "spindown": Spin frequency and derivatives
                 - "binary": Binary orbital parameters
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
-            add_dm_derivatives: Whether to ensure DM1, DM2 are present (consistent strategy only)
+            add_dm_derivatives: Whether to ensure DM1, DM2 are present ("shared" strategy only)
             sort: Whether to sort data by time
         """
         self._pulsars = pulsars
-        self.combination_strategy = combination_strategy
+        self.combination_strategy = normalize_combination_strategy(combination_strategy)
         self.combine_components = (
-            combine_components if combination_strategy == "consistent" else []
+            combine_components if self.combination_strategy == "shared" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
-        # Retained session par/tim must be available before reference-theta lookup:
+        # Retained per-PTA par/tim must be available before reference-theta lookup:
         # pulse-number tracking uses temporary TRACK -2 par paths that are deleted
         # after libstempo construction.
-        self._session_files = self._normalize_session_files(session_files)
+        self._pta_files = self._normalize_pta_files(pta_files)
         self._parfile_dicts = self._get_parfile_data(pulsars)
         self._clock_dir = None if clock_dir is None else Path(clock_dir)
         self._sort = sort
-        self._timing_backend_cache = {}
+        self._timing_engine_cache = {}
         self._timing_rows_filtered = False
         self._pint_model_cache = None
 
@@ -107,14 +141,14 @@ class MetaPulsar:
         self.name = self._get_pulsar_name(pulsars)
 
     @staticmethod
-    def _normalize_session_files(
-        session_files: dict[str, dict] | None,
-    ) -> dict[str, SessionFiles]:
-        if session_files is None:
+    def _normalize_pta_files(
+        pta_files: dict[str, dict] | None,
+    ) -> dict[str, PtaFiles]:
+        if pta_files is None:
             return {}
-        normalized: dict[str, SessionFiles] = {}
-        for pta_name, files in session_files.items():
-            normalized[pta_name] = SessionFiles(
+        normalized: dict[str, PtaFiles] = {}
+        for pta_name, files in pta_files.items():
+            normalized[pta_name] = PtaFiles(
                 par_path=Path(files["par_path"]),
                 tim_path=Path(files["tim_path"]),
                 timing_package=str(files["timing_package"]),
@@ -605,13 +639,13 @@ class MetaPulsar:
         """Return canonical parfile content for one PTA.
 
         Priority:
-        1. Pulsar-retained session par file (exact runtime input, possibly TRACK-modified)
+        1. Pulsar-retained per-PTA par file (exact runtime input, possibly TRACK-modified)
         2. In-memory PINT model as_parfile()
         3. libstempo savepar() dump
         """
-        session = getattr(self, "_session_files", {}).get(pta_name)
-        if session is not None and session.par_path.is_file():
-            return session.par_path.read_text(encoding="utf-8")
+        pta_file = getattr(self, "_pta_files", {}).get(pta_name)
+        if pta_file is not None and pta_file.par_path.is_file():
+            return pta_file.par_path.read_text(encoding="utf-8")
 
         source = self._pulsars.get(pta_name)
         if isinstance(source, tuple) and len(source) == 2:
@@ -640,7 +674,7 @@ class MetaPulsar:
         """Extract per-PTA parfile dictionaries for reference-theta lookup.
 
         This uses ``_parfile_content_for_pta`` as the single source of truth for
-        non-PINT sessions, so retained session par files (e.g. TRACK-modified
+        non-PINT engines, so retained per-PTA par files (e.g. TRACK-modified
         pulse-number tracking inputs) are preferred over transient object paths.
         """
         from .pint_helpers import create_pint_model
@@ -722,7 +756,7 @@ class MetaPulsar:
 
     def _invalidate_timing_caches(self) -> None:
         """Invalidate timing API caches after pulsar-state mutations."""
-        self._timing_backend_cache.clear()
+        self._timing_engine_cache.clear()
         self._pint_model_cache = None
 
     def _reference_pta_name(self) -> str:
@@ -744,10 +778,10 @@ class MetaPulsar:
             return str(value[0])
         return str(value)
 
-    def _session_theta_exact(
-        self, pta_name: str, session_fitpars: tuple[str, ...]
+    def _pta_theta_exact(
+        self, pta_name: str, pta_fitpars: tuple[str, ...]
     ) -> dict[str, str]:
-        """Build reference-theta exact mapping for one session using parfile metadata."""
+        """Build reference-theta exact mapping for one PTA using parfile metadata."""
         from .pint_helpers import create_pint_model, resolve_parameter_alias
 
         par_source = self._parfile_dicts.get(pta_name, {})
@@ -757,7 +791,7 @@ class MetaPulsar:
             par_source = {}
 
         exact: dict[str, str] = {}
-        for name in session_fitpars:
+        for name in pta_fitpars:
             mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
             # Prefer exact key, then canonical alias of mapped name.
             if mapped_name in par_source:
@@ -794,8 +828,8 @@ class MetaPulsar:
         ref_pta = self._reference_pta_name()
         from .pint_helpers import create_pint_model
 
-        # Always build from retained session par content so the reference model
-        # matches runtime inputs (including any TRACK-modified session par file).
+        # Always build from retained per-PTA par content so the reference model
+        # matches runtime inputs (including any TRACK-modified per-PTA par file).
         self._pint_model_cache = create_pint_model(
             self._parfile_content_for_pta(ref_pta)
         )
@@ -805,14 +839,14 @@ class MetaPulsar:
         """Return canonical fitpars mapped to their per-PTA parameter names.
 
         The returned dictionaries are copies so interactive timing clients can
-        inspect provenance without mutating the host's canonical mapping.
+        inspect provenance without mutating the pulsar's canonical mapping.
         """
         return {name: dict(self._fitparameters.get(name, {})) for name in self.fitpars}
 
-    def timing(self, engines="jug", **backend_kwargs):
+    def timing(self, engines="jug", **engine_kwargs):
         """Open an immutable, engine-independent timing evaluator.
 
-        This is a convenience facade over :class:`nltiming.TimingEvaluator`;
+        This is a convenience wrapper over :class:`nltiming.TimingEvaluator`;
         all evaluation, scan, Jacobian, and fit logic remains in ``nltiming``.
         """
         from nltiming import TimingEvaluator
@@ -820,14 +854,14 @@ class MetaPulsar:
         return TimingEvaluator(
             self,
             engines=engines,
-            **backend_kwargs,
+            **engine_kwargs,
         )
 
     def can_use_engines(self, engines="jug", *, linearized: bool = False) -> bool:
-        """Return whether every pulsar session can honor the engine selection."""
+        """Return whether every PTA can honor the engine selection."""
         if getattr(self, "_timing_rows_filtered", False):
             return False
-        from nltiming.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
         for pta_name in self._epulsars:
@@ -842,7 +876,7 @@ class MetaPulsar:
                     return False
                 continue
             if family == "jug":
-                if not self._can_import_jug() or not self._session_files_available(
+                if not self._can_import_jug() or not self._pta_files_available(
                     pta_name
                 ):
                     return False
@@ -863,8 +897,8 @@ class MetaPulsar:
             return False
         return True
 
-    def _session_files_available(self, pta_name: str) -> bool:
-        files = self._session_files.get(pta_name)
+    def _pta_files_available(self, pta_name: str) -> bool:
+        files = self._pta_files.get(pta_name)
         if files is None:
             return False
         if not files.par_path.is_file() or not files.tim_path.is_file():
@@ -890,7 +924,7 @@ class MetaPulsar:
                 pass
 
     def _native_compat(self, pta_name: str) -> str:
-        files = self._session_files.get(pta_name)
+        files = self._pta_files.get(pta_name)
         if files is not None and files.timing_package in {"pint", "tempo2"}:
             return files.timing_package
         return self._get_timing_package(self._epulsars[pta_name])
@@ -924,14 +958,14 @@ class MetaPulsar:
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
     ):
-        if not self._session_files_available(pta_name):
+        if not self._pta_files_available(pta_name):
             raise ValueError(
                 f"Cannot build JUG timing session for '{pta_name}': missing par/tim inputs"
             )
         from jug.engine.session import TimingSession
 
         self._ensure_clock_aliases()
-        files = self._session_files[pta_name]
+        files = self._pta_files[pta_name]
         return TimingSession(
             par_file=str(files.par_path),
             tim_file=str(files.tim_path),
@@ -952,7 +986,7 @@ class MetaPulsar:
         force_recompute: bool = False,
     ) -> list[str]:
         """Refresh tempo2 JUG session caches so native_chain_static can be built."""
-        from nltiming.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines or {"tempo2": "jug", "pint": "jug"})
         primed: list[str] = []
@@ -982,7 +1016,7 @@ class MetaPulsar:
             primed.append(pta_name)
         return primed
 
-    def timing_backend(
+    def timing_engine(
         self,
         engines="jug",
         *,
@@ -994,14 +1028,14 @@ class MetaPulsar:
         verify_wiring: bool = False,
         subtract_tzr: bool = False,
     ):
-        """Return a TimingBackend in canonical pulsar row order."""
+        """Return a TimingEngine in canonical pulsar row order."""
         if getattr(self, "_timing_rows_filtered", False):
             raise ValueError(
-                "nonlinear timing backends are not available after filter_data(); "
-                "the retained engine sessions still describe the original TOA rows. "
+                "nonlinear timing engines are not available after filter_data(); "
+                "the retained engine per-PTA inputs still describe the original TOA rows. "
                 "Filter the input tim files before constructing MetaPulsar."
             )
-        from nltiming.backends import _IMPL_FAMILY, normalize_engines
+        from nltiming.engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
         if not self.can_use_engines(engines, linearized=linearized):
@@ -1021,27 +1055,27 @@ class MetaPulsar:
             prime_sessions,
             verify_wiring,
             subtract_tzr,
-            self.cache_token(),
+            self.state_id(),
         )
-        if cache_key in self._timing_backend_cache:
-            return self._timing_backend_cache[cache_key]
+        if cache_key in self._timing_engine_cache:
+            return self._timing_engine_cache[cache_key]
 
-        from nltiming.backends import (
+        from nltiming.engines import (
             JugEngine,
             LibstempoEngine,
             LinearizedJugEngine,
             LinearizedLibstempoEngine,
             LinearizedPintEngine,
             PintEngine,
-            PulsarSession,
-            build_backend,
+            PtaContribution,
+            build_engine,
         )
-        from nltiming.backends.base import LinearModel, validate_backend_against_pulsar
+        from nltiming.engines.base import LinearModel, validate_engine_against_pulsar
 
         pta_slices = self._get_pta_slices()
         fitpars = tuple(self.fitpars)
         global_index = {par: i for i, par in enumerate(fitpars)}
-        sessions: list[PulsarSession] = []
+        contributions: list[PtaContribution] = []
 
         if (
             prime_sessions
@@ -1067,42 +1101,42 @@ class MetaPulsar:
         for pta_name, psr in self._epulsars.items():
             slc = pta_slices[pta_name]
             rows = np.arange(slc.start, slc.stop, dtype=int)
-            session_fitpars = tuple(
+            pta_fitpars = tuple(
                 par for par in fitpars if pta_name in self._fitparameters.get(par, {})
             )
-            session_cols = [global_index[par] for par in session_fitpars]
-            session_design = self._designmatrix[rows][:, session_cols]
-            theta_exact = self._session_theta_exact(pta_name, session_fitpars)
-            linear_model = LinearModel.from_host(
-                fitpars=session_fitpars,
-                design=session_design,
+            pta_cols = [global_index[par] for par in pta_fitpars]
+            pta_design = self._designmatrix[rows][:, pta_cols]
+            theta_exact = self._pta_theta_exact(pta_name, pta_fitpars)
+            linear_model = LinearModel.from_design(
+                fitpars=pta_fitpars,
+                design=pta_design,
                 theta_exact=theta_exact,
             )
 
             native_compat = self._native_compat(pta_name)
             family = _IMPL_FAMILY[engines[native_compat]]
             if linearized and family in ("pint", "vela"):
-                backend = LinearizedPintEngine.from_linear_model(linear_model)
+                engine = LinearizedPintEngine.from_linear_model(linear_model)
             elif linearized and family == "tempo2":
-                backend = LinearizedLibstempoEngine.from_linear_model(linear_model)
+                engine = LinearizedLibstempoEngine.from_linear_model(linear_model)
             elif linearized:
-                backend = LinearizedJugEngine.from_linear_model(
+                engine = LinearizedJugEngine.from_linear_model(
                     linear_model, compatibility=native_compat
                 )
             elif family == "vela":
-                if not self._session_files_available(pta_name):
+                if not self._pta_files_available(pta_name):
                     raise ValueError(
                         f"Cannot build Vela timing session for '{pta_name}': "
                         "missing par/tim inputs"
                     )
-                from nltiming.backends.vela import VelaEngine
+                from nltiming.engines.vela import VelaEngine
 
-                files = self._session_files[pta_name]
+                files = self._pta_files[pta_name]
                 session_mapping = {
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
-                    for name in session_fitpars
+                    for name in pta_fitpars
                 }
-                backend = VelaEngine.from_files(
+                engine = VelaEngine.from_files(
                     files.par_path,
                     files.tim_path,
                     linear_model=linear_model,
@@ -1112,7 +1146,7 @@ class MetaPulsar:
                 source = self._pulsars[pta_name]
                 if not (isinstance(source, tuple) and len(source) == 2):
                     raise ValueError(f"PTA '{pta_name}' does not have PINT inputs")
-                backend = PintEngine.from_session(
+                engine = PintEngine.from_contribution(
                     source[0],
                     source[1],
                     linear_model=linear_model,
@@ -1120,9 +1154,9 @@ class MetaPulsar:
             elif family == "tempo2":
                 session_mapping = {
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
-                    for name in session_fitpars
+                    for name in pta_fitpars
                 }
-                backend = LibstempoEngine.from_session(
+                engine = LibstempoEngine.from_contribution(
                     self._pulsars[pta_name],
                     linear_model=linear_model,
                     param_mapping=session_mapping,
@@ -1151,9 +1185,9 @@ class MetaPulsar:
                     )
                 session_mapping = {
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
-                    for name in session_fitpars
+                    for name in pta_fitpars
                 }
-                backend = JugEngine.from_session(
+                engine = JugEngine.from_contribution(
                     jug_session,
                     linear_model=linear_model,
                     compatibility=native_compat,
@@ -1161,36 +1195,34 @@ class MetaPulsar:
                     design_matrix_method=design_matrix_method,
                 )
 
-            sessions.append(
-                PulsarSession(
+            contributions.append(
+                PtaContribution(
                     name=pta_name,
                     row_indices=rows,
-                    backend=backend,
+                    engine=engine,
                     exact_linear_fitpars=(
-                        backend.exact_linear_fitpars()
-                        if hasattr(backend, "exact_linear_fitpars")
+                        engine.exact_linear_fitpars()
+                        if hasattr(engine, "exact_linear_fitpars")
                         else frozenset()
                     ),
                 )
             )
 
-        backend = build_backend(
+        engine = build_engine(
             fitpars=fitpars,
             nrows=len(self._toas),
-            sessions=sessions,
-            host_design=self._designmatrix,
+            contributions=contributions,
+            design_matrix=self._designmatrix,
         )
-        validate_backend_against_pulsar(backend, self, tol=1e-9)
+        validate_engine_against_pulsar(engine, self, tol=1e-9)
         if verify_wiring:
-            from nltiming.backends.jug import verify_jug_native_chain_wiring
+            from nltiming.engines.jug import verify_jug_native_chain
 
-            verify_jug_native_chain_wiring(
-                backend, design_matrix_method=design_matrix_method
-            )
-        self._timing_backend_cache[cache_key] = backend
-        return backend
+            verify_jug_native_chain(engine, design_matrix_method=design_matrix_method)
+        self._timing_engine_cache[cache_key] = engine
+        return engine
 
-    def cache_token(self) -> str:
+    def state_id(self) -> str:
         """Return stable token for pulsar-tied cache invalidation."""
         pta_tags = [
             f"{pta}:{self._get_timing_package(psr)}"
@@ -1319,7 +1351,7 @@ class MetaPulsar:
 
     @property
     def backend_flags(self):
-        """Return array of backend flags."""
+        """Return array of engine flags."""
         flagnames = (
             self._flags.dtype.names
             if isinstance(self._flags, np.ndarray)

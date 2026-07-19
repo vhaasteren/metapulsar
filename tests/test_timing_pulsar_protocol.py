@@ -1,39 +1,37 @@
-"""Slice-3 tests for host protocol and backend conformance helpers."""
+"""Slice-3 tests for pulsar protocol and engine conformance helpers."""
 
 import numpy as np
 import pytest
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
-from nltiming.backends.base import (
-    validate_backend_against_pulsar,
+from nltiming.engines.base import (
+    validate_engine_against_pulsar,
     validate_enterprise_pulsar,
 )
-from nltiming.protocols import EnterprisePulsarLike, PulsarInterface
+from nltiming.protocols import EnterprisePulsarLike, TimingPulsar
 
 
-def test_fake_host_satisfies_protocol_and_shape_validators(fake_pulsar_interface):
-    assert isinstance(fake_pulsar_interface, EnterprisePulsarLike)
-    assert isinstance(fake_pulsar_interface, PulsarInterface)
-    validate_enterprise_pulsar(fake_pulsar_interface)
+def test_fake_pulsar_satisfies_protocol_and_shape_validators(fake_timing_pulsar):
+    assert isinstance(fake_timing_pulsar, EnterprisePulsarLike)
+    assert isinstance(fake_timing_pulsar, TimingPulsar)
+    validate_enterprise_pulsar(fake_timing_pulsar)
 
-    backend = fake_pulsar_interface.timing_backend({"tempo2": "jug", "pint": "pint"})
-    assert tuple(fake_pulsar_interface.fitpars) == backend.fitpars
-    validate_backend_against_pulsar(backend, fake_pulsar_interface)
+    engine = fake_timing_pulsar.timing_engine({"tempo2": "jug", "pint": "pint"})
+    assert tuple(fake_timing_pulsar.fitpars) == engine.fitpars
+    validate_engine_against_pulsar(engine, fake_timing_pulsar)
 
 
-def test_reference_theta_exact_roundtrip(fake_pulsar_interface):
-    backend = fake_pulsar_interface.timing_backend(
-        {"tempo2": "libstempo", "pint": "jug"}
-    )
-    exact = backend.reference_theta_exact()
-    floats = backend.reference_theta()
-    for i, name in enumerate(backend.fitpars):
+def test_reference_theta_exact_roundtrip(fake_timing_pulsar):
+    engine = fake_timing_pulsar.timing_engine({"tempo2": "libstempo", "pint": "jug"})
+    exact = engine.reference_theta_exact()
+    floats = engine.reference_theta()
+    for i, name in enumerate(engine.fitpars):
         assert float(exact[name]) == floats[i]
 
 
-def test_non_metapulsar_host_can_conform():
-    class LocalHost:
+def test_non_metapulsar_pulsar_can_conform():
+    class LocalPulsar:
         name = "LOCAL"
         fitpars = ("F0", "F1")
         _toas = np.array([5.0, 1.0], dtype=float)
@@ -75,13 +73,13 @@ def test_non_metapulsar_host_can_conform():
         def pint_model(self):
             return None
 
-        def timing_backend(self, engines="jug"):
-            return fake_pulsar_interface_backend
+        def timing_engine(self, engines="jug"):
+            return fake_timing_pulsar_backend
 
         def can_use_engines(self, engines="jug"):
             return True
 
-        def cache_token(self):
+        def state_id(self):
             return "local"
 
     class LocalBackend:
@@ -100,16 +98,16 @@ def test_non_metapulsar_host_can_conform():
         def design_matrix(self, params=None):
             return np.zeros((2, 2), dtype=float)
 
-    fake_pulsar_interface_backend = LocalBackend()
-    host = LocalHost()
-    assert isinstance(host, PulsarInterface)
-    validate_enterprise_pulsar(host)
-    validate_backend_against_pulsar(host.timing_backend(), host)
+    fake_timing_pulsar_backend = LocalBackend()
+    pulsar = LocalPulsar()
+    assert isinstance(pulsar, TimingPulsar)
+    validate_enterprise_pulsar(pulsar)
+    validate_engine_against_pulsar(pulsar.timing_engine(), pulsar)
 
 
-def test_backend_validator_rejects_design_row_mismatch(fake_pulsar_interface):
+def test_engine_validator_rejects_design_row_mismatch(fake_timing_pulsar):
     class BadBackend:
-        fitpars = tuple(fake_pulsar_interface.fitpars)
+        fitpars = tuple(fake_timing_pulsar.fitpars)
         native_units = {name: "native" for name in fitpars}
 
         def reference_theta(self):
@@ -119,18 +117,18 @@ def test_backend_validator_rejects_design_row_mismatch(fake_pulsar_interface):
             return {name: "0.0" for name in self.fitpars}
 
         def residual_delta(self, delta_theta):
-            return np.zeros(len(fake_pulsar_interface.toas), dtype=float)
+            return np.zeros(len(fake_timing_pulsar.toas), dtype=float)
 
         def design_matrix(self, params=None):
-            design = np.asarray(fake_pulsar_interface.Mmat, dtype=float).copy()
+            design = np.asarray(fake_timing_pulsar.Mmat, dtype=float).copy()
             design[0, 0] = 1.0
             return design
 
     with pytest.raises(ValueError, match="canonical row order"):
-        validate_backend_against_pulsar(BadBackend(), fake_pulsar_interface)
+        validate_engine_against_pulsar(BadBackend(), fake_timing_pulsar)
 
 
-def _build_real_host():
+def _build_real_pulsar():
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=20, name="J1857+0943", telescope="pta_a", seed=11
@@ -139,108 +137,108 @@ def _build_real_host():
             n_toas=20, name="J1857+0943", telescope="pta_b", seed=22
         ),
     }
-    return MetaPulsar(pulsars, combination_strategy="composite")
+    return MetaPulsar(pulsars, combination_strategy="per_pta")
 
 
-def test_metapulsar_timing_host_surface_and_backend_roundtrip():
-    host = _build_real_host()
-    assert isinstance(host, PulsarInterface)
-    validate_enterprise_pulsar(host)
+def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip():
+    pulsar = _build_real_pulsar()
+    assert isinstance(pulsar, TimingPulsar)
+    validate_enterprise_pulsar(pulsar)
 
     # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
     native_engines = {"tempo2": "libstempo", "pint": "jug"}
-    assert host.can_use_engines(native_engines)
-    assert not host.can_use_engines("jug")
-    assert not host.can_use_engines({"tempo2": "jug", "pint": "pint"})
-    assert host.can_use_engines(native_engines, linearized=True)
-    assert host.can_use_engines("jug", linearized=True)
-    assert host.can_use_engines({"tempo2": "jug", "pint": "pint"}, linearized=True)
+    assert pulsar.can_use_engines(native_engines)
+    assert not pulsar.can_use_engines("jug")
+    assert not pulsar.can_use_engines({"tempo2": "jug", "pint": "pint"})
+    assert pulsar.can_use_engines(native_engines, linearized=True)
+    assert pulsar.can_use_engines("jug", linearized=True)
+    assert pulsar.can_use_engines({"tempo2": "jug", "pint": "pint"}, linearized=True)
 
-    native_backend = host.timing_backend(native_engines)
-    assert tuple(host.fitpars) == native_backend.fitpars
-    validate_backend_against_pulsar(native_backend, host)
+    native_backend = pulsar.timing_engine(native_engines)
+    assert tuple(pulsar.fitpars) == native_backend.fitpars
+    validate_engine_against_pulsar(native_backend, pulsar)
 
-    backend = host.timing_backend(native_engines, linearized=True)
-    assert tuple(host.fitpars) == backend.fitpars
-    validate_backend_against_pulsar(backend, host)
+    engine = pulsar.timing_engine(native_engines, linearized=True)
+    assert tuple(pulsar.fitpars) == engine.fitpars
+    validate_engine_against_pulsar(engine, pulsar)
 
-    # cache_token should be stable across repeated reads in unchanged state.
-    assert host.cache_token() == host.cache_token()
+    # state_id should be stable across repeated reads in unchanged state.
+    assert pulsar.state_id() == pulsar.state_id()
 
 
-def test_metapulsar_pint_model_and_backend_error_paths():
-    host = _build_real_host()
-    model = host.pint_model()
+def test_metapulsar_pint_model_and_engine_error_paths():
+    pulsar = _build_real_pulsar()
+    model = pulsar.pint_model()
     assert model is not None
 
-    backend = host.timing_backend({"tempo2": "jug", "pint": "pint"}, linearized=True)
-    assert getattr(backend._sessions[0].backend, "backend_name") == "jug"
+    engine = pulsar.timing_engine({"tempo2": "jug", "pint": "pint"}, linearized=True)
+    assert getattr(engine._contributions[0].engine, "engine_name") == "jug"
 
 
 def test_metapulsar_reference_theta_missing_values_raise():
-    host = _build_real_host()
-    pta = next(iter(host._epulsars))
-    host._parfile_dicts[pta] = {}
-    host._invalidate_timing_caches()
+    pulsar = _build_real_pulsar()
+    pta = next(iter(pulsar._epulsars))
+    pulsar._parfile_dicts[pta] = {}
+    pulsar._invalidate_timing_caches()
 
     with pytest.raises(ValueError, match="Missing reference theta"):
-        host.timing_backend({"tempo2": "libstempo", "pint": "jug"}, linearized=True)
+        pulsar.timing_engine({"tempo2": "libstempo", "pint": "jug"}, linearized=True)
 
 
-def test_metapulsar_timing_backend_cache_tracks_host_state():
-    host = _build_real_host()
+def test_metapulsar_timing_engine_cache_tracks_pulsar_state():
+    pulsar = _build_real_pulsar()
     native_engines = {"tempo2": "libstempo", "pint": "jug"}
-    backend = host.timing_backend(native_engines, linearized=True)
-    token = host.cache_token()
+    engine = pulsar.timing_engine(native_engines, linearized=True)
+    token = pulsar.state_id()
 
-    host._designmatrix = host._designmatrix.copy()
-    host._designmatrix[0, 0] += 1.0
-    changed = host.timing_backend(native_engines, linearized=True)
+    pulsar._designmatrix = pulsar._designmatrix.copy()
+    pulsar._designmatrix[0, 0] += 1.0
+    changed = pulsar.timing_engine(native_engines, linearized=True)
 
-    assert host.cache_token() != token
-    assert changed is not backend
+    assert pulsar.state_id() != token
+    assert changed is not engine
 
 
 def test_metapulsar_timing_opens_nltiming_evaluator():
     from nltiming import TimingEvaluator
 
-    host = _build_real_host()
-    timing = host.timing(
+    pulsar = _build_real_pulsar()
+    timing = pulsar.timing(
         {"tempo2": "libstempo", "pint": "jug"},
         linearized=True,
     )
 
     assert isinstance(timing, TimingEvaluator)
-    assert timing.pulsar is host
-    assert timing.parameters.names == tuple(host.fitpars)
-    assert timing.reference_exact == timing.backend.reference_theta_exact()
+    assert timing.pulsar is pulsar
+    assert timing.parameters.names == tuple(pulsar.fitpars)
+    assert timing.reference_exact == timing.engine.reference_theta_exact()
     assert timing.pulsar.timing_parameter_mapping() == {
-        name: dict(host._fitparameters[name]) for name in host.fitpars
+        name: dict(pulsar._fitparameters[name]) for name in pulsar.fitpars
     }
 
 
-def test_filtered_host_rejects_unaligned_live_timing_sessions():
-    host = _build_real_host()
-    host.filter_data(mask=np.arange(len(host.toas)) % 2 == 0)
+def test_filtered_pulsar_rejects_unaligned_live_timing_contributions():
+    pulsar = _build_real_pulsar()
+    pulsar.filter_data(mask=np.arange(len(pulsar.toas)) % 2 == 0)
 
-    assert not host.can_use_engines(
+    assert not pulsar.can_use_engines(
         {"tempo2": "libstempo", "pint": "jug"}, linearized=True
     )
     with pytest.raises(ValueError, match="after filter_data"):
-        host.timing(
+        pulsar.timing(
             {"tempo2": "libstempo", "pint": "jug"},
             linearized=True,
         )
-    assert host.Mmat.shape[1] == len(host.fitpars)
+    assert pulsar.Mmat.shape[1] == len(pulsar.fitpars)
 
 
 def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
     """LibstempoEngine should accept A1DOT->XDOT mapping built by ParameterManager."""
     from metapulsar.mockpulsar import MockParameter
     from metapulsar.parameter_manager import ParameterManager
-    from nltiming.backends.base import LinearModel
-    from nltiming.backends.engines import Tempo2DeltaEngine
-    from nltiming.backends.tempo2 import LibstempoEngine
+    from nltiming.engines.base import LinearModel
+    from nltiming.engines.engines import Tempo2DeltaEngine
+    from nltiming.engines.tempo2 import LibstempoEngine
 
     file_data = {
         "epta": {
@@ -296,7 +294,7 @@ def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
             return self._design.copy()
 
     psr = XdotPulsar()
-    model = LinearModel.from_host(
+    model = LinearModel.from_design(
         fitpars=("A1DOT", "F0"),
         design=np.array([[0.5, 0.0], [0.5, 0.1], [0.5, 0.2], [0.5, 0.3]], dtype=float),
         theta_exact={
@@ -304,11 +302,11 @@ def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
             "F0": "316.12397933185408713",
         },
     )
-    backend = LibstempoEngine.from_session(
+    engine = LibstempoEngine.from_contribution(
         psr, linear_model=model, param_mapping=param_mapping
     )
     np.testing.assert_allclose(
-        backend.residual_delta(np.zeros(2, dtype=float)), np.zeros(4)
+        engine.residual_delta(np.zeros(2, dtype=float)), np.zeros(4)
     )
 
     engine = Tempo2DeltaEngine(psr)

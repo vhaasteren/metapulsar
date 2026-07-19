@@ -1,17 +1,17 @@
-"""Tests for native nonlinear timing backend wiring."""
+"""Tests for native nonlinear timing engine wiring."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from metapulsar.metapulsar import MetaPulsar, SessionFiles
+from metapulsar.metapulsar import MetaPulsar, PtaFiles
 from metapulsar.metapulsar_factory import MetaPulsarFactory
-from nltiming.backends.base import LinearModel
-from nltiming.backends.jug import JugEngine
-from nltiming.backends.pint import PintEngine
-from nltiming.backends.tempo2 import LibstempoEngine
-from nltiming.protocols import JaxTimingBackend
+from nltiming.engines.base import LinearModel
+from nltiming.engines.jug import JugEngine
+from nltiming.engines.pint import PintEngine
+from nltiming.engines.tempo2 import LibstempoEngine
+from nltiming.protocols import JaxTimingEngine
 
 
 class _FakeJaxState:
@@ -40,33 +40,33 @@ class _FakeDeltaEngine:
 
 def _linear_model():
     design = np.array([[1.0, 0.0], [1.0, 0.5], [1.0, -0.5]], dtype=float)
-    return LinearModel.from_host(
+    return LinearModel.from_design(
         fitpars=("F0", "F1"),
         design=design,
         theta_exact={"F0": "10.0", "F1": "-1e-15"},
     )
 
 
-def test_jug_backend_is_jax_traceable():
+def test_jug_engine_is_jax_traceable():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
 
     model = _linear_model()
-    backend = JugEngine(
+    engine = JugEngine(
         state=_FakeJaxState(model.design),
         linear_model=model,
         precision_critical={"F0"},
     )
 
-    assert isinstance(backend, JaxTimingBackend)
-    assert backend.precision_critical_fitpars() == {"F0"}
-    np.testing.assert_allclose(backend.design_matrix(), model.design)
+    assert isinstance(engine, JaxTimingEngine)
+    assert engine.precision_critical_fitpars() == {"F0"}
+    np.testing.assert_allclose(engine.design_matrix(), model.design)
     np.testing.assert_allclose(
-        backend.residual_delta(np.array([0.2, -0.4])), [0.2, 0.0, 0.4]
+        engine.residual_delta(np.array([0.2, -0.4])), [0.2, 0.0, 0.4]
     )
 
     def scalar(delta):
-        return jnp.sum(backend.residual_delta_jax(delta) ** 2)
+        return jnp.sum(engine.residual_delta_jax(delta) ** 2)
 
     value = jax.jit(scalar)(jnp.array([0.2, -0.4]))
     grad = jax.grad(scalar)(jnp.array([0.2, -0.4]))
@@ -79,11 +79,11 @@ def test_native_pint_and_tempo2_wrappers_use_linear_model_metadata():
     pint = PintEngine(engine=_FakeDeltaEngine(model.design), linear_model=model)
     tempo2 = LibstempoEngine(engine=_FakeDeltaEngine(model.design), linear_model=model)
 
-    for backend in (pint, tempo2):
-        np.testing.assert_allclose(backend.design_matrix(), model.design)
-        assert backend.reference_theta_exact()["F0"] == "10.0"
+    for engine in (pint, tempo2):
+        np.testing.assert_allclose(engine.design_matrix(), model.design)
+        assert engine.reference_theta_exact()["F0"] == "10.0"
         np.testing.assert_allclose(
-            backend.residual_delta(np.array([0.2, -0.4])),
+            engine.residual_delta(np.array([0.2, -0.4])),
             np.array([0.2, 0.0, 0.4]),
         )
 
@@ -94,12 +94,12 @@ def test_factory_retains_exact_session_file_bytes(tmp_path):
     par.write_text("F0 123\n", encoding="utf-8")
     tim.write_text("FORMAT 1\n", encoding="utf-8")
 
-    retained = MetaPulsarFactory()._retain_session_files(
+    retained = MetaPulsarFactory()._retain_pta_files(
         pta_name="ng 5",
         timing_package="pint",
         par_path=par,
         tim_path=tim,
-        session_file_dir=tmp_path / "retained",
+        pta_file_dir=tmp_path / "retained",
     )
 
     assert retained["par_path"].read_text(encoding="utf-8") == "F0 123\n"
@@ -116,12 +116,12 @@ def test_factory_retains_included_tim_files(tmp_path):
     par = tmp_path / "main.par"
     par.write_text("F0 1\n", encoding="utf-8")
 
-    retained = MetaPulsarFactory()._retain_session_files(
+    retained = MetaPulsarFactory()._retain_pta_files(
         pta_name="epta",
         timing_package="tempo2",
         par_path=par,
         tim_path=main,
-        session_file_dir=tmp_path / "retained",
+        pta_file_dir=tmp_path / "retained",
     )
 
     included = tmp_path / "retained" / "tims" / "chunk.tim"
@@ -130,20 +130,20 @@ def test_factory_retains_included_tim_files(tmp_path):
     assert "INCLUDE tims/chunk.tim" in retained["tim_path"].read_text(encoding="utf-8")
 
 
-def test_jug_capability_requires_readable_session_files(monkeypatch, tmp_path):
-    host = MetaPulsar.__new__(MetaPulsar)
-    host._epulsars = {"pta": object()}
-    host._clock_dir = None
+def test_jug_capability_requires_readable_pta_files(monkeypatch, tmp_path):
+    pulsar = MetaPulsar.__new__(MetaPulsar)
+    pulsar._epulsars = {"pta": object()}
+    pulsar._clock_dir = None
     monkeypatch.setattr(MetaPulsar, "_can_import_jug", staticmethod(lambda: True))
 
-    host._session_files = {}
-    assert not host.can_use_engines("jug")
+    pulsar._pta_files = {}
+    assert not pulsar.can_use_engines("jug")
 
     par = tmp_path / "session.par"
     tim = tmp_path / "session.tim"
     par.write_text("F0 1\n", encoding="utf-8")
     tim.write_text("FORMAT 1\n", encoding="utf-8")
-    host._session_files = {
-        "pta": SessionFiles(par_path=par, tim_path=tim, timing_package="pint")
+    pulsar._pta_files = {
+        "pta": PtaFiles(par_path=par, tim_path=tim, timing_package="pint")
     }
-    assert host.can_use_engines("jug")
+    assert pulsar.can_use_engines("jug")

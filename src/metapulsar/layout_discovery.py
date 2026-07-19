@@ -27,7 +27,7 @@ DEFAULT_EXCLUDED_DIRS: Sequence[str] = (
 )
 
 
-class LayoutDiscoveryService:
+class DataReleaseLayout:
     """Heuristic-based pattern discovery for PTA data releases."""
 
     def __init__(
@@ -599,7 +599,7 @@ def discover_layout(
     Returns:
         Dictionary of data release configurations
     """
-    engine = LayoutDiscoveryService(working_dir, verbose, excluded_dirs, name=name)
+    engine = DataReleaseLayout(working_dir, verbose, excluded_dirs, name=name)
     return engine.discover_layout(working_dir, verbose, name=name)
 
 
@@ -625,7 +625,7 @@ def combine_layouts(
 
     # Add default PTA data releases if requested
     if include_defaults:
-        from .file_discovery_service import PTA_DATA_RELEASES
+        from .file_discovery import PTA_DATA_RELEASES
 
         combined.update(PTA_DATA_RELEASES)
 

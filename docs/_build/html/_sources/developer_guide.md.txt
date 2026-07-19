@@ -42,7 +42,7 @@ metapulsar/
 │   ├── __init__.py          # Package exports
 │   ├── metapulsar.py        # Core MetaPulsar class
 │   ├── metapulsar_factory.py # Factory for creating MetaPulsar objects
-│   ├── file_discovery_service.py # File discovery and PTA management
+│   ├── file_discovery.py # File discovery and PTA management
 │   ├── parameter_manager.py # Parameter consistency management
 │   ├── mockpulsar.py        # Mock data generation
 │   ├── tim_file_analyzer.py # TIM file analysis utilities

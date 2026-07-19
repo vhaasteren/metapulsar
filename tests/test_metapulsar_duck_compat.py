@@ -1,4 +1,4 @@
-"""Duck-typing compatibility checks for standalone MetaPulsar hosts."""
+"""Duck-typing compatibility checks for standalone MetaPulsar pulsars."""
 
 from pathlib import Path
 import re
@@ -11,7 +11,7 @@ from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 
 
-def _build_host():
+def _build_pulsar():
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta_a", seed=10
@@ -20,40 +20,40 @@ def _build_host():
             n_toas=30, name="J1857+0943", telescope="pta_b", seed=20
         ),
     }
-    return MetaPulsar(pulsars, combination_strategy="composite")
+    return MetaPulsar(pulsars, combination_strategy="per_pta")
 
 
-def test_enterprise_signal_factories_accept_standalone_host():
-    host = _build_host()
+def test_enterprise_signal_factories_accept_standalone_pulsar():
+    pulsar = _build_pulsar()
 
     measurement = white_signals.MeasurementNoise(efac=parameter.Constant(1.0))
     timing = gp_signals.TimingModel()
 
-    measurement_signal = measurement(host)
-    timing_signal = timing(host)
+    measurement_signal = measurement(pulsar)
+    timing_signal = timing(pulsar)
 
     assert measurement_signal is not None
     assert timing_signal is not None
 
 
-def test_enterprise_pta_assembly_accepts_standalone_host():
-    host = _build_host()
+def test_enterprise_pta_assembly_accepts_standalone_pulsar():
+    pulsar = _build_pulsar()
 
     model = (
         white_signals.MeasurementNoise(efac=parameter.Constant(1.0))
         + gp_signals.TimingModel()
     )
-    pta = signal_base.PTA([model(host)])
+    pta = signal_base.PTA([model(pulsar)])
 
     assert pta is not None
-    assert pta.pulsars == [host.name]
+    assert pta.pulsars == [pulsar.name]
 
 
-def test_discovery_signal_factories_accept_standalone_host():
-    host = _build_host()
+def test_discovery_signal_factories_accept_standalone_pulsar():
+    pulsar = _build_pulsar()
 
-    measurement = discovery_signals.makenoise_measurement(host)
-    timing = discovery_signals.makegp_timing(host)
+    measurement = discovery_signals.makenoise_measurement(pulsar)
+    timing = discovery_signals.makegp_timing(pulsar)
 
     assert measurement is not None
     assert timing is not None

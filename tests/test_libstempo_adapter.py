@@ -18,7 +18,7 @@ class TestMockLibstempoMetaPulsarIntegration:
         )
         return MetaPulsar(
             {"pta1": mock_lt1, "pta2": mock_lt2},
-            combination_strategy="composite",
+            combination_strategy="per_pta",
         )
 
     def test_construction_succeeds(self, two_pta_metapulsar):
@@ -56,7 +56,7 @@ class TestMockLibstempoMetaPulsarIntegration:
         )
         mp = MetaPulsar(
             {"pta1": mock_lt1, "pta2": mock_lt2},
-            combination_strategy="consistent",
+            combination_strategy="shared",
         )
         assert len(mp._toas) == 60
         assert mp._designmatrix.shape[1] == len(mp.fitpars)

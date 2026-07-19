@@ -1,6 +1,6 @@
 """Discovery compatibility shims for MetaPulsar examples.
 
-Host-side monkeypatches only — nothing here is part of the timing package or
+MetaPulsar-side monkeypatches only — nothing here is part of the timing package or
 its future ``nltiming`` split. Each shim should eventually become an upstream
 Discovery fix and then be deleted.
 """

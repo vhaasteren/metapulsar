@@ -431,12 +431,12 @@ class MetaParfiles(object):
     """Class to manipulate multiple parfiles for combined analysis"""
 
     _EQUATORIAL_WARNING = (
-        "Equatorial astrometry detected. PINT/tempo2 parity after T2CMETHOD "
+        "Equatorial astrometry detected. PINT/tempo2 agreement after T2CMETHOD "
         "modification is typically a few ns (about 6 ns on NG5 J1600), "
         "slightly larger than ecliptic pars with full convention alignment "
         "(about 1 ns on NG11 J1600). Reason: no explicit ECL obliquity "
-        "convention to harmonize; residual differences from ecliptic-frame "
-        "geometry entering delay terms may remain. For best parity, prefer "
+        "convention to align; residual differences from ecliptic-frame "
+        "geometry entering delay terms may remain. For best agreement, prefer "
         "ecliptic coordinates in new timing solutions."
     )
 
@@ -494,8 +494,8 @@ class MetaParfiles(object):
         if merge_dm:
             self.merge_dm()
 
-        # Harmonize protocol conventions for PINT/tempo2 parity
-        self.apply_parity_protocol()
+        # Align CLOCK/EPHEM conventions for PINT/tempo2 agreement
+        self.unify_clock_ephem()
 
         # Adjustment for PINT or Tempo2
         self.summary()
@@ -771,11 +771,13 @@ class MetaParfiles(object):
             }
         return states
 
-    def apply_parity_protocol(self):
-        """Apply gated convention harmonization in legacy conversion flow."""
+    def unify_clock_ephem(self):
+        """Apply gated CLOCK/EPHEM convention alignment in legacy conversion flow."""
         ref_pd = self._parfiles[self.ref_index]["pardict_conv"]
         if "EPHEM" not in ref_pd:
-            raise ValueError("Reference parfile is missing EPHEM for parity protocol")
+            raise ValueError(
+                "Reference parfile is missing EPHEM for convention alignment"
+            )
         ref_clock_key = None
         for key in ("CLOCK", "CLK"):
             if key in ref_pd:
@@ -783,7 +785,7 @@ class MetaParfiles(object):
                 break
         if ref_clock_key is None:
             raise ValueError(
-                "Reference parfile is missing CLOCK/CLK for parity protocol"
+                "Reference parfile is missing CLOCK/CLK for convention alignment"
             )
         ref_ephem = ref_pd["EPHEM"]
         ref_clock = ref_pd[ref_clock_key]
@@ -825,15 +827,15 @@ class MetaParfiles(object):
                     actions.append(f"removed T2CMETHOD ({old_t2c[0]})")
 
                 logger.info(
-                    f"PTA {pta}: convention harmonization applied "
-                    f"(reason=cross_engine_parity, style={style}); "
+                    f"PTA {pta}: convention alignment applied "
+                    f"(reason=cross_engine_agreement, style={style}); "
                     f"actions: {', '.join(actions)}"
                 )
             return
 
         if len(self._parfiles) == 1:
             logger.info(
-                "Convention harmonization skipped (reason=single_pta_single_engine)"
+                "Convention alignment skipped (reason=single_pta_single_engine)"
             )
             return
 
@@ -848,7 +850,7 @@ class MetaParfiles(object):
             }
             if len(ecliptic_ecl_values) <= 1:
                 logger.info(
-                    "Convention harmonization skipped (reason=homogeneous_ecl_single_engine_pint)"
+                    "Convention alignment skipped (reason=homogeneous_ecl_single_engine_pint)"
                 )
                 return
 
@@ -861,7 +863,7 @@ class MetaParfiles(object):
                 old_ecl = pd.get("ECL", ["(missing)"])[0]
                 pd["ECL"] = [target_ecl]
                 logger.info(
-                    f"PTA {pfd['pta']}: convention harmonization applied "
+                    f"PTA {pfd['pta']}: convention alignment applied "
                     f"(reason=pint_only_ecl_heterogeneous); set ECL={target_ecl} (was {old_ecl})"
                 )
             return
@@ -883,13 +885,13 @@ class MetaParfiles(object):
                     old_ecl = pd.get("ECL", ["(missing)"])[0]
                     pd["ECL"] = ["IERS2003"]
                     logger.info(
-                        f"PTA {pfd['pta']}: convention harmonization applied "
+                        f"PTA {pfd['pta']}: convention alignment applied "
                         "(reason=tempo2_only_ecl_heterogeneous); "
                         f"set ECL=IERS2003 (was {old_ecl})"
                     )
             else:
                 logger.info(
-                    "Convention harmonization skipped (reason=homogeneous_ecl_single_engine_tempo2)"
+                    "Convention alignment skipped (reason=homogeneous_ecl_single_engine_tempo2)"
                 )
 
             t2_values = {
@@ -906,7 +908,7 @@ class MetaParfiles(object):
                         pd = pfd["pardict_conv"]
                         pd["T2CMETHOD"] = ref_t2
                         logger.info(
-                            f"PTA {pfd['pta']}: convention harmonization applied "
+                            f"PTA {pfd['pta']}: convention alignment applied "
                             "(reason=tempo2_only_t2cmethod_heterogeneous); "
                             f"set T2CMETHOD={ref_t2[0]}"
                         )
@@ -917,7 +919,7 @@ class MetaParfiles(object):
             return
 
         logger.info(
-            "Convention harmonization skipped "
+            "Convention alignment skipped "
             f"(reason=unsupported_single_engine_packages:{sorted(normalized_packages)})"
         )
 

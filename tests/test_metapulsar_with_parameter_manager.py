@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from pint.models import TimingModel
 from pint.toa import TOAs
-from metapulsar.metapulsar import MetaPulsar, SessionFiles
+from metapulsar.metapulsar import MetaPulsar, PtaFiles
 from metapulsar.parameter_manager import ParameterManager
 from tests.helpers import make_tim_metadata
 
@@ -150,8 +150,8 @@ class TestMetaPulsarWithParameterManager:
 
         pulsars = {"epta_dr2": mock_t2}
         metapulsar._pulsars = pulsars
-        metapulsar._session_files = {
-            "epta_dr2": SessionFiles(
+        metapulsar._pta_files = {
+            "epta_dr2": PtaFiles(
                 par_path=Path(retained_par),
                 tim_path=Path(retained_tim),
                 timing_package="tempo2",

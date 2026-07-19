@@ -204,10 +204,10 @@ UNITS TDB
         assert "DM_EPTA" in setparameters
         assert setparameters["DM_EPTA"]["EPTA"] == "DM"
 
-    def test_add_pta_specific_parameter_host_key_differs_from_mapped_value(
+    def test_add_pta_specific_parameter_meta_key_differs_from_mapped_value(
         self, parameter_manager
     ):
-        """Host key suffix uses PINT name; mapped value uses parfile-native spelling."""
+        """Meta key suffix uses PINT name; mapped value uses parfile-native spelling."""
         setparameters = {}
 
         parameter_manager._add_pta_specific_parameter(
@@ -297,8 +297,8 @@ UNITS TDB
 
     # ===== INTEGRATION TESTS =====
 
-    def test_make_parfiles_consistent_integration(self, parameter_manager):
-        """Test full make_parfiles_consistent workflow."""
+    def test_make_parfiles_shared_integration(self, parameter_manager):
+        """Test full make_parfiles_shared workflow."""
         with patch.object(parameter_manager, "_parse_parfiles") as mock_parse:
             mock_parse.return_value = {
                 "EPTA": {
@@ -334,14 +334,14 @@ UNITS TDB
                     }
 
                     with patch.object(
-                        parameter_manager, "_write_consistent_parfiles"
+                        parameter_manager, "_write_shared_parfiles"
                     ) as mock_write:
                         mock_write.return_value = {
                             "EPTA": Path("/tmp/consistent_EPTA.par"),
                             "PPTA": Path("/tmp/consistent_PPTA.par"),
                         }
 
-                        result = parameter_manager.make_parfiles_consistent()
+                        result = parameter_manager.make_parfiles_shared()
 
                         assert len(result) == 2
                         assert "EPTA" in result
@@ -389,7 +389,7 @@ UNITS TDB
                         mock_build.assert_called_once()
 
     def test_build_parameter_mappings_uses_parfile_native_xdot(self):
-        """Binary parfiles with XDOT should map A1DOT host key to XDOT backend name."""
+        """Binary parfiles with XDOT should map A1DOT meta key to XDOT engine name."""
         file_data = {
             "epta": {
                 "timing_package": "tempo2",

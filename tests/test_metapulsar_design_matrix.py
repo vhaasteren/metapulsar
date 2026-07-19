@@ -20,8 +20,8 @@ class TestMetaPulsarDesignMatrix:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.composite_mp = MetaPulsar(self.pulsars, combination_strategy="composite")
-        self.consistent_mp = MetaPulsar(self.pulsars, combination_strategy="consistent")
+        self.composite_mp = MetaPulsar(self.pulsars, combination_strategy="per_pta")
+        self.consistent_mp = MetaPulsar(self.pulsars, combination_strategy="shared")
 
     def test_design_matrix_creation(self):
         """Test that design matrix is created correctly for both strategies."""
@@ -133,7 +133,7 @@ class TestMetaPulsarDesignMatrix:
         """Test design matrix with empty pulsar list."""
         # Empty pulsars should raise an exception
         with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_timing_package_detection(self):
         """Test timing package detection fallback for unknown object types."""
