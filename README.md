@@ -134,6 +134,14 @@ model = sampling.numpyro.model(likelihood, ctx, fixed=noisedict)
 mcmc = sampling.numpyro.nuts(model, ctx)
 ```
 
+nltiming exposes three model builders on the same `TimingPulsar`:
+`sampling.numpyro.model` (static whitening, shown above),
+`sampling.numpyro.joint_model` (full-basis dynamic transport, `whitening=None`),
+and `sampling.numpyro.decentered_model` (marginalized dynamic decentering — the
+small sampled timing block whitened against the live `C(η)`, `whitening=None`).
+See the nltiming README and `examples/notebooks/03_j1640_decentering_validation.ipynb`
+(the three-mode comparison) for choosing among them.
+
 Install timing extras with `pip install "metapulsar[timing]"`.
 The JUG extra currently requires Python 3.12. The package base and nltiming
 require Python 3.11 or newer.
