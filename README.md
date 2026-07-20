@@ -113,12 +113,14 @@ same pulsar:
 
 ```python
 import discovery as ds
-from nltiming import NonLinearTimingModel, sampling
+from nltiming import NonLinearTimingModel, TimingInference, WhiteningConfig, sampling
 
+# Name marginalized axes via TimingInference; whitening= selects the static layer.
+# whitening=None is required for sampling.numpyro.joint_model (dynamic full-basis).
 ntm = NonLinearTimingModel(
     engines="jug",
-    sample=["PB", "TASC", "A1"],
-    transform="whitening",
+    inference=TimingInference.groups(delta_flat=["DM", "DM1"]),
+    whitening=WhiteningConfig(),
 )
 ctx = ntm.for_pulsar(mp)
 
@@ -136,8 +138,11 @@ Install timing extras with `pip install "metapulsar[timing]"`.
 The JUG extra currently requires Python 3.12. The package base and nltiming
 require Python 3.11 or newer.
 
-The distributed end-to-end walkthrough is
-[`examples/notebooks/nonlinear_timing.ipynb`](examples/notebooks/nonlinear_timing.ipynb).
+Introductory notebooks and the coordinate/geometry guide live in the
+`nltiming` package (`ref-packages/nltiming/examples/notebooks/` and that
+package’s README when using the MetaPulsar devcontainer checkout). MetaPulsar
+is still required today as the `TimingPulsar` implementation those notebooks
+bind to.
 
 ## Documentation
 
