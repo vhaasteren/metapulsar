@@ -189,8 +189,14 @@ def test_m1_decentered_marginal_identity(decentered_setup):
     GLS centering ``mu(eta)`` is small (|mu| ~ 0.05) and NGC6440E stays in its
     linear regime, so the linear-Gaussian surrogate is the exact marginal and the
     identity is constant. At much larger amplitudes ``mu`` grows and the exact
-    engine phase-wrap nonlinearity departs from the linear surrogate by design
-    (that departure is real physics the certifier reports, not a model defect)."""
+    engine phase-wrap nonlinearity departs from the linear surrogate BY DESIGN
+    (real physics the certifier reports, not a model defect). Whether the timing
+    signal ever approaches the pulse period is a pulsar-population fact (rare for
+    MSPs, possible for ordinary / gamma-ray / spider pulsars); staying on-wrap is
+    the user's job via pulse-number tracking (``use_pulse_numbers`` in
+    PINT/tempo2/JUG, exposed by MetaPulsar), not something this mode fixes. The
+    ``|mu|`` guard below fails loudly if a fixture change silently re-enters the
+    nonlinear band while still passing the identity."""
     model = decentered_setup["model_d"]
     gamma_key = f"{decentered_setup['mp'].name}_rednoise_gamma"
     amp_key = f"{decentered_setup['mp'].name}_rednoise_log10_A"
@@ -202,6 +208,10 @@ def test_m1_decentered_marginal_identity(decentered_setup):
     diffs = []
     for log10a in (-14.5, -14.25, -14.0):
         eta = {gamma_key: GAMMA, amp_key: log10a}
+        # The GLS centering must stay in the linear band for the linear-Gaussian
+        # surrogate to be the exact marginal (see docstring / pulse-number note).
+        mu, _ = model.transport.apply(eta, xi0)
+        assert float(np.linalg.norm(np.asarray(mu))) < 0.1, (log10a, mu)
         lp, _ = log_density(model, (), {}, {model.xi_site: xi0, **eta})
         diffs.append(float(lp) - ln_p_marg(eta))
 
@@ -221,7 +231,13 @@ def test_m2_cross_mode_consistency(decentered_setup):
     matched to a tight 30% against the well-mixed 4-dim decentered chain (the
     F1-vs-low-frequency-red-noise degeneracy mixes slowly in the joint frame).
     The decentered target density's exactness is pinned independently and to
-    machine precision by the linear-duck identity T-N1, not by this MC gate."""
+    machine precision by the linear-duck identity T-N1, not by this MC gate.
+
+    The two chains are intentionally NOT symmetrically configured: the decentered
+    chain inits at ``decentered_init_values`` + hypers and caps ``max_tree_depth``
+    at the small-k_s default (7), while the joint chain uses the default recipe.
+    Symmetrizing them would not rescue the joint chain's mixing and is not the
+    point of a cross-mode physics-consistency gate."""
     ctx_d, model_d = decentered_setup["ctx_d"], decentered_setup["model_d"]
     ctx_j, model_j = decentered_setup["ctx_j"], decentered_setup["model_j"]
     hyper = decentered_setup["hyper"]
