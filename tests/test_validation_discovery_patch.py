@@ -25,11 +25,16 @@ def validation_path():
     yield
 
 
-def test_import_validation_patches_make_uind():
+def test_discovery_compat_patches_make_uind():
+    # The make_uind patch lives in the distributed metapulsar.discovery_compat
+    # module (what the paper `validation` package applies on import). Test it
+    # directly, decoupled from that non-distributed prototype package.
     import discovery.matrix as ds_matrix
 
+    from metapulsar.discovery_compat import apply_discovery_compat_patches
+
     original = ds_matrix.make_uind
-    import validation  # noqa: F401
+    apply_discovery_compat_patches()
 
     assert ds_matrix.make_uind is not original
 
@@ -42,7 +47,9 @@ def test_import_validation_patches_make_uind():
 def test_make_uind_empty_columns():
     import discovery.matrix as ds_matrix
 
-    import validation  # noqa: F401
+    from metapulsar.discovery_compat import apply_discovery_compat_patches
+
+    apply_discovery_compat_patches()
 
     u = np.zeros((5, 0), dtype=int)
     uind = ds_matrix.make_uind(u)
