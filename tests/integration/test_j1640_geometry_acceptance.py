@@ -125,7 +125,7 @@ def test_j1640_no_sampling_acceptance(tmp_path, capsys):
     # Unresolved proper-prior identically-linear axes default to affine_normal.
     for name in ctx.identically_linear:
         if name in summary and name not in ctx.nonaffine_identically_linear:
-            assert summary[name]["chart"] == "affine_normal", name
+            assert summary[name]["prior_chart"] == "affine_normal", name
 
     # --- 5. delta-flat vs z-prior plans for the same subset are distinct -------
     subset = [p for p in ("F0", "F1") if p in mp.fitpars]
