@@ -71,6 +71,7 @@ Issues = "https://github.com/vhaasteren/metapulsar/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["metapulsar*", "pylk*"]
 
 [tool.setuptools.package-dir]
 "" = "src"
@@ -129,6 +130,7 @@ addopts = [
     "--ignore=legacy",
     "--ignore=data/ipta-dr2",
     "--ignore=examples",
+    "--ignore=paper",
     "--disable-warnings",
 ]
 filterwarnings = [
