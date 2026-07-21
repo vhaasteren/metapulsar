@@ -1,5 +1,5 @@
-"""M-E3 integration: Enterprise/PTMCMC parity for marginalized dynamic
-decentering (feature_enterprise_dynamic_parity.md §10.2).
+"""MetaPulsar integration (PR-E3): Enterprise/PTMCMC parity for marginalized
+dynamic decentering (feature_enterprise_dynamic_parity.md §10.2).
 
 T-EM1 (cross-frontend posterior consistency): a short PTMCMC run over the
 Enterprise decentered target vs a short Discovery ``decentered_model`` NUTS run
@@ -51,6 +51,7 @@ from nltiming.likelihoods.enterprise import enterprise_marginal_products  # noqa
 from nltiming.metric import _column_digest, dynamic_transport_record  # noqa: E402
 from nltiming.run_io import (  # noqa: E402
     DYNAMIC_FINAL_NAME,
+    attach_decentered_reconstruction,
     build_run_manifest,
     decentered_reconstruction_recipe,
     load_run,
@@ -278,35 +279,34 @@ def test_em2_record_integrity(enterprise_setup, tmp_path):
         checkpoint={"kind": "npz", "path": DYNAMIC_FINAL_NAME},
     )
     recipe = decentered_reconstruction_recipe(ctx, hyper_names, noisedict=nd)
-    manifest.transport["reconstruction"] = recipe
-    # The transport section is content-digest-verified on load, so recompute its
-    # digest after attaching the recipe (E26).
-    from nltiming.run_io import _section_digest
-
-    manifest.transport["digest"] = _section_digest(
-        {k: v for k, v in manifest.transport.items() if k != "digest"}
-    )
+    # Public path: attach + refresh the content digest (no private helper).
+    attach_decentered_reconstruction(manifest, recipe)
     manifest.write(tmp_path)
     save_ptmcmc_decentered_checkpoint(
         tmp_path, chain, ctx, transport, manifest, hyper_names=hyper_names, final=True
     )
 
+    # Assert against the LOADED run products, not the in-memory manifest.
     run = load_run(tmp_path)
     assert run.latent_decodable is False
-    assert manifest.chain_layout["kind"] == "ptmcmc-decentered"
-    assert manifest.chain_layout["hyper_names"] == list(hyper_names)
+    loaded_layout = run.run_meta["run_products"]["chain_layout"]
+    assert loaded_layout["kind"] == "ptmcmc-decentered"
+    assert loaded_layout["hyper_names"] == list(hyper_names)
 
-    # E26 reconstruction recipe digests bind to the context / linearization.
+    # E26 reconstruction recipe survives the round-trip and its digests bind to
+    # the context / linearization.
     y_t = np.asarray(
         lin.transport_effective_residual(np.asarray(ctx.pulsar.residuals)), dtype=float
     )
-    assert recipe["context_digest"] == ctx.fingerprint()
-    assert recipe["linearization_fingerprint"] == lin.fingerprint()
-    assert recipe["sampled_basis_digest"] == _column_digest(
+    loaded_recipe = run.run_meta["sections"]["transport"]["reconstruction"]
+    assert loaded_recipe["context_digest"] == ctx.fingerprint()
+    assert loaded_recipe["linearization_fingerprint"] == lin.fingerprint()
+    assert loaded_recipe["sampled_basis_digest"] == _column_digest(
         np.asarray(lin.sampled_basis, dtype=float)
     )
-    assert recipe["effective_residual_digest"] == _column_digest(y_t)
-    assert recipe["hyper_names"] == list(hyper_names)
+    assert loaded_recipe["effective_residual_digest"] == _column_digest(y_t)
+    assert loaded_recipe["hyper_names"] == list(hyper_names)
+    assert loaded_recipe["builder"].endswith("enterprise_marginal_products")
 
     # A Discovery-side geometry report for the same context matches the context
     # fingerprint (E17/§8): one context, one certification surface.
