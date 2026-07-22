@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple, Any
 from pathlib import Path
 import shutil
 import tempfile
+import warnings
 from loguru import logger
 
 # Import Enterprise Pulsar classes
@@ -38,6 +39,25 @@ from .pint_helpers import (
     resolved_tim_for_pulse_numbers,
     temporary_par_with_track_minus_2,
     validate_pulse_number_mode,
+)
+
+
+def _par_content_has_dmx(par_content: str) -> bool:
+    """Return True if a tempo2/PINT par string declares a DMX model."""
+    for line in par_content.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.upper().startswith("C "):
+            continue
+        key = s.split()[0].upper()
+        if key == "DMX" or key.startswith("DMX"):
+            return True
+    return False
+
+
+_SINGLE_PTA_SHARED_DMX_WARNING = (
+    "combination_strategy='shared' on a single-PTA MetaPulsar strips DMX from "
+    "the timing model (dispersion sharing replaces DMX with DM/DM1/DM2). "
+    "Single-PTA psrs that require DMX: use combination_strategy='per_pta'."
 )
 
 
@@ -159,6 +179,33 @@ class MetaPulsarFactory:
 
         return validated_file_data
 
+    def _warn_single_pta_shared_dmx_strip(
+        self,
+        single_file_data: Dict[str, Dict[str, Any]],
+        combine_components: List[str],
+    ) -> None:
+        """Warn when shared strategy will strip DMX from a single-PTA pulsar."""
+        if len(single_file_data) != 1:
+            return
+        if "dispersion" not in combine_components:
+            return
+        file_info = next(iter(single_file_data.values()))
+        par_content = file_info.get("par_content")
+        if not par_content:
+            par_path = file_info.get("par")
+            if par_path is None:
+                return
+            try:
+                par_content = Path(par_path).read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+            except OSError:
+                return
+        if not _par_content_has_dmx(par_content):
+            return
+        warnings.warn(_SINGLE_PTA_SHARED_DMX_WARNING, UserWarning, stacklevel=3)
+        self.logger.warning(_SINGLE_PTA_SHARED_DMX_WARNING)
+
     def _ensure_tim_metadata(
         self, file_data: Dict[str, List[Dict[str, Any]]]
     ) -> Dict[str, List[Dict[str, Any]]]:
@@ -271,6 +318,7 @@ class MetaPulsarFactory:
 
         # Process par files based on strategy
         if combination_strategy == "shared":
+            self._warn_single_pta_shared_dmx_strip(single_file_data, combine_components)
             # Create ParameterManager for parfile consistency
             parameter_manager = ParameterManager(
                 file_data=single_file_data,

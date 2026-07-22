@@ -1,9 +1,14 @@
 """Tests for Meta-Pulsar Factory."""
 
 import pytest
+import warnings
 from pathlib import Path
 from unittest.mock import Mock, patch
-from metapulsar.metapulsar_factory import MetaPulsarFactory
+from metapulsar.metapulsar_factory import (
+    MetaPulsarFactory,
+    _par_content_has_dmx,
+    _SINGLE_PTA_SHARED_DMX_WARNING,
+)
 from metapulsar.file_discovery import FileDiscovery
 from tests.helpers import make_tim_metadata
 
@@ -864,3 +869,89 @@ class TestPtaSummary:
         captured = capsys.readouterr().out
         assert "150 TOAs" in captured
         assert "pn=mixed (100/150)" in captured
+
+
+class TestSinglePtaSharedDmxWarning:
+    """Warn when shared strategy would strip DMX from a single-PTA pulsar."""
+
+    def test_par_content_has_dmx(self):
+        assert _par_content_has_dmx("PSR J1640+2224\nDMX_0001 0.01 1\n")
+        assert _par_content_has_dmx("DMX 12\n")
+        assert not _par_content_has_dmx("PSR J1640+2224\nDM 18.4 1\n")
+
+    def test_warns_for_single_pta_shared_with_dmx(self):
+        factory = MetaPulsarFactory()
+        single = {
+            "ng12": {
+                "par": Path("/tmp/fake.par"),
+                "par_content": "PSR J1640+2224\nDMX_0001 0.01 1\nDM 18.4 1\n",
+            }
+        }
+        with pytest.warns(UserWarning, match="strips DMX"):
+            factory._warn_single_pta_shared_dmx_strip(
+                single, combine_components=["astrometry", "dispersion"]
+            )
+
+    def test_no_warn_for_multi_pta_or_per_pta_path(self):
+        factory = MetaPulsarFactory()
+        multi = {
+            "a": {"par_content": "DMX_0001 0.01 1\n"},
+            "b": {"par_content": "DMX_0001 0.02 1\n"},
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            factory._warn_single_pta_shared_dmx_strip(
+                multi, combine_components=["dispersion"]
+            )
+            factory._warn_single_pta_shared_dmx_strip(
+                {"a": {"par_content": "DMX_0001 0.01 1\n"}},
+                combine_components=["astrometry"],  # no dispersion → no strip
+            )
+            factory._warn_single_pta_shared_dmx_strip(
+                {"a": {"par_content": "DM 18.4 1\n"}},
+                combine_components=["dispersion"],
+            )
+        assert not any(_SINGLE_PTA_SHARED_DMX_WARNING in str(w.message) for w in caught)
+
+    @patch("metapulsar.metapulsar_factory.ParameterManager")
+    def test_create_metapulsar_shared_single_pta_dmx_emits_warning(
+        self, mock_param_manager
+    ):
+        factory = MetaPulsarFactory()
+        mock_manager = Mock()
+        mock_manager.make_parfiles_shared.return_value = {
+            "ng12": Path("/tmp/shared_ng12.par")
+        }
+        mock_param_manager.return_value = mock_manager
+
+        file_data = {
+            "ng12": [
+                {
+                    "par": Path("/tmp/J1640.par"),
+                    "tim": Path("/tmp/J1640.tim"),
+                    "timing_package": "tempo2",
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                    "par_content": "PSR J1640+2224\nDMX_0001 0.01 1\nRAJ 16:00\nDECJ 22:00\n",
+                }
+            ]
+        }
+        with (
+            patch.object(factory, "_ensure_parfile_content", return_value=file_data),
+            patch.object(factory, "_ensure_tim_metadata", return_value=file_data),
+            patch.object(factory, "_validate_single_pulsar_data"),
+            patch(
+                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+                return_value={"J1640+2224": {"ng12": file_data["ng12"]}},
+            ),
+            patch.object(
+                factory, "_create_pulsar_objects", return_value={"ng12": Mock()}
+            ),
+            patch("metapulsar.metapulsar_factory.MetaPulsar") as mock_mp,
+        ):
+            mock_mp.return_value = Mock()
+            with pytest.warns(UserWarning, match="strips DMX"):
+                factory.create_metapulsar(
+                    file_data,
+                    combination_strategy="shared",
+                    combine_components=["dispersion"],
+                )
