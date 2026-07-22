@@ -5,6 +5,7 @@ Tests the unified parameter and par file management functionality
 for multi-PTA pulsar data.
 """
 
+import logging
 import pytest
 import tempfile
 from pathlib import Path
@@ -840,3 +841,184 @@ UNITS TDB
             parameter_manager._apply_consistent_convention_rules(
                 parfile_dicts, reference_dict
             )
+
+    def test_parse_ne_sw_value_present_and_absent(self):
+        """Parse explicit NE_SW from parfile dict or return None when absent."""
+        parameter_manager = ParameterManager(
+            file_data={"EPTA": {"timing_package": "pint", "par_content": ""}},
+            combine_components=[],
+        )
+        assert parameter_manager._parse_ne_sw_value({"NE_SW": ["4 0"]}) == 4.0
+        assert parameter_manager._parse_ne_sw_value({}) is None
+
+    def test_resolve_consistent_ne_sw_reference_explicit(self):
+        """Reference explicit NE_SW takes precedence over tempo2 fallback."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "tempo2", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        reference = {"NE_SW": ["0 0"]}
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw(reference, packages) == 0.0
+
+    def test_resolve_consistent_ne_sw_tempo2_fallback(self):
+        """Missing reference NE_SW with tempo2 PTA resolves to 4.0 cm^-3."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "tempo2", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw({}, packages) == 4.0
+
+    def test_resolve_consistent_ne_sw_pint_only_skip(self):
+        """PINT-only stack with no reference NE_SW leaves alignment unresolved."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "pint", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw({}, packages) is None
+
+    def test_align_ne_sw_cross_engine_missing(self):
+        """Cross-engine stack without NE_SW lines gets tempo2 fallback on all PTAs."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["4 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    def test_align_ne_sw_tempo2_only_single_pta_missing(self):
+        """Single tempo2 PTA without NE_SW gets explicit tempo2 default."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    def test_align_ne_sw_pint_only_multi_pta_missing(self):
+        """PINT-only multi-PTA stack leaves NE_SW absent when reference omits it."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert "NE_SW" not in parfile_dicts["EPTA"]
+        assert "NE_SW" not in parfile_dicts["PPTA"]
+
+    def test_align_ne_sw_reference_explicit_zero(self, caplog):
+        """Reference NE_SW 0 overwrites conflicting explicit values with warning."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nNE_SW 0 0\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nNE_SW 4 0\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        with caplog.at_level(logging.WARNING):
+            parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["0 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["0 0"]
+        assert any(
+            "overwriting NE_SW 4 with consistent value 0" in record.message
+            for record in caplog.records
+        )
+
+    def test_align_ne_sw_reference_explicit_four(self):
+        """Reference explicit NE_SW 4 is written on all PTAs including absent targets."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nNE_SW 4 0\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["4 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    @patch.object(ParameterManager, "_apply_consistent_convention_rules")
+    def test_make_parameters_consistent_aligns_ne_sw_cross_engine(self, _mock_conv):
+        """_make_parameters_consistent aligns NE_SW before convention rules."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+                    "F1 -6.2e-16\nUNITS TDB\n"
+                ),
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+                    "F1 -6.2e-16\nUNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            combine_components=[],
+        )
+        parfile_data = {pta: data["par_content"] for pta, data in file_data.items()}
+
+        result = parameter_manager._make_parameters_consistent(parfile_data)
+
+        assert "NE_SW" in result["NG"] and "4" in result["NG"]
+        assert "NE_SW" in result["EPTA"] and "4" in result["EPTA"]
