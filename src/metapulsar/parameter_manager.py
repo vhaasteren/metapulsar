@@ -19,11 +19,13 @@ from pint.models.timing_model import TimingModel
 
 from .pint_helpers import (
     resolve_parameter_alias,
+    get_aliases_for_parameter,
     create_pint_model,
     get_parameters_by_type_from_models,
     check_component_available_in_model,
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
+    dedupe_nonrepeatable_par_lines,
     parse_parameter_using_pint,
     detect_astrometry_style,
 )
@@ -372,12 +374,17 @@ class ParameterManager:
         return parts[0].upper()
 
     def _parse_ne_sw_value(self, parfile_dict: Dict[str, List[str]]) -> Optional[float]:
-        """Return explicit NE_SW (cm^-3) from a parfile dict, or None if absent."""
-        raw = parfile_dict.get("NE_SW")
-        if not raw:
-            return None
-        value, _frozen = parse_parameter_using_pint("NE_SW", raw)
-        return float(value)
+        """Return explicit NE_SW (cm^-3) from a parfile dict, or None if absent.
+
+        Alias-aware: NANOGrav-style par files spell it SOLARN0 (PINT aliases:
+        NE1AU, SOLARN0), which must count as an explicit value.
+        """
+        for alias in get_aliases_for_parameter("NE_SW"):
+            raw = parfile_dict.get(alias)
+            if raw:
+                value, _frozen = parse_parameter_using_pint(alias, raw)
+                return float(value)
+        return None
 
     def _resolve_consistent_ne_sw(
         self,
@@ -407,6 +414,15 @@ class ParameterManager:
         line = [f"{consistent_ne_sw:g} 0"]
         for pta_name, parfile_dict in parfile_dicts.items():
             old = self._parse_ne_sw_value(parfile_dict)
+            # Drop every alias spelling before writing the canonical line, so a
+            # SOLARN0 line can never coexist with the injected NE_SW (PINT maps
+            # both to NE_SW and rejects the pair as a repeated parameter).
+            for alias in get_aliases_for_parameter("NE_SW"):
+                if alias != "NE_SW" and alias in parfile_dict:
+                    parfile_dict.pop(alias)
+                    self.logger.info(
+                        f"PTA {pta_name}: replaced {alias} with canonical NE_SW"
+                    )
             if old is not None and abs(old - consistent_ne_sw) > 1e-9:
                 self.logger.warning(
                     f"PTA {pta_name}: overwriting NE_SW {old:g} with consistent "
@@ -1083,7 +1099,10 @@ class ParameterManager:
                     output_file.seek(0)
                     converted_content = output_file.read()
 
-                    return converted_content
+                    # Old tempo2 builds (pre-bf00f36) write NE_SW twice in
+                    # transform output; PINT rejects duplicated non-repeatable
+                    # parameters, so sanitize at this ingestion boundary.
+                    return dedupe_nonrepeatable_par_lines(converted_content)
 
                 except subprocess.CalledProcessError as e:
                     raise RuntimeError(f"Tempo2 conversion failed: {e.stderr}") from e
