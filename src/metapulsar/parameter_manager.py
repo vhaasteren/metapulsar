@@ -7,6 +7,8 @@ This module consolidates all parameter management functionality:
 - Working with both PINT and Tempo2 PTAs
 """
 
+from __future__ import annotations
+
 import tempfile
 import subprocess
 from pathlib import Path

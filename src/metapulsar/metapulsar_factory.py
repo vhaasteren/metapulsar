@@ -4,6 +4,8 @@ This module provides a factory class that creates MetaPulsars by discovering fil
 creating Enterprise Pulsars, and wrapping them with metadata.
 """
 
+from __future__ import annotations
+
 from typing import Dict, List, Tuple, Any
 from pathlib import Path
 from loguru import logger

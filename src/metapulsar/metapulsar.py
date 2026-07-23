@@ -1,5 +1,7 @@
 """Main MetaPulsar class for combining multi-PTA pulsar timing data."""
 
+from __future__ import annotations
+
 from itertools import groupby
 from typing import List
 import numpy as np
