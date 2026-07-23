@@ -364,6 +364,32 @@ class TestStaggeredSelection:
         for key in expected:
             np.testing.assert_array_equal(result[key], expected[key])
 
+    def test_staggered_partial_primary_uses_fallback_per_toa(self):
+        """Test per-TOA fallback when primary flag exists but is empty on some TOAs."""
+        sel_func = create_staggered_selection("efeq", {("group", "f"): None})
+
+        flags = {
+            "group": np.array(["EPTA_BE", "", ""]),
+            "f": np.array(["", "NG_BE", "PPTA_BE"]),
+        }
+        freqs = np.array([100.0, 200.0, 300.0])
+
+        result = sel_func(flags, freqs)
+        expected = {
+            "efeq_EPTA_BE": np.array([True, False, False]),
+            "efeq_NG_BE": np.array([False, True, False]),
+            "efeq_PPTA_BE": np.array([False, False, True]),
+        }
+
+        assert set(result.keys()) == set(expected.keys())
+        for key in expected:
+            np.testing.assert_array_equal(result[key], expected[key])
+
+        combined = np.zeros(len(freqs), dtype=bool)
+        for mask in result.values():
+            combined |= mask
+        np.testing.assert_array_equal(combined, np.ones(len(freqs), dtype=bool))
+
     def test_staggered_no_flags_available(self):
         """Test staggered selection when no flags are available"""
         sel_func = create_staggered_selection("ecorr", {("missing1", "missing2"): None})

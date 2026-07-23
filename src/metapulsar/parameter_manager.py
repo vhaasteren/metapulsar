@@ -21,11 +21,13 @@ from pint.models.timing_model import TimingModel
 
 from .pint_helpers import (
     resolve_parameter_alias,
+    get_aliases_for_parameter,
     create_pint_model,
     get_parameters_by_type_from_models,
     check_component_available_in_model,
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
+    dedupe_nonrepeatable_par_lines,
     parse_parameter_using_pint,
     detect_astrometry_style,
 )
@@ -396,6 +398,67 @@ class ParameterManager:
             return None
         return parts[0].upper()
 
+    def _parse_ne_sw_value(self, parfile_dict: Dict[str, List[str]]) -> Optional[float]:
+        """Return explicit NE_SW (cm^-3) from a parfile dict, or None if absent.
+
+        Alias-aware: NANOGrav-style par files spell it SOLARN0 (PINT aliases:
+        NE1AU, SOLARN0), which must count as an explicit value.
+        """
+        for alias in get_aliases_for_parameter("NE_SW"):
+            raw = parfile_dict.get(alias)
+            if raw:
+                value, _frozen = parse_parameter_using_pint(alias, raw)
+                return float(value)
+        return None
+
+    def _resolve_consistent_ne_sw(
+        self,
+        reference_dict: Dict[str, List[str]],
+        normalized_packages: Set[str],
+    ) -> Optional[float]:
+        """Resolve the consistent NE_SW density (cm^-3) for this pulsar stack."""
+        explicit = self._parse_ne_sw_value(reference_dict)
+        if explicit is not None:
+            return explicit
+        if "tempo2" in normalized_packages:
+            return 4.0
+        return None
+
+    def _align_ne_sw_convention(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+    ) -> None:
+        """Align explicit NE_SW across PTAs to resolve tempo2/PINT default mismatch."""
+        normalized = self._normalized_timing_packages()
+        consistent_ne_sw = self._resolve_consistent_ne_sw(reference_dict, normalized)
+        if consistent_ne_sw is None:
+            self.logger.info("NE_SW alignment skipped (reason=pint_only_implicit_zero)")
+            return
+
+        line = [f"{consistent_ne_sw:g} 0"]
+        for pta_name, parfile_dict in parfile_dicts.items():
+            old = self._parse_ne_sw_value(parfile_dict)
+            # Drop every alias spelling before writing the canonical line, so a
+            # SOLARN0 line can never coexist with the injected NE_SW (PINT maps
+            # both to NE_SW and rejects the pair as a repeated parameter).
+            for alias in get_aliases_for_parameter("NE_SW"):
+                if alias != "NE_SW" and alias in parfile_dict:
+                    parfile_dict.pop(alias)
+                    self.logger.info(
+                        f"PTA {pta_name}: replaced {alias} with canonical NE_SW"
+                    )
+            if old is not None and abs(old - consistent_ne_sw) > 1e-9:
+                self.logger.warning(
+                    f"PTA {pta_name}: overwriting NE_SW {old:g} with consistent "
+                    f"value {consistent_ne_sw:g} from reference/resolution policy"
+                )
+            elif old is None:
+                self.logger.info(
+                    f"PTA {pta_name}: NE_SW aligned to {consistent_ne_sw:g} (was absent)"
+                )
+            parfile_dict["NE_SW"] = line
+
     def _collect_convention_states(
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> Dict[str, Dict[str, Optional[str]]]:
@@ -613,6 +676,7 @@ class ParameterManager:
           reference PTA
         - For dispersion, remove DMX parameters
         - Optionally, add DM1 and DM2 parameters
+        - Align explicit NE_SW when required for tempo2/PINT parity
         - Always align CLOCK and EPHEM parameters
         - Convert back to par file strings
         - Write consistent par files to output directory
@@ -681,6 +745,8 @@ class ParameterManager:
                     self.add_dm_derivatives,
                     dmx_params_map,
                 )
+
+        self._align_ne_sw_convention(parfile_dicts, reference_dict)
 
         # Apply reference and engine-specific conventions after component updates.
         try:
@@ -1054,7 +1120,10 @@ class ParameterManager:
                     output_file.seek(0)
                     converted_content = output_file.read()
 
-                    return converted_content
+                    # Old tempo2 builds (pre-bf00f36) write NE_SW twice in
+                    # transform output; PINT rejects duplicated non-repeatable
+                    # parameters, so sanitize at this ingestion boundary.
+                    return dedupe_nonrepeatable_par_lines(converted_content)
 
                 except subprocess.CalledProcessError as e:
                     raise RuntimeError(f"Tempo2 conversion failed: {e.stderr}") from e

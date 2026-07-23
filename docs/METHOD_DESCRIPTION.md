@@ -120,6 +120,17 @@ regression narrative.
 | Multi PTA, PINT + tempo2 | Remove/neutralize | Force `IERS2003` |
 | Equatorial + cross-engine | Remove + warning | Strip `ECL` |
 
+#### Solar-wind convention (`NE_SW`)
+
+Tempo2 applies an implicit `NE_SW = 4` cm⁻³ when the line is absent; PINT applies none.
+During consistent parfile rewriting MetaPulsar aligns an explicit frozen `NE_SW` line when:
+
+1. the reference par has explicit `NE_SW` (that value is used on all PTAs), or
+2. any PTA uses tempo2 (`NE_SW 4 0` on all PTAs).
+
+For PINT-only stacks with no reference `NE_SW`, no line is added (PINT effective zero).
+Conflicting explicit values on non-reference PTAs are overwritten with a warning.
+
 ### Step 4: Build Enterprise pulsars and validate identity
 
 For each PTA MetaPulsar builds an Enterprise pulsar object:
@@ -217,6 +228,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Unit conversions:** `ParameterManager._convert_units_if_needed`, `_convert_pint_to_tdb`, `_convert_tempo2_to_tdb`.
 * **Component merge:** `_make_component_parameters_consistent`, `_handle_dm_special_cases`.
 * **Consistent convention rules:** `ParameterManager._apply_consistent_convention_rules` (called at the end of `_make_parameters_consistent`). Astrometry style detection: `detect_astrometry_style` in `pint_helpers.py`.
+* **NE_SW convention alignment:** `ParameterManager._align_ne_sw_convention`
 * **Component discovery/aliasing:** `get_parameters_by_type_from_models`, `resolve_parameter_alias`, `check_component_available_in_model`.
 * **Detector‑specific timing‑model parameters remain local:** anything not in the consistent component set becomes PTA‑suffixed in `_add_pta_specific_parameter`.
 * **Phase offset exposure:** if `PHOFF` is absent MetaPulsar defines a meta‑parameter mapped to the canonical “Offset” column so that per‑dataset constant phase terms are explicit.
