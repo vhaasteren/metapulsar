@@ -736,3 +736,64 @@ class TestTemporaryPnTimFromParTimTempo2:
         assert captured_cmd[0] == "tempo2"
         assert "-nofit" in captured_cmd
         assert captured_cmd.index("-nofit") < captured_cmd.index("-f")
+
+
+class TestDedupeNonrepeatableParLines:
+    """Tests for dedupe_nonrepeatable_par_lines (old-tempo2 double-write guard)."""
+
+    def test_equal_duplicates_keep_first(self):
+        """Old-tempo2 signature: NE_SW written twice with equal values."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "PSR J1857+0943\nNE_SW 4\nUNITS TDB\nNE_SW 4.000\n"
+        result = dedupe_nonrepeatable_par_lines(par)
+
+        ne_sw_lines = [line for line in result.splitlines() if line.startswith("NE_SW")]
+        assert ne_sw_lines == ["NE_SW 4"]
+        assert "UNITS TDB" in result
+
+    def test_alias_duplicates_collapse(self):
+        """NE_SW + SOLARN0 with equal values collapse to the first spelling."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "NE_SW 4\nSOLARN0 4.000\n"
+        result = dedupe_nonrepeatable_par_lines(par)
+        assert result == "NE_SW 4\n"
+
+    def test_conflicting_duplicates_raise(self):
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "NE_SW 4\nNE_SW 7.000\n"
+        with pytest.raises(ValueError, match="NE_SW"):
+            dedupe_nonrepeatable_par_lines(par)
+
+    def test_repeatable_and_unknown_lines_untouched(self):
+        """JUMP lines (repeatable) and non-PINT lines must pass through."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = (
+            "JUMP -sys EFF.EBPP.1360 0 1\n"
+            "JUMP -sys EFF.EBPP.1410 0 1\n"
+            "TNRedAmp -13.5\n"
+            "SOMETHING_UNKNOWN 1\n"
+            "SOMETHING_UNKNOWN 2\n"
+        )
+        assert dedupe_nonrepeatable_par_lines(par) == par
+
+    def test_sanitized_content_builds_pint_model(self):
+        """Round-trip: duplicated NE_SW par builds a PINT model after dedupe."""
+        from metapulsar.pint_helpers import (
+            create_pint_model,
+            dedupe_nonrepeatable_par_lines,
+        )
+
+        par = (
+            "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+            "RAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\n"
+            "NE_SW 4\nUNITS TDB\nNE_SW 4.000\n"
+        )
+        with pytest.raises(Exception):
+            create_pint_model(par)  # unsanitized content is rejected by PINT
+
+        model = create_pint_model(dedupe_nonrepeatable_par_lines(par))
+        assert float(model.NE_SW.value) == pytest.approx(4.0)
