@@ -1,5 +1,8 @@
 """Unit tests for PINT helper functions."""
 
+import re
+from io import StringIO
+
 import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -11,9 +14,12 @@ from metapulsar.pint_helpers import (
     get_parameter_identifiability_from_model,
     get_parameters_by_type_from_parfiles,
     create_pint_model,
+    normalize_parfile_for_pint,
     resolve_parameter_alias,
     PINTDiscoveryError,
 )
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "sample_parfiles"
 
 # Test constants for better maintainability
 EXPECTED_ASTROMETRY_PARAMS = {
@@ -797,3 +803,98 @@ class TestDedupeNonrepeatableParLines:
 
         model = create_pint_model(dedupe_nonrepeatable_par_lines(par))
         assert float(model.NE_SW.value) == pytest.approx(4.0)
+
+
+class TestNormalizeParfileForPint:
+    def test_pb_fbn_rewrites_fb0_and_drops_pb(self):
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        norm = normalize_parfile_for_pint(text)
+        assert isinstance(norm, str)
+        assert "FB0" in norm
+        assert re.search(r"^PB\s", norm, re.M) is None
+        model = create_pint_model(text)
+        assert model.FB0.value is not None
+        pb_days = 0.14567224091722622131
+        expected = 1.0 / (pb_days * 86400.0)
+        assert abs(model.FB0.value - expected) / expected < 1e-12
+
+    def test_pb_fbn_dict_path(self):
+        from pint.models.model_builder import parse_parfile
+
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        d = parse_parfile(StringIO(text))
+        out = normalize_parfile_for_pint(d)
+        assert isinstance(out, dict)
+        assert "FB0" in out and "PB" not in out
+        model = create_pint_model(d)
+        assert model.FB0.value is not None
+
+    def test_pbdot_synthesizes_fb1_when_missing(self):
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        # Inject PBDOT and remove FB1 to force synthesis
+        lines = []
+        for line in text.splitlines():
+            if line.startswith("FB1"):
+                continue
+            lines.append(line)
+            if line.startswith("PB "):
+                lines.append("PBDOT 1.0e-12 1")
+        synthetic = "\n".join(lines) + "\n"
+        model = create_pint_model(synthetic)
+        pb_days = 0.14567224091722622131
+        fb0 = 1.0 / (pb_days * 86400.0)
+        expected_fb1 = -1.0e-12 * fb0**2
+        assert model.FB1.value is not None
+        assert abs(model.FB1.value - expected_fb1) / abs(expected_fb1) < 1e-10
+
+    def test_existing_fb1_not_overwritten_when_pbdot_present(self):
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        text = text.replace(
+            "FB1            1.1506575242964346268e-21 1",
+            "FB1            1.1506575242964346268e-21 1\nPBDOT          1.0e-12 1",
+        )
+        model = create_pint_model(text)
+        assert (
+            abs(model.FB1.value - 1.1506575242964346268e-21) / 1.1506575242964346268e-21
+            < 1e-12
+        )
+
+    def test_pb_only_untouched(self):
+        text = (FIXTURE_DIR / "binary_pb_only.par").read_text()
+        norm = normalize_parfile_for_pint(text)
+        assert re.search(r"^PB\s", norm, re.M)
+        assert re.search(r"^FB0\s", norm, re.M) is None
+        model = create_pint_model(text)
+        assert model.PB.value is not None
+
+    def test_ddh_negative_m2_demotes_to_dd_and_strips_shapiro(self):
+        text = (FIXTURE_DIR / "j1825_ddh_negative_h3.par").read_text()
+        with patch("loguru.logger.warning") as warn:
+            norm = normalize_parfile_for_pint(text)
+            model = create_pint_model(text)
+        assert model.BINARY.value == "DD"
+        assert re.search(r"^BINARY\s+DD\b", norm, re.M)
+        assert re.search(r"^H3\s", norm, re.M) is None
+        assert re.search(r"^STIG\s", norm, re.M) is None
+        assert any(
+            "DATA QUALITY ISSUE" in str(call.args[0]) for call in warn.call_args_list
+        )
+
+    def test_ddh_positive_h3_untouched(self):
+        text = (FIXTURE_DIR / "j1825_ddh_negative_h3.par").read_text()
+        text = text.replace(
+            "H3             -2.9789742360740116828e-07",
+            "H3              2.9789742360740116828e-07",
+        )
+        # May still warn on TCB/etc; just require BINARY stays DDH and H3 remains
+        norm = normalize_parfile_for_pint(text)
+        assert re.search(r"^BINARY\s+DDH\b", norm, re.M)
+        assert re.search(r"^H3\s", norm, re.M)
+
+    def test_idempotent(self):
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        once = normalize_parfile_for_pint(text)
+        twice = normalize_parfile_for_pint(once)
+        m1 = create_pint_model(once)
+        m2 = create_pint_model(twice)
+        assert abs(m1.FB0.value - m2.FB0.value) == 0.0

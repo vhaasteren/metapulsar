@@ -1,0 +1,18 @@
+PSRJ           J0000+0000
+RAJ            00:00:00.0
+DECJ           +00:00:00.0
+F0             100.0
+F1             -1.0e-15
+PEPOCH         55000
+BINARY         ELL1
+PB             1.0 0
+A1             1.0 0
+TASC           55000.0 0
+EPS1           0.0 0
+EPS2           0.0 0
+TZRMJD         55000.0
+TZRFRQ         1400.0
+TZRSITE        ao
+CLK            TT(TAI)
+UNITS          TDB
+EPHEM          DE421

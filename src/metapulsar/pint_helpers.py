@@ -4,13 +4,25 @@ This module provides pure functions that encapsulate PINT-specific logic
 for parameter discovery, alias resolution, and model validation.
 """
 
-from typing import Dict, List, Tuple, Any, Iterator, Literal, Optional, TYPE_CHECKING
+from typing import (
+    Dict,
+    List,
+    Tuple,
+    Any,
+    Iterator,
+    Literal,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 from functools import lru_cache
 from pint.models import TimingModel
 from pint.models.timing_model import AllComponents
 from pint.models.parameter import Parameter
 from contextlib import contextmanager
 from pathlib import Path
+import math
+import re
 import tempfile
 import subprocess
 from io import StringIO
@@ -343,8 +355,281 @@ def get_parameters_by_type_from_parfiles(
     return get_parameters_by_type_from_models(param_type, pint_models)
 
 
+_FB_NAME_RE = re.compile(r"^FB(\d+)$")
+_SECONDS_PER_DAY = 86400.0
+_TSUN_SEC = 4.92549094830932e-06  # PINT 1.1.4 T☉ in seconds; only used for gate
+
+
+def _par_dict_copy(parfile_dict: dict) -> dict:
+    """Deep-ish copy of a parse_parfile dict (list values copied)."""
+    return {k: (list(v) if isinstance(v, list) else v) for k, v in parfile_dict.items()}
+
+
+def _par_entry_tokens(value) -> list[str]:
+    """Split a parse_parfile value into whitespace tokens.
+
+    parse_parfile stores values as lists of strings, typically length 1:
+    ``["0.145 1 1.2e-14"]``. Some callers may pass a bare string.
+    """
+    if isinstance(value, list):
+        if not value:
+            return []
+        raw = value[0]
+    else:
+        raw = value
+    return str(raw).split()
+
+
+def _par_entry_float(value) -> float:
+    tokens = _par_entry_tokens(value)
+    if not tokens:
+        raise ValueError("empty parfile parameter value")
+    return float(tokens[0])
+
+
+def _format_par_entry(value: float, fit_and_unc_tokens: list[str]) -> list[str]:
+    """Rebuild parse_parfile list value: [\"<value> <fit?> <unc?> ...\"]."""
+    # Preserve fit flag / uncertainty tokens after the numeric value when present.
+    rest = fit_and_unc_tokens[1:] if fit_and_unc_tokens else []
+    body = " ".join([f"{value:.20g}", *rest]).rstrip()
+    return [body]
+
+
+def _fbn_keys(parfile_dict: dict) -> list[str]:
+    """Return FB0, FB1, ... keys present (any index), sorted by index."""
+    found: list[tuple[int, str]] = []
+    for key in parfile_dict:
+        m = _FB_NAME_RE.match(key)
+        if m:
+            found.append((int(m.group(1)), key))
+    found.sort()
+    return [name for _, name in found]
+
+
+def _has_fbn_above_zero(parfile_dict: dict) -> bool:
+    return any(k != "FB0" for k in _fbn_keys(parfile_dict))
+
+
+def _normalize_pb_fbn_dict(parfile_dict: dict) -> tuple[dict, bool]:
+    """If PB + FBn(n>=1) and no FB0, convert to FB0(+FB1) form.
+
+    Returns (new_dict, changed).
+    """
+    out = _par_dict_copy(parfile_dict)
+
+    has_pb = "PB" in out and _par_entry_tokens(out["PB"])
+    has_fb0 = "FB0" in out and _par_entry_tokens(out["FB0"])
+    has_higher_fbn = _has_fbn_above_zero(out)
+
+    if not (has_pb and has_higher_fbn and not has_fb0):
+        return out, False
+
+    pb_tokens = _par_entry_tokens(out["PB"])
+    pb_days = float(pb_tokens[0])
+    if pb_days <= 0.0 or not math.isfinite(pb_days):
+        raise ValueError(
+            f"Cannot normalize PB→FB0: non-positive or non-finite PB={pb_days!r}"
+        )
+
+    fb0 = 1.0 / (pb_days * _SECONDS_PER_DAY)
+    # Propagate PB fit flag / uncertainty onto FB0 when present.
+    # Uncertainty transform: σ_FB0 = σ_PB / (PB² · 86400) for σ_PB in days.
+    fb0_tokens = [f"{fb0:.20g}"]
+    if len(pb_tokens) >= 2:
+        fb0_tokens.append(pb_tokens[1])  # fit flag
+    if len(pb_tokens) >= 3:
+        try:
+            sigma_pb = float(pb_tokens[2])
+            sigma_fb0 = abs(sigma_pb) / (pb_days**2 * _SECONDS_PER_DAY)
+            fb0_tokens.append(f"{sigma_fb0:.20g}")
+            # Preserve any trailing tokens beyond unc if present
+            fb0_tokens.extend(pb_tokens[3:])
+        except ValueError:
+            fb0_tokens.extend(pb_tokens[2:])
+    out["FB0"] = [" ".join(fb0_tokens)]
+
+    # PBDOT → FB1 only if FB1 absent
+    if "PBDOT" in out and _par_entry_tokens(out["PBDOT"]):
+        pbdot_tokens = _par_entry_tokens(out["PBDOT"])
+        pbdot = float(pbdot_tokens[0])
+        if "FB1" not in out or not _par_entry_tokens(out.get("FB1", [])):
+            fb1 = -pbdot * (fb0**2)
+            fb1_tokens = [f"{fb1:.20g}"]
+            if len(pbdot_tokens) >= 2:
+                fb1_tokens.append(pbdot_tokens[1])
+            if len(pbdot_tokens) >= 3:
+                try:
+                    sigma_pbdot = float(pbdot_tokens[2])
+                    # σ_FB1 ≈ |σ_PBDOT| · FB0²  (first-order, PB fixed)
+                    sigma_fb1 = abs(sigma_pbdot) * (fb0**2)
+                    fb1_tokens.append(f"{sigma_fb1:.20g}")
+                    fb1_tokens.extend(pbdot_tokens[3:])
+                except ValueError:
+                    fb1_tokens.extend(pbdot_tokens[2:])
+            out["FB1"] = [" ".join(fb1_tokens)]
+        del out["PBDOT"]
+
+    del out["PB"]
+    return out, True
+
+
+def _stig_key(parfile_dict: dict) -> str | None:
+    for key in ("STIG", "STIGMA", "VARSIGMA"):
+        if key in parfile_dict and _par_entry_tokens(parfile_dict[key]):
+            return key
+    return None
+
+
+def _derived_m2_solmass(h3_sec: float, stig: float) -> float:
+    """M2 = H3 / (Tsun * STIG³) in solar masses."""
+    return h3_sec / (_TSUN_SEC * (stig**3))
+
+
+def _normalize_ddh_negative_m2_dict(parfile_dict: dict) -> tuple[dict, bool]:
+    """If BINARY DDH implies M2 < 0, demote to DD and drop H3/STIG*.
+
+    Returns (new_dict, changed).
+    """
+    out = _par_dict_copy(parfile_dict)
+
+    binary_tokens = _par_entry_tokens(out.get("BINARY", []))
+    if not binary_tokens or binary_tokens[0].upper() != "DDH":
+        return out, False
+
+    if "H3" not in out or not _par_entry_tokens(out["H3"]):
+        return out, False
+
+    stig_key = _stig_key(out)
+    if stig_key is None:
+        return out, False
+
+    h3 = _par_entry_float(out["H3"])
+    stig = _par_entry_float(out[stig_key])
+    if stig == 0.0 or not math.isfinite(stig) or not math.isfinite(h3):
+        # Cannot evaluate M2; leave untouched (PINT will report its own error).
+        return out, False
+
+    m2 = _derived_m2_solmass(h3, stig)
+    if m2 >= 0.0:
+        return out, False
+
+    # Sanitize
+    out["BINARY"] = ["DD"]
+    for key in ("H3", "STIG", "STIGMA", "VARSIGMA"):
+        if key in out:
+            del out[key]
+    return out, True
+
+
+def _parfile_string_to_dict(parfile_text: str) -> dict:
+    from pint.models.model_builder import parse_parfile
+
+    return parse_parfile(StringIO(parfile_text))
+
+
+def _parfile_dict_to_string(parfile_dict: dict) -> str:
+    """Serialize a parse_parfile dict back to text.
+
+    Preserve a simple stable format:
+    ``NAME <value tokens>`` one parameter per line, insertion order of the dict.
+    Multi-line params (JUMP etc.) keep one line per list entry.
+    """
+    lines: list[str] = []
+    for name, value in parfile_dict.items():
+        if isinstance(value, list):
+            for item in value:
+                lines.append(f"{name} {item}".rstrip())
+        else:
+            lines.append(f"{name} {value}".rstrip())
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def normalize_parfile_for_pint(
+    parfile_data: Union[str, dict],
+    *,
+    fix_pb_fbn: bool = True,
+    fix_ddh_negative_m2: bool = True,
+) -> Union[str, dict]:
+    """Return parfile data made acceptable to PINT ModelBuilder.
+
+    Accepts the same types as ``create_pint_model``:
+    - ``str``: full parfile text
+    - ``dict``: ``pint.models.model_builder.parse_parfile`` output
+      (values are lists of residual-line strings, e.g. ``["0.14 1 1e-12"]``)
+
+    Returns the **same type** as the input. Never mutates the input dict in place
+    (copy first). Idempotent: running twice yields an equivalent model.
+    """
+    from loguru import logger
+
+    input_is_str = isinstance(parfile_data, str)
+    if input_is_str:
+        par_dict = _parfile_string_to_dict(parfile_data)
+    elif isinstance(parfile_data, dict):
+        par_dict = _par_dict_copy(parfile_data)
+    else:
+        raise TypeError(
+            "normalize_parfile_for_pint expected str or dict, "
+            f"got {type(parfile_data)!r}"
+        )
+
+    if fix_pb_fbn:
+        par_dict, changed_pb = _normalize_pb_fbn_dict(par_dict)
+        if changed_pb:
+            logger.warning(
+                "Normalized tempo2-style PB+FBn parfile for PINT: "
+                "replaced PB with FB0=1/(PB*86400) "
+                "(and PBDOT→FB1 when FB1 was absent). "
+                "PINT requires FB0 whenever any FBn is set."
+            )
+
+    if fix_ddh_negative_m2:
+        # Capture values for the warning before mutation details are lost
+        binary_tokens = _par_entry_tokens(par_dict.get("BINARY", []))
+        is_ddh = bool(binary_tokens and binary_tokens[0].upper() == "DDH")
+        h3_val = None
+        stig_key = None
+        stig_val = None
+        m2_val = None
+        if is_ddh:
+            h3_val = (
+                _par_entry_float(par_dict["H3"])
+                if "H3" in par_dict and _par_entry_tokens(par_dict["H3"])
+                else None
+            )
+            stig_key = _stig_key(par_dict)
+            stig_val = _par_entry_float(par_dict[stig_key]) if stig_key else None
+            m2_val = (
+                _derived_m2_solmass(h3_val, stig_val)
+                if h3_val is not None and stig_val is not None and stig_val != 0.0
+                else None
+            )
+
+        par_dict, changed_ddh = _normalize_ddh_negative_m2_dict(par_dict)
+        if changed_ddh:
+            logger.warning(
+                "DATA QUALITY ISSUE: BINARY DDH parfile implies negative companion "
+                f"mass M2={m2_val} solMass from H3={h3_val} s and {stig_key}={stig_val}. "
+                "This is unphysical and usually means poorly constrained Shapiro-delay "
+                "parameters in the published parfile (seen in MPTA J1825-0319). "
+                "MetaPulsar is demoting BINARY DDH→DD and dropping H3/STIG/STIGMA/VARSIGMA "
+                "so PINT can parse the model for preprocessing. "
+                "Timing with tempo2/libstempo still uses the original on-disk parfile; "
+                "shared binary combination will not propagate the bad Shapiro parameters."
+            )
+
+    if input_is_str:
+        return _parfile_dict_to_string(par_dict)
+    return par_dict
+
+
 def create_pint_model(parfile_data) -> TimingModel:
     """Create PINT model from parfile data (string or dict).
+
+    Applies ``normalize_parfile_for_pint`` before building so tempo2-released
+    hybrids that PINT rejects (PB+FBn without FB0; DDH with M2<0 from H3/STIG)
+    can still be parsed for MetaPulsar preprocessing. See
+    ``bug_fix_pint_binary_parfile_compat.md``.
 
     Args:
         parfile_data: String content or dictionary representation of parfile
@@ -367,6 +652,7 @@ def create_pint_model(parfile_data) -> TimingModel:
     from loguru import logger
 
     try:
+        parfile_data = normalize_parfile_for_pint(parfile_data)
         builder = ModelBuilder()
 
         # Handle both string and dict inputs
@@ -383,6 +669,7 @@ def create_pint_model(parfile_data) -> TimingModel:
         UnknownBinaryModel,
         InvalidModelParameters,
         ComponentConflict,
+        ValueError,
     ) as e:
         logger.error(f"PINT model creation failed: {e}")
         raise  # Re-raise the original exception
