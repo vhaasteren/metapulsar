@@ -358,6 +358,76 @@ def get_parameters_by_type_from_parfiles(
 _FB_NAME_RE = re.compile(r"^FB(\d+)$")
 _SECONDS_PER_DAY = 86400.0
 _TSUN_SEC = 4.92549094830932e-06  # PINT 1.1.4 T☉ in seconds; only used for gate
+_PAR_LINE_NAME_RE = re.compile(r"^([A-Za-z0-9_]+)\b")
+
+
+def par_text_has_ordinary_pb_without_fb0(par_text: str) -> bool:
+    """True when a tempo2-style hybrid supplies ``PB`` + higher ``FBn`` but no ``FB0``.
+
+    ParameterManager always builds a PINT model (which may synthesize ``FB0``),
+    while tempo2/libstempo Enterprise pulsars keep the on-disk ``PB`` fitpar.
+    This predicate detects that dual-engine name split.
+    """
+    has_pb = False
+    has_fb0 = False
+    has_higher_fbn = False
+    for raw in par_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PAR_LINE_NAME_RE.match(line)
+        if match is None:
+            continue
+        name = match.group(1)
+        if name == "PB":
+            has_pb = True
+        elif name == "FB0":
+            has_fb0 = True
+        else:
+            fb = _FB_NAME_RE.match(name)
+            if fb is not None and int(fb.group(1)) >= 1:
+                has_higher_fbn = True
+    return has_pb and has_higher_fbn and not has_fb0
+
+
+def designmatrix_scale_fb0_from_pb(pb_days: float) -> float:
+    """Scale ``∂/∂PB`` into ``∂/∂FB0`` for ``FB0 = 1/(PB·86400)``.
+
+    ``d(PB)/d(FB0) = -1/(86400·FB0²) = -86400·PB²``.
+    """
+    if pb_days <= 0.0 or not math.isfinite(pb_days):
+        raise ValueError(
+            f"PB must be positive and finite for FB0 bridge, got {pb_days!r}"
+        )
+    return -_SECONDS_PER_DAY * (pb_days**2)
+
+
+def designmatrix_scale_pb_from_fb0(fb0_hz: float) -> float:
+    """Scale ``∂/∂FB0`` into ``∂/∂PB`` for ``FB0 = 1/(PB·86400)``."""
+    if fb0_hz <= 0.0 or not math.isfinite(fb0_hz):
+        raise ValueError(
+            f"FB0 must be positive and finite for PB bridge, got {fb0_hz!r}"
+        )
+    pb_days = 1.0 / (_SECONDS_PER_DAY * fb0_hz)
+    return -1.0 / (_SECONDS_PER_DAY * (pb_days**2))
+
+
+@contextmanager
+def temporary_normalized_par_for_pint(par_text: str) -> Iterator[str]:
+    """Write ``normalize_parfile_for_pint(par_text)`` to a temp ``.par`` path."""
+    normalized = normalize_parfile_for_pint(par_text)
+    if not isinstance(normalized, str):
+        normalized = _parfile_dict_to_string(normalized)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".par", delete=False, encoding="utf-8"
+    )
+    try:
+        tmp.write(normalized)
+        tmp.flush()
+        tmp.close()
+        yield tmp.name
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def _par_dict_copy(parfile_dict: dict) -> dict:
@@ -473,7 +543,7 @@ def _normalize_pb_fbn_dict(parfile_dict: dict) -> tuple[dict, bool]:
     return out, True
 
 
-def _stig_key(parfile_dict: dict) -> str | None:
+def _stig_key(parfile_dict: dict) -> Optional[str]:
     for key in ("STIG", "STIGMA", "VARSIGMA"):
         if key in parfile_dict and _par_entry_tokens(parfile_dict[key]):
             return key

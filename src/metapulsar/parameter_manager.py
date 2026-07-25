@@ -28,6 +28,7 @@ from .pint_helpers import (
     dedupe_nonrepeatable_par_lines,
     parse_parameter_using_pint,
     detect_astrometry_style,
+    par_text_has_ordinary_pb_without_fb0,
 )
 
 logger = logging.getLogger(__name__)
@@ -962,18 +963,31 @@ class ParameterManager:
 
         for param_name in param_list:
             meta_parname = self.resolve_parameter_aliases(param_name)
+            # Keep PINT's free-param meta name (FB0 after PB+FBn normalize), but
+            # point at the Enterprise/tempo2 fitpar name when the source par still
+            # uses ordinary PB (no FB0). Design-matrix assembly applies the
+            # FB0↔PB Jacobian for that dual-engine case.
+            mapped_name = self._backend_mapped_param_name(pta_name, param_name)
 
             # Check if this parameter should be merged
             if param_name in mergeable_params:
                 # Add as merged parameter - will fail if not available across PTAs
                 self._add_merged_parameter(
-                    meta_parname, pta_name, param_name, target_dict
+                    meta_parname, pta_name, mapped_name, target_dict
                 )
             else:
                 # Parameter not mergeable (detector-specific), make it PTA-specific
                 self._add_pta_specific_parameter(
-                    meta_parname, pta_name, param_name, target_dict
+                    meta_parname, pta_name, mapped_name, target_dict
                 )
+
+    def _backend_mapped_param_name(self, pta_name: str, param_name: str) -> str:
+        """Map PINT free-param names to Enterprise/backend fitpar names."""
+        if param_name == "FB0" and par_text_has_ordinary_pb_without_fb0(
+            self._get_parfile_content(pta_name)
+        ):
+            return "PB"
+        return param_name
 
     def _add_merged_parameter(
         self, meta_parname: str, pta_name: str, param_name: str, target_dict: Dict
@@ -987,7 +1001,7 @@ class ParameterManager:
         self, meta_parname: str, pta_name: str, param_name: str, target_dict: Dict
     ) -> None:
         """Add a PTA-specific parameter to target dictionary."""
-        # For PTA-specific parameters, use the original parameter name
+        # For PTA-specific parameters, use the backend/mapped parameter name
         full_parname = f"{param_name}_{pta_name}"
         target_dict[full_parname] = {pta_name: param_name}
 

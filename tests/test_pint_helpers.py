@@ -10,11 +10,13 @@ from pint.models.timing_model import AllComponents
 
 from metapulsar.pint_helpers import (
     check_component_available_in_model,
+    designmatrix_scale_fb0_from_pb,
     get_aliases_for_parameter,
     get_parameter_identifiability_from_model,
     get_parameters_by_type_from_parfiles,
     create_pint_model,
     normalize_parfile_for_pint,
+    par_text_has_ordinary_pb_without_fb0,
     resolve_parameter_alias,
     PINTDiscoveryError,
 )
@@ -806,6 +808,23 @@ class TestDedupeNonrepeatableParLines:
 
 
 class TestNormalizeParfileForPint:
+    def test_par_text_detects_pb_without_fb0(self):
+        text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
+        assert par_text_has_ordinary_pb_without_fb0(text)
+        assert not par_text_has_ordinary_pb_without_fb0(
+            normalize_parfile_for_pint(text)
+        )
+        assert not par_text_has_ordinary_pb_without_fb0(
+            (FIXTURE_DIR / "binary_pb_only.par").read_text()
+        )
+
+    def test_designmatrix_scale_fb0_from_pb_matches_jacobian(self):
+        pb_days = 0.14567224091722622131
+        fb0 = 1.0 / (pb_days * 86400.0)
+        # dPB/dFB0 = -1/(86400 FB0^2)
+        expected = -1.0 / (86400.0 * fb0**2)
+        assert designmatrix_scale_fb0_from_pb(pb_days) == pytest.approx(expected)
+
     def test_pb_fbn_rewrites_fb0_and_drops_pb(self):
         text = (FIXTURE_DIR / "j2241_pb_fbn_no_fb0.par").read_text()
         norm = normalize_parfile_for_pint(text)

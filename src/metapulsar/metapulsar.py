@@ -72,6 +72,8 @@ class MetaPulsar(ep.BasePulsar):
         )
         self.add_dm_derivatives = add_dm_derivatives
         self._sort = sort  # BasePulsar handles sorting
+        # PTA -> {param: float} for FB0↔PB design-matrix bridging
+        self._backend_param_values: dict[str, dict[str, float]] = {}
 
         # Elegant initialization flow
         self._create_enterprise_pulsars()
@@ -238,6 +240,7 @@ class MetaPulsar(ep.BasePulsar):
 
         # Create file data for ParameterManager
         file_data = {}
+        self._backend_param_values = {}
 
         # Handle PINT models
         for pta_name, model in pint_models.items():
@@ -245,6 +248,9 @@ class MetaPulsar(ep.BasePulsar):
                 "par": None,
                 "par_content": model.as_parfile(),
             }
+            self._backend_param_values[pta_name] = self._extract_backend_param_values(
+                model
+            )
 
         # Handle libstempo pulsars
         for pta_name, lt_psr in lt_pulsars.items():
@@ -253,6 +259,9 @@ class MetaPulsar(ep.BasePulsar):
                 "par": None,
                 "par_content": parfile_content,
             }
+            self._backend_param_values[pta_name] = self._extract_backend_param_values(
+                lt_psr
+            )
 
         # Create ParameterManager for parameter mapping
         parameter_manager = ParameterManager(
@@ -271,6 +280,27 @@ class MetaPulsar(ep.BasePulsar):
         # Setup canonical parameter lists for each pulsar for
         # inter-pta consistent parameter lookups
         self._setup_canonical_parameters()
+
+    def _extract_backend_param_values(self, backend) -> dict[str, float]:
+        """Capture PB/FB0 values needed for dual-engine design-matrix scaling."""
+        values: dict[str, float] = {}
+        for name in ("PB", "FB0"):
+            try:
+                if hasattr(backend, name):
+                    param = getattr(backend, name)
+                    quantity = getattr(param, "value", None)
+                    if quantity is None and hasattr(param, "quantity"):
+                        quantity = param.quantity
+                        if quantity is not None and hasattr(quantity, "value"):
+                            quantity = quantity.value
+                    if quantity is not None:
+                        values[name] = float(quantity)
+                        continue
+                # libstempo subscript access
+                values[name] = float(backend[name].val)
+            except Exception:
+                continue
+        return values
 
     def _setup_canonical_parameters(self):
         """Setup canonical parameter lists for each pulsar."""
@@ -474,12 +504,10 @@ class MetaPulsar(ep.BasePulsar):
                         full_parname
                     ].items():
                         if mapped_pta == pta:
-                            from .pint_helpers import resolve_parameter_alias
-
-                            par_idx = psr.fitpars_canonical.index(
-                                resolve_parameter_alias(mapped_param)
+                            par_idx, scale = self._designmatrix_param_index_and_scale(
+                                psr, pta, full_parname, mapped_param
                             )
-                            column[slice_obj] = dm[:, par_idx]
+                            column[slice_obj] = dm[:, par_idx] * scale
                             break
 
             # Apply unit conversion if needed
@@ -488,6 +516,67 @@ class MetaPulsar(ep.BasePulsar):
             )
 
         return column
+
+    def _designmatrix_param_index_and_scale(
+        self, psr, pta_name: str, full_parname: str, mapped_param: str
+    ) -> tuple[int, float]:
+        """Resolve Enterprise fitpar index, bridging PINT FB0 ↔ tempo2 PB."""
+        from .pint_helpers import (
+            designmatrix_scale_fb0_from_pb,
+            designmatrix_scale_pb_from_fb0,
+            resolve_parameter_alias,
+        )
+
+        # Merged params use bare names (FB0); PTA-specific use FB0_<pta> / PB_<pta>
+        if full_parname.endswith(f"_{pta_name}"):
+            meta_stem = full_parname[: -(len(pta_name) + 1)]
+        else:
+            meta_stem = full_parname
+        meta_canon = resolve_parameter_alias(meta_stem)
+        mapped_canon = resolve_parameter_alias(mapped_param)
+        fitpars_canonical = psr.fitpars_canonical
+
+        def _scale(meta: str, mapped: str) -> float:
+            if meta == mapped:
+                return 1.0
+            if meta == "FB0" and mapped == "PB":
+                pb = self._backend_param_values.get(pta_name, {}).get("PB")
+                if pb is None:
+                    raise ValueError(
+                        f"FB0→PB design-matrix bridge needs PB value for PTA {pta_name}"
+                    )
+                return designmatrix_scale_fb0_from_pb(pb)
+            if meta == "PB" and mapped == "FB0":
+                fb0 = self._backend_param_values.get(pta_name, {}).get("FB0")
+                if fb0 is None:
+                    raise ValueError(
+                        f"PB→FB0 design-matrix bridge needs FB0 value for PTA {pta_name}"
+                    )
+                return designmatrix_scale_pb_from_fb0(fb0)
+            return 1.0
+
+        if mapped_canon in fitpars_canonical:
+            return (
+                fitpars_canonical.index(mapped_canon),
+                _scale(meta_canon, mapped_canon),
+            )
+
+        # Fallback when ParameterManager still listed FB0 but Enterprise has PB
+        if mapped_canon == "FB0" and "PB" in fitpars_canonical:
+            return (
+                fitpars_canonical.index("PB"),
+                _scale("FB0", "PB"),
+            )
+        if mapped_canon == "PB" and "FB0" in fitpars_canonical:
+            return (
+                fitpars_canonical.index("FB0"),
+                _scale("PB", "FB0"),
+            )
+
+        raise ValueError(
+            f"Parameter '{mapped_param}' (meta '{full_parname}') not in "
+            f"fitpars_canonical for PTA {pta_name}"
+        )
 
     def _convert_design_matrix_units(self, column, param_name, timing_package):
         """Convert design matrix units between PINT and libstempo."""

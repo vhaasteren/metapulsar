@@ -34,6 +34,7 @@ from .pint_helpers import (
     ensure_pint_track_minus_2,
     pulse_number_tracking_enabled,
     resolved_tim_for_pulse_numbers,
+    temporary_normalized_par_for_pint,
     temporary_par_with_track_minus_2,
     validate_pulse_number_mode,
 )
@@ -702,12 +703,19 @@ class MetaPulsarFactory:
                         derive_backend="pint",
                         tim_metadata=tim_metadata,
                     ) as tim_path:
-                        model, toas = get_model_and_toas(
-                            str(parfile),
-                            tim_path,
-                            planets=True,
-                            allow_T2=True,
-                        )
+                        # Normalize tempo2 hybrids (PB+FBn without FB0; DDH M2<0)
+                        # before PINT load — get_model_and_toas bypasses
+                        # create_pint_model otherwise.
+                        with temporary_normalized_par_for_pint(
+                            original_par_text
+                        ) as par_for_pint:
+                            model, toas = get_model_and_toas(
+                                par_for_pint,
+                                tim_path,
+                                planets=True,
+                                allow_T2=True,
+                                allow_tcb=True,
+                            )
                         if track_pn:
                             ensure_pint_track_minus_2(model)
                     pulsar_objects[pta_name] = (model, toas)
@@ -789,9 +797,17 @@ class MetaPulsarFactory:
                     if get_model_and_toas is None:
                         raise RuntimeError("PINT not available for raw PINT creation")
 
-                    model, toas = get_model_and_toas(
-                        str(parfile), str(timfile), planets=True, allow_T2=True
-                    )
+                    original_par_text = Path(parfile).read_text(encoding="utf-8")
+                    with temporary_normalized_par_for_pint(
+                        original_par_text
+                    ) as par_for_pint:
+                        model, toas = get_model_and_toas(
+                            par_for_pint,
+                            str(timfile),
+                            planets=True,
+                            allow_T2=True,
+                            allow_tcb=True,
+                        )
                     raw_pulsars[pta_name] = (model, toas)
 
                 else:  # tempo2
