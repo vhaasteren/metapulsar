@@ -8,13 +8,20 @@ for multi-PTA pulsar data.
 import logging
 import pytest
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch, mock_open
+
+from pint.models.model_builder import parse_parfile
 
 from metapulsar.parameter_manager import (
     ParameterManager,
     ParameterInconsistencyError,
     ParameterMapping,
+)
+from metapulsar.pint_helpers import (
+    get_parameters_by_type_from_models,
+    resolve_parameter_alias,
 )
 from tests.helpers import make_tim_metadata
 
@@ -396,42 +403,56 @@ UNITS TDB
         assert mapping.pta_specific_parameters == []
 
     def test_handle_dm_special_cases_missing_dm_error(self):
-        """Test that _handle_dm_special_cases raises error when DM is missing from reference dict."""
-        # Create file data without DM parameter
+        """Test that _handle_dm_special_cases raises when any PTA lacks DM."""
         file_data_without_dm = {
             "EPTA": {
                 "par": Path("test_parfiles/epta.par"),
                 "tim": Path("test_parfiles/epta.tim"),
                 "tim_metadata": make_tim_metadata(timespan_days=3650.5),
                 "timing_package": "pint",
-                "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "F1 -6.2e-16\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "DM 13.299\n"
+                    "UNITS TDB\n"
+                ),
             },
             "PPTA": {
                 "par": Path("test_parfiles/ppta.par"),
                 "tim": Path("test_parfiles/ppta.tim"),
                 "tim_metadata": make_tim_metadata(timespan_days=4200.3),
                 "timing_package": "tempo2",
-                "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "F1 -6.2e-16\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "UNITS TDB\n"
+                ),
             },
         }
 
-        # Create ParameterManager with add_dm_derivatives=True to trigger DM handling
         parameter_manager = ParameterManager(
             file_data=file_data_without_dm,
             combine_components=["dispersion"],
             add_dm_derivatives=True,
         )
 
-        # Parse parfiles to get the reference dict
         parfile_dicts = parameter_manager._parse_parfiles()
-        reference_dict = parfile_dicts["EPTA"]  # First PTA is used as reference
+        reference_dict = parfile_dicts["EPTA"]
 
-        # Verify DM is not in reference dict
-        assert "DM" not in reference_dict
+        assert "DM" in reference_dict
+        assert "DM" not in parfile_dicts["PPTA"]
 
-        # Test that _handle_dm_special_cases raises an error when DM is missing
         with pytest.raises(
-            ValueError, match="DM parameter is missing from reference parfile"
+            ValueError,
+            match="DM parameter is missing from parfile for PTA PPTA",
         ):
             parameter_manager._handle_dm_special_cases(
                 parfile_dicts=parfile_dicts,
@@ -732,6 +753,241 @@ UNITS TDB
         assert parfile_dicts["EPTA"]["DMEPOCH"] == ["55000.0 0"]
         assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
         assert parfile_dicts["EPTA"]["DM2"] == ["0.0 1"]
+
+    @pytest.fixture
+    def file_data_with_two_different_dm_values(self):
+        return {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.2 1\n"
+                    "DMEPOCH 54000\n"
+                    "DM1 0.0 1\n"
+                    "DM2 0.0 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.7 1\n"
+                    "DMEPOCH 56000\n"
+                    "DM1 0.0 1\n"
+                    "DM2 0.0 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+
+    def test_consistent_dispersion_preserves_local_dm_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+        parameter_manager._make_component_parameters_consistent(
+            parfile_dicts,
+            reference_dict,
+            "EPTA",
+            "dispersion",
+            ["DM", "DMEPOCH", "DM1", "DM2"],
+        )
+        parameter_manager._handle_dm_special_cases(
+            parfile_dicts=parfile_dicts,
+            reference_dict=reference_dict,
+            add_dm_derivatives=True,
+            dmx_params_map={"EPTA": [], "PPTA": []},
+        )
+
+        assert parfile_dicts["EPTA"]["DM"] == ["13.2 1"]
+        assert parfile_dicts["PPTA"]["DM"] == ["13.7 1"]
+        assert parfile_dicts["EPTA"]["DMEPOCH"] == ["54000.0 0"]
+        assert parfile_dicts["PPTA"]["DMEPOCH"] == ["54000.0 0"]
+        assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
+        assert parfile_dicts["PPTA"]["DM1"] == ["0.0 1"]
+
+    def test_discover_mergeable_parameters_excludes_dm_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" not in mergeable
+        assert "DM1" in mergeable
+        assert "DM2" in mergeable
+
+    def test_build_parameter_mappings_keeps_dm_pta_specific_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM_EPTA" in mapping.pta_specific_parameters
+        assert "DM_PPTA" in mapping.pta_specific_parameters
+        assert "DM1" in mapping.merged_parameters
+        assert "DM2" in mapping.merged_parameters
+        assert "DM" not in mapping.merged_parameters
+
+    def test_empty_exclude_from_consistent_restores_merged_dm(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+            exclude_from_consistent=[],
+        )
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" in mergeable
+
+        parfile_data = {
+            pta: data["par_content"]
+            for pta, data in file_data_with_two_different_dm_values.items()
+        }
+        consistent_parfiles = parameter_manager._make_parameters_consistent(
+            parfile_data
+        )
+
+        for pta_name in file_data_with_two_different_dm_values:
+            parfile_dict = parse_parfile(StringIO(consistent_parfiles[pta_name]))
+            assert parfile_dict["DM"] == ["13.2 1"]
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM" in mapping.merged_parameters
+        assert "DM1" in mapping.merged_parameters
+        assert "DM2" in mapping.merged_parameters
+        assert "DM_EPTA" not in mapping.pta_specific_parameters
+        assert "DM_PPTA" not in mapping.pta_specific_parameters
+
+    @pytest.fixture
+    def file_data_with_two_different_f0_values(self):
+        return {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081 1\n"
+                    "F1 -6.2e-16 1\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.2 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.500000 1\n"
+                    "F1 -6.2e-16 1\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.7 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+
+    def test_exclude_from_consistent_keeps_f0_pta_specific(
+        self, file_data_with_two_different_f0_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_f0_values,
+            combine_components=["spindown"],
+            exclude_from_consistent=("F0",),
+        )
+
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+        spindown_params = get_parameters_by_type_from_models(
+            "spindown", parameter_manager.pint_models
+        )
+        parameter_manager._make_component_parameters_consistent(
+            parfile_dicts,
+            reference_dict,
+            "EPTA",
+            "spindown",
+            spindown_params,
+        )
+
+        assert parfile_dicts["EPTA"]["F0"] == ["186.494081 1"]
+        assert parfile_dicts["PPTA"]["F0"] == ["186.500000 1"]
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "F0_EPTA" in mapping.pta_specific_parameters
+        assert "F0_PPTA" in mapping.pta_specific_parameters
+        assert "F0" not in mapping.merged_parameters
+        assert "F1" in mapping.merged_parameters
+
+    def test_exclude_from_consistent_accepts_lowercase_dm_alias(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+            exclude_from_consistent=("dm",),
+        )
+
+        assert parameter_manager.exclude_from_consistent == {"DM"}
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" not in mergeable
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM_EPTA" in mapping.pta_specific_parameters
+        assert "DM_PPTA" in mapping.pta_specific_parameters
+        assert "DM" not in mapping.merged_parameters
 
     def test_apply_consistent_convention_rules_mixed_astrometry_raises(self):
         """Mixed ecliptic/equatorial astrometry should fail fast."""

@@ -52,9 +52,11 @@ Concretely:
 To avoid PTA‑specific *DMX* implementations and make the deterministic part of the dispersion model uniform, MetaPulsar:
 
 * removes **DMX** parameters if present,
-* ensures that **DM** is present and marked **free**,
+* preserves each PTA's local **DM** reference value and marks it **free** (by default via `exclude_from_consistent=("DM",)`),
 * defines a fixed **DMEPOCH** (copied from the reference; frozen), and
 * optionally inserts **DM1** and **DM2** (default: present and **free**, initialized at 0).
+
+For dispersion, MetaPulsar removes DMX terms and keeps the Taylor DM evolution consistent, but `DM` itself is PTA-local by default. The `DM` value in a par file is the reference DM used when producing that PTA's TOAs, so the default `exclude_from_consistent=("DM",)` preserves those reference values while exposing `DM_<pta>` fit parameters in the combined design matrix.
 
 This choice keeps the deterministic dispersion expansion identical across PTAs while leaving the **stochastic DM process** (DM GP) to the noise model, as is standard practice.
 
@@ -142,7 +144,8 @@ MetaPulsar validates that all PTAs refer to the **same sky position** by convert
 
 MetaPulsar now defines the **meta‑parameters** that the combined design matrix will use.
 
-* For any parameter that belongs to a consistent component and exists across PTAs, MetaPulsar exposes **one merged meta‑parameter** (e.g., `RAJ`, `F0`, `PB`, `DM`), mapped to the corresponding parameter name in each PTA object.
+* For any parameter that belongs to a consistent component and exists across PTAs, MetaPulsar exposes **one merged meta‑parameter** (e.g., `RAJ`, `F0`, `PB`, `DM1`), mapped to the corresponding parameter name in each PTA object.
+* By default, `DM` is excluded from consistent merging (`exclude_from_consistent=("DM",)`) and is exposed as PTA-specific meta-parameters (`DM_<pta>`), because the par-file `DM` is each PTA's reference value for TOA production.
 * All **detector‑specific** timing‑model parameters (e.g., `JUMP`, `FD*`, per‑backend offsets) are exposed as **PTA‑specific** meta‑parameters by suffixing with the PTA label (e.g., `JUMP_XXXX_epta`, `Offset_nanograv`).
 * If a per‑dataset **phase offset** is implicit in a given timing package, MetaPulsar explicitly includes an **`Offset_<pta>`** meta‑parameter to reflect the standard constant phase term that is effectively fit in pulsar timing (this is not a noise parameter).
 * NOTE: The `Offset_XXXX` parameter is effectively just a `JUMP_XXXX` parameter for that specific PTA. But the name `Offset` makes it clear it is _not_ an added parameter, but merely the mapped phase offset from a specific PTA.
@@ -210,7 +213,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 ### Minimal algorithm (for reference)
 
 1. **Parse & normalize units** for all PTAs (`UNITS → TDB` only when needed).
-2. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, set DM (free), set DMEPOCH (frozen), add DM1/DM2 (free, 0).
+2. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, preserve each PTA's local DM value and mark it free, set DMEPOCH (frozen), add DM1/DM2 (free, 0).
 3. **Apply consistent convention rules**: for single‑PTA pulsars, skip multi‑PTA alignment; for multi‑PTA pulsars, align `EPHEM`, `CLOCK/CLK`, then apply cross-engine rules only when both PINT and tempo2 are present, otherwise apply single-engine multi-PTA alignment only when conventions are heterogeneous.
 4. **Instantiate** Enterprise pulsars (PINT or Tempo2 path). Validate same pulsar by coordinates.
 5. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).

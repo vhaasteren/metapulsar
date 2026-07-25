@@ -1,5 +1,7 @@
 """Main MetaPulsar class for combining multi-PTA pulsar timing data."""
 
+from __future__ import annotations
+
 from itertools import groupby
 from typing import List
 import numpy as np
@@ -43,6 +45,7 @@ class MetaPulsar(ep.BasePulsar):
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
+        exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
         sort=True,
     ):
         """Create MetaPulsar from multiple PTA pulsars.
@@ -61,6 +64,11 @@ class MetaPulsar(ep.BasePulsar):
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
             add_dm_derivatives: Whether to ensure DM1, DM2 are present (consistent strategy only)
+            exclude_from_consistent: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in combine_components.
+                Defaults to ("DM",) so each PTA keeps its own reference DM while
+                consistent dispersion still shares DM1/DM2. Pass an empty list to
+                merge all parameters in selected components.
             sort: Whether to sort data by time
         """
         self._pulsars = pulsars
@@ -71,6 +79,7 @@ class MetaPulsar(ep.BasePulsar):
             combine_components if combination_strategy == "consistent" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
+        self.exclude_from_consistent = exclude_from_consistent
         self._sort = sort  # BasePulsar handles sorting
 
         # Elegant initialization flow
@@ -259,6 +268,7 @@ class MetaPulsar(ep.BasePulsar):
             file_data=file_data,
             combine_components=combine_components,
             add_dm_derivatives=self.add_dm_derivatives,
+            exclude_from_consistent=self.exclude_from_consistent,
         )
 
         mapping = parameter_manager.build_parameter_mappings()

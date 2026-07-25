@@ -4,6 +4,8 @@ This module provides a factory class that creates MetaPulsars by discovering fil
 creating Enterprise Pulsars, and wrapping them with metadata.
 """
 
+from __future__ import annotations
+
 from typing import Dict, List, Tuple, Any
 from pathlib import Path
 from loguru import logger
@@ -144,6 +146,7 @@ class MetaPulsarFactory:
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
     ) -> MetaPulsar:
@@ -158,6 +161,11 @@ class MetaPulsarFactory:
             combine_components: List of components to make consistent (for consistent strategy).
                 Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
             add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
+            exclude_from_consistent: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in ``combine_components``.
+                Defaults to ``("DM",)`` so each PTA keeps its own reference DM while
+                consistent dispersion still shares ``DM1``/``DM2``. Pass an empty list to
+                merge all parameters in selected components.
             parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
                 If None, par files are not saved to disk.
             use_pulse_numbers: Pulse-number mode (string only; default ``"yes"``):
@@ -229,6 +237,7 @@ class MetaPulsarFactory:
                 add_dm_derivatives=add_dm_derivatives,
                 output_dir=parfile_output_dir,
                 pulsar_name=pulsar_name,
+                exclude_from_consistent=exclude_from_consistent,
             )
 
             # Make par files consistent
@@ -258,6 +267,7 @@ class MetaPulsarFactory:
             combination_strategy=combination_strategy,
             combine_components=combine_components,
             add_dm_derivatives=add_dm_derivatives,
+            exclude_from_consistent=exclude_from_consistent,
         )
 
     def _validate_single_pulsar_data(
@@ -442,6 +452,7 @@ class MetaPulsarFactory:
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
     ) -> Dict[str, MetaPulsar]:
@@ -453,6 +464,10 @@ class MetaPulsarFactory:
             reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
             combine_components: List of components to make consistent
             add_dm_derivatives: Whether to ensure DM1, DM2 are present
+            exclude_from_consistent: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in ``combine_components``.
+                Defaults to ``("DM",)``. Pass an empty list to merge all parameters
+                in selected components.
             parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
                 If None, par files are not saved to disk. Creates subdirectories for each pulsar.
 
@@ -488,6 +503,7 @@ class MetaPulsarFactory:
                     reference_pta=reference_pta_for_pulsar,
                     combine_components=combine_components,
                     add_dm_derivatives=add_dm_derivatives,
+                    exclude_from_consistent=exclude_from_consistent,
                     parfile_output_dir=parfile_output_dir,
                     use_pulse_numbers=pulse_mode,
                 )
@@ -866,6 +882,7 @@ def create_metapulsar(
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
 ) -> MetaPulsar:
@@ -880,6 +897,10 @@ def create_metapulsar(
         combine_components: List of components to make consistent (for consistent strategy).
             Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
         add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
+        exclude_from_consistent: Canonical timing-model parameter names to keep
+            PTA-specific even when their component is in ``combine_components``.
+            Defaults to ``("DM",)``. Pass an empty list to merge all parameters
+            in selected components.
         parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
             If None, par files are not saved to disk.
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
@@ -899,6 +920,7 @@ def create_metapulsar(
         reference_pta=reference_pta,
         combine_components=combine_components,
         add_dm_derivatives=add_dm_derivatives,
+        exclude_from_consistent=exclude_from_consistent,
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
     )
@@ -910,6 +932,7 @@ def create_all_metapulsars(
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_consistent: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
 ) -> Dict[str, MetaPulsar]:
@@ -921,6 +944,10 @@ def create_all_metapulsars(
         reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
         combine_components: List of components to make consistent
         add_dm_derivatives: Whether to ensure DM1, DM2 are present
+        exclude_from_consistent: Canonical timing-model parameter names to keep
+            PTA-specific even when their component is in ``combine_components``.
+            Defaults to ``("DM",)``. Pass an empty list to merge all parameters
+            in selected components.
         parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
             If None, par files are not saved to disk. Creates subdirectories for each pulsar.
         use_pulse_numbers: Pulse-number mode passed to each ``create_metapulsar`` call
@@ -936,6 +963,7 @@ def create_all_metapulsars(
         reference_pta=reference_pta,
         combine_components=combine_components,
         add_dm_derivatives=add_dm_derivatives,
+        exclude_from_consistent=exclude_from_consistent,
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
     )
