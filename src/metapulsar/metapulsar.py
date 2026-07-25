@@ -20,7 +20,7 @@ from pint.toa import TOAs
 # Import libstempo
 
 # Import our supporting infrastructure
-from .parameter_manager import ParameterManager
+from .parameter_manager import ParameterInconsistencyError, ParameterManager
 from .position_helpers import bj_name_from_pulsar
 
 
@@ -135,6 +135,8 @@ class MetaPulsar:
         self._timing_engine_cache = {}
         self._timing_rows_filtered = False
         self._pint_model_cache = None
+        self._shared_theta_exact_cache: dict[str, str] = {}
+        self._retained_pint_model_cache: dict = {}
 
         # Elegant initialization flow
         self._create_enterprise_pulsars()
@@ -768,6 +770,8 @@ class MetaPulsar:
         """Invalidate timing API caches after pulsar-state mutations."""
         self._timing_engine_cache.clear()
         self._pint_model_cache = None
+        self._shared_theta_exact_cache.clear()
+        self._retained_pint_model_cache.clear()
 
     def _reference_pta_name(self) -> str:
         """Return deterministic reference PTA key for pulsar-level metadata."""
@@ -788,46 +792,155 @@ class MetaPulsar:
             return str(value[0])
         return str(value)
 
-    def _pta_theta_exact(
-        self, pta_name: str, pta_fitpars: tuple[str, ...]
-    ) -> dict[str, str]:
-        """Build reference-theta exact mapping for one PTA using parfile metadata."""
-        from .pint_helpers import create_pint_model, resolve_parameter_alias
+    def _retained_pint_model(self, pta_name: str):
+        """PINT model parsed from post-harmonization retained par content."""
+        from .pint_helpers import create_pint_model
+
+        cached = self._retained_pint_model_cache.get(pta_name)
+        if cached is not None:
+            return cached
+        model = create_pint_model(self._parfile_content_for_pta(pta_name))
+        self._retained_pint_model_cache[pta_name] = model
+        return model
+
+    def _lookup_theta_exact_from_sources(
+        self,
+        *,
+        pta_name: str,
+        name: str,
+        par_source: dict,
+        pint_model,
+    ) -> str:
+        """Resolve one fitpar exact string from a dict and/or PINT model."""
+        from .pint_helpers import resolve_parameter_alias
+
+        mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
+        if mapped_name in par_source:
+            return self._stringify_par_value(par_source[mapped_name])
+        alias = resolve_parameter_alias(mapped_name)
+        if alias in par_source:
+            return self._stringify_par_value(par_source[alias])
+        if pint_model is not None and hasattr(pint_model, alias):
+            param = getattr(pint_model, alias)
+            return self._stringify_par_value(getattr(param, "value", param))
+        if pint_model is not None and hasattr(pint_model, mapped_name):
+            param = getattr(pint_model, mapped_name)
+            return self._stringify_par_value(getattr(param, "value", param))
+        if mapped_name.lower() in {"offset", "phoff"}:
+            return "0.0"
+        raise ValueError(
+            "Missing reference theta for "
+            f"pta={pta_name!r}, canonical_fitpar={name!r}, "
+            f"mapped_fitpar={mapped_name!r}"
+        )
+
+    def _local_theta_exact(
+        self, pta_name: str, name: str, *, from_retained: bool = False
+    ) -> str:
+        """Exact reference string for one fitpar from one PTA.
+
+        When ``from_retained`` is True (shared-parameter path), parse the
+        post-harmonization retained par content so validation and conversion
+        consume the same bytes. PTA-specific parameters keep the construction-
+        time ``_parfile_dicts`` / model-metadata path.
+        """
+        from .pint_helpers import create_pint_model
+
+        if from_retained:
+            pint_model = self._retained_pint_model(pta_name)
+            return self._lookup_theta_exact_from_sources(
+                pta_name=pta_name,
+                name=name,
+                par_source={},
+                pint_model=pint_model,
+            )
 
         par_source = self._parfile_dicts.get(pta_name, {})
         pint_model = None
         if not isinstance(par_source, dict):
             pint_model = create_pint_model(self._parfile_content_for_pta(pta_name))
             par_source = {}
+        return self._lookup_theta_exact_from_sources(
+            pta_name=pta_name,
+            name=name,
+            par_source=par_source,
+            pint_model=pint_model,
+        )
 
+    def _shared_theta_source(self, name: str) -> str:
+        """Deterministic source PTA for a shared fitpar."""
+        owners = self._fitparameters.get(name, {})
+        ref = self._reference_pta_name()
+        if ref in owners:
+            return ref
+        return next(pta for pta in self._epulsars if pta in owners)
+
+    def _retained_value_token(self, pta_name: str, name: str) -> str:
+        """Raw value token for one fitpar from one PTA's retained par content.
+
+        Parses ``self._parfile_content_for_pta(pta_name)`` — never
+        ``_parfile_dicts``, which may predate harmonization.
+        """
+        mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
+        content = self._parfile_content_for_pta(pta_name)
+        matches: list[str] = []
+        for line in content.splitlines():
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                continue
+            if stripped.upper().startswith("C ") or stripped.upper() == "C":
+                continue
+            tokens = stripped.split()
+            if not tokens:
+                continue
+            if tokens[0].upper() != str(mapped_name).upper():
+                continue
+            if len(tokens) < 2:
+                raise ParameterInconsistencyError(
+                    f"PTA {pta_name!r} retained par has parameter "
+                    f"{mapped_name!r} with no value token"
+                )
+            matches.append(tokens[1])
+        if len(matches) != 1:
+            raise ParameterInconsistencyError(
+                f"PTA {pta_name!r} retained par has {len(matches)} active "
+                f"lines for mapped key {mapped_name!r} (canonical "
+                f"{name!r}); require exactly one"
+            )
+        return matches[0]
+
+    def _validate_shared_retained_tokens(self, name: str) -> None:
+        """Require byte-identical retained value tokens across all owners."""
+        owners = self._fitparameters.get(name, {})
+        tokens = {pta: self._retained_value_token(pta, name) for pta in owners}
+        if len(set(tokens.values())) > 1:
+            detail = ", ".join(
+                f"{pta} ({owners[pta]}): {token!r}" for pta, token in tokens.items()
+            )
+            raise ParameterInconsistencyError(
+                f"Shared parameter '{name}' has inconsistent retained par "
+                f"values across contributions: {detail}"
+            )
+
+    def _pta_theta_exact(
+        self, pta_name: str, pta_fitpars: tuple[str, ...]
+    ) -> dict[str, str]:
+        """Build reference-theta exact mapping for one PTA using parfile metadata."""
         exact: dict[str, str] = {}
         for name in pta_fitpars:
-            mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
-            # Prefer exact key, then canonical alias of mapped name.
-            if mapped_name in par_source:
-                exact[name] = self._stringify_par_value(par_source[mapped_name])
+            owners = self._fitparameters.get(name, {})
+            if len(owners) > 1:
+                if name not in self._shared_theta_exact_cache:
+                    self._validate_shared_retained_tokens(name)
+                    source = self._shared_theta_source(name)
+                    self._shared_theta_exact_cache[name] = self._local_theta_exact(
+                        source, name, from_retained=True
+                    )
+                exact[name] = self._shared_theta_exact_cache[name]
             else:
-                alias = resolve_parameter_alias(mapped_name)
-                if alias in par_source:
-                    exact[name] = self._stringify_par_value(par_source[alias])
-                elif pint_model is not None and hasattr(pint_model, alias):
-                    param = getattr(pint_model, alias)
-                    exact[name] = self._stringify_par_value(
-                        getattr(param, "value", param)
-                    )
-                elif pint_model is not None and hasattr(pint_model, mapped_name):
-                    param = getattr(pint_model, mapped_name)
-                    exact[name] = self._stringify_par_value(
-                        getattr(param, "value", param)
-                    )
-                elif mapped_name.lower() in {"offset", "phoff"}:
-                    exact[name] = "0.0"
-                else:
-                    raise ValueError(
-                        "Missing reference theta for "
-                        f"pta={pta_name!r}, canonical_fitpar={name!r}, "
-                        f"mapped_fitpar={mapped_name!r}"
-                    )
+                exact[name] = self._local_theta_exact(pta_name, name)
         return exact
 
     def pint_model(self):

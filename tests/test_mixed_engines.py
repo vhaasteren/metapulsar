@@ -36,6 +36,9 @@ def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
     pulsar._flags = {"f": pulsar._backend_flags}
     pulsar._isort = slice(None, None, None)
     pulsar._timing_engine_cache = {}
+    pulsar._pint_model_cache = None
+    pulsar._shared_theta_exact_cache = {}
+    pulsar._retained_pint_model_cache = {}
 
     engine = pulsar.timing_engine(
         {"tempo2": "libstempo", "pint": "jug"}, linearized=True

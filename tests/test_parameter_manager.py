@@ -1400,3 +1400,167 @@ UNITS TDB
             assert "SOLARN0" not in content, f"{pta_name}: alias survived rewrite"
             model = create_pint_model(content)  # must not raise
             assert float(model.NE_SW.value) == pytest.approx(4.0)
+
+
+class TestUnitsNormalizationM1:
+    """M1: every retained par is explicitly UNITS TDB before sharing."""
+
+    def _pm(self, file_data, tmp_path):
+        return ParameterManager(
+            file_data=file_data,
+            combine_components=[],
+            output_dir=tmp_path / "out",
+            pulsar_name="J1857+0943",
+        )
+
+    def test_unknown_units_raises(self, tmp_path):
+        file_data = {
+            "epta": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nF0 1.0\nUNITS XYZ\n",
+            }
+        }
+        pm = self._pm(file_data, tmp_path)
+        with pytest.raises(ValueError, match="unknown UNITS value"):
+            pm._normalize_parfile_to_tdb("epta", file_data["epta"]["par_content"])
+
+    def test_pint_owned_si_raises(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nUNITS SI\n"
+        file_data = {"epta": {"timing_package": "pint", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        with pytest.raises(ValueError, match="tempo2 syntax"):
+            pm._normalize_parfile_to_tdb("epta", content)
+
+    def test_duplicate_units_raises(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nUNITS TDB\nUNITS TCB\n"
+        file_data = {"epta": {"timing_package": "pint", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        with pytest.raises(ValueError, match="duplicate active UNITS"):
+            pm._normalize_parfile_to_tdb("epta", content)
+
+    def test_already_tdb_no_units_appends_only(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nRAJ 18:57:36.3937\n"
+        file_data = {"epta": {"timing_package": "pint", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        out = pm._normalize_parfile_to_tdb("epta", content)
+        assert out == content + "UNITS TDB\n"
+        again = pm._normalize_parfile_to_tdb("epta", out)
+        assert again == out
+
+    def test_already_tdb_with_units_byte_identical(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nUNITS TDB\n"
+        file_data = {"epta": {"timing_package": "pint", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        assert pm._normalize_parfile_to_tdb("epta", content) == content
+
+    def test_tempo2_si_treated_as_tcb(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nUNITS SI\n"
+        file_data = {"epta": {"timing_package": "tempo2", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        assert pm._effective_units_for_content("epta", content) == "TCB"
+
+    def test_tempo2_no_units_defaults_to_tcb(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\n"
+        file_data = {"epta": {"timing_package": "tempo2", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        assert pm._effective_units_for_content("epta", content) == "TCB"
+
+    def test_pint_no_units_defaults_to_tdb(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\n"
+        file_data = {"epta": {"timing_package": "pint", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        assert pm._effective_units_for_content("epta", content) == "TDB"
+
+    @pytest.mark.requires_libstempo
+    def test_tempo2_no_units_converted_via_tempo2_path(self, tmp_path):
+        content = (
+            "PSR J1857+0943\n"
+            "PEPOCH 55000\n"
+            "F0 186.49408138134548363\n"
+            "F1 -6.20415e-16\n"
+            "RAJ 18:57:36.3937\n"
+            "DECJ +09:43:17.291\n"
+            "DM 13.299\n"
+            "POSEPOCH 55000\n"
+            "DMEPOCH 55000\n"
+        )
+        file_data = {"epta": {"timing_package": "tempo2", "par_content": content}}
+        pm = self._pm(file_data, tmp_path)
+        out = pm._normalize_parfile_to_tdb("epta", content)
+        units = pm._active_units_lines(out)
+        assert len(units) == 1
+        assert units[0].split()[1].upper() == "TDB"
+
+    @pytest.mark.requires_libstempo
+    def test_mixed_no_units_tempo2_and_tcb_shared(self, tmp_path):
+        epta = (
+            "PSR J1857+0943\n"
+            "PEPOCH 55000\n"
+            "F0 186.49408138134548363\n"
+            "F1 -6.20415e-16\n"
+            "RAJ 18:57:36.3937\n"
+            "DECJ +09:43:17.291\n"
+            "PMRA -2.0\n"
+            "PMDEC 0.5\n"
+            "PX 0.5\n"
+            "DM 13.299\n"
+            "POSEPOCH 55000\n"
+            "DMEPOCH 55000\n"
+        )
+        ppta = (
+            "PSR J1857+0943\n"
+            "PEPOCH 55000\n"
+            "F0 186.49408138134548363\n"
+            "F1 -6.20415e-16\n"
+            "RAJ 18:57:36.3937\n"
+            "DECJ +09:43:17.291\n"
+            "PMRA -2.0\n"
+            "PMDEC 0.5\n"
+            "PX 0.51\n"
+            "DM 13.299\n"
+            "POSEPOCH 55000\n"
+            "DMEPOCH 55000\n"
+            "UNITS TCB\n"
+        )
+        file_data = {
+            "epta": {"timing_package": "tempo2", "par_content": epta},
+            "ppta": {"timing_package": "tempo2", "par_content": ppta},
+        }
+        pm = ParameterManager(
+            file_data=file_data,
+            combine_components=["astrometry"],
+            output_dir=tmp_path / "out",
+            pulsar_name="J1857+0943",
+        )
+        outputs = pm.make_parfiles_shared()
+        from metapulsar.pint_helpers import create_pint_model
+
+        px_vals = []
+        for pta, path in outputs.items():
+            content = Path(path).read_text(encoding="utf-8")
+            units = ParameterManager._active_units_lines(content)
+            assert len(units) == 1
+            assert units[0].split()[1].upper() == "TDB"
+            model = create_pint_model(content)
+            px_vals.append(float(model.PX.value))
+        assert px_vals[0] == px_vals[1]
+
+    def test_all_tcb_still_normalized(self, tmp_path):
+        content = "PSR J1857+0943\nF0 1.0\nUNITS TCB\n"
+        file_data = {
+            "a": {"timing_package": "pint", "par_content": content},
+            "b": {"timing_package": "pint", "par_content": content},
+        }
+        pm = self._pm(file_data, tmp_path)
+        with patch.object(
+            pm,
+            "_convert_pint_to_tdb",
+            return_value="PSR J1857+0943\nF0 1.0\nUNITS TDB\n",
+        ) as mock_conv:
+            out = pm._convert_units_if_needed({})
+        assert mock_conv.call_count == 2
+        for text in out.values():
+            assert (
+                ParameterManager._active_units_lines(text)[0].split()[1].upper()
+                == "TDB"
+            )

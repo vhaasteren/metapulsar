@@ -192,55 +192,151 @@ class ParameterManager:
 
     # ===== PARFILE CONSISTENCY METHODS =====
 
+    @staticmethod
+    def _iter_active_par_lines(content: str):
+        """Yield non-comment active parfile lines (tempo2 ``C `` / ``#`` skipped)."""
+        for line in content.splitlines():
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                continue
+            if stripped.upper().startswith("C ") or stripped.upper() == "C":
+                continue
+            yield line
+
+    @classmethod
+    def _active_units_lines(cls, content: str) -> list[str]:
+        """Return active lines whose first token is UNITS (case-insensitive)."""
+        units_lines: list[str] = []
+        for line in cls._iter_active_par_lines(content):
+            tokens = line.split()
+            if tokens and tokens[0].upper() == "UNITS":
+                units_lines.append(line)
+        return units_lines
+
+    @classmethod
+    def _assert_single_units_tdb(cls, content: str, *, pta_name: str) -> None:
+        """Require exactly one active ``UNITS TDB`` line after conversion."""
+        units_lines = cls._active_units_lines(content)
+        if len(units_lines) != 1:
+            raise ValueError(
+                f"PTA {pta_name!r}: expected exactly one active UNITS line after "
+                f"normalization, found {len(units_lines)}"
+            )
+        tokens = units_lines[0].split()
+        if len(tokens) < 2 or tokens[1].upper() != "TDB":
+            raise ValueError(
+                f"PTA {pta_name!r}: expected UNITS TDB after normalization, "
+                f"got {units_lines[0]!r}"
+            )
+
+    @staticmethod
+    def _stamp_units_tdb(content: str) -> str:
+        """Append an explicit ``UNITS TDB`` line without reformatting other bytes."""
+        stamped = content
+        if stamped and not stamped.endswith("\n"):
+            stamped += "\n"
+        stamped += "UNITS TDB\n"
+        return stamped
+
+    def _effective_units_for_content(self, pta_name: str, content: str) -> str:
+        """Resolve effective time units from raw active UNITS lines.
+
+        Replaces the previous PINT-parse path: package-aware ``SI`` handling and
+        targeted ``ValueError``s require a raw-line scan.
+        """
+        units_lines = self._active_units_lines(content)
+        if len(units_lines) > 1:
+            raise ValueError(
+                f"PTA {pta_name!r}: duplicate active UNITS lines "
+                f"({len(units_lines)}); refuse silent first/last-line-wins"
+            )
+
+        timing_package = self._get_timing_package(pta_name)
+        if not units_lines:
+            return "TCB" if timing_package == "tempo2" else "TDB"
+
+        tokens = units_lines[0].split()
+        if len(tokens) < 2:
+            raise ValueError(
+                f"PTA {pta_name!r}: UNITS line has no value: {units_lines[0]!r}"
+            )
+        value = tokens[1].upper()
+        if value == "TDB":
+            return "TDB"
+        if value == "TCB":
+            return "TCB"
+        if value == "SI":
+            if timing_package == "tempo2":
+                # tempo2 treats SI as a synonym for TCB (SI_UNITS).
+                return "TCB"
+            raise ValueError(
+                f"PTA {pta_name!r}: UNITS SI is tempo2 syntax; PINT accepts "
+                "only TDB/TCB"
+            )
+        raise ValueError(
+            f"PTA {pta_name!r}: unknown UNITS value {tokens[1]!r} "
+            "(expected TDB, TCB, or tempo2-owned SI)"
+        )
+
+    def _determine_parfile_units(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Determine effective units for all par files via raw active-line scan."""
+        self.logger.info("Determining units for all par files")
+
+        file_units: Dict[str, str] = {}
+        parfile_contents: Dict[str, str] = {}
+        for pta_name in self.file_data.keys():
+            parfile_content = self._get_parfile_content(pta_name)
+            file_units[pta_name] = self._effective_units_for_content(
+                pta_name, parfile_content
+            )
+            parfile_contents[pta_name] = parfile_content
+        return file_units, parfile_contents
+
+    def _normalize_parfile_to_tdb(self, pta_name: str, content: str) -> str:
+        """Normalize one par to explicit UNITS TDB (convert or stamp as needed)."""
+        effective = self._effective_units_for_content(pta_name, content)
+        if effective == "TCB":
+            timing_package = self._get_timing_package(pta_name)
+            if timing_package == "pint":
+                converted = self._convert_pint_to_tdb(content)
+            else:
+                converted = self._convert_tempo2_to_tdb(content)
+            self._assert_single_units_tdb(converted, pta_name=pta_name)
+            return converted
+
+        if effective != "TDB":
+            raise ValueError(
+                f"PTA {pta_name!r}: unsupported effective units {effective!r}"
+            )
+
+        units_lines = self._active_units_lines(content)
+        if not units_lines:
+            stamped = self._stamp_units_tdb(content)
+            self._assert_single_units_tdb(stamped, pta_name=pta_name)
+            return stamped
+
+        # Already carries an explicit UNITS TDB line — leave byte-identical.
+        self._assert_single_units_tdb(content, pta_name=pta_name)
+        return content
+
     def _convert_units_if_needed(
         self, parfile_dicts: Dict[str, Dict]
     ) -> Dict[str, str]:
-        """Convert par files to consistent units (TDB)."""
-        self.logger.info("Checking if unit conversion is needed")
+        """Normalize every retained par to explicit UNITS TDB before sharing.
 
-        # Determine units for all par files
-        file_units, parfile_contents = self._determine_parfile_units()
-
-        # Check if all units are the same
-        unique_units = set(file_units.values())
-        if len(unique_units) == 1:
-            self.logger.info(
-                f"All par files have {list(unique_units)[0]} units. No conversion needed."
-            )
-            return parfile_contents
-
-        # Mixed units detected, conversion needed
-        self.logger.info(
-            f"Mixed units detected: {unique_units}. Converting TCB files to TDB."
-        )
-        return self._convert_mixed_units(file_units, parfile_contents)
-
-    def _determine_parfile_units(self) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Determine the units of all par files for this pulsar."""
-        self.logger.info("Determining units for all par files")
-
-        file_units = {}
-        parfile_contents = {}
-
-        for pta_name in self.file_data.keys():
-            parfile_content = self._get_parfile_content(pta_name)
-            try:
-                # Parse to check current units
-                parfile_dict = parse_parfile(StringIO(parfile_content))
-                units_value = parfile_dict.get(
-                    "UNITS", [self._get_default_time_units(pta_name)]
-                )
-                current_units, _ = parse_parameter_using_pint("UNITS", units_value)
-                current_units = str(current_units).upper()
-
-                file_units[pta_name] = current_units
-                parfile_contents[pta_name] = parfile_content
-
-            except Exception as e:
-                self.logger.error(f"Error reading par file for PTA {pta_name}: {e}")
-                raise RuntimeError(f"Failed to read par file for PTA {pta_name}") from e
-
-        return file_units, parfile_contents
+        Unlike the previous early-return when all files already shared one unit
+        system, every TCB (including tempo2-owned SI and no-UNITS tempo2
+        defaults) is converted, and every TDB par is stamped if needed.
+        """
+        del parfile_dicts  # contents are re-read from source files
+        self.logger.info("Normalizing all par files to explicit UNITS TDB")
+        _, parfile_contents = self._determine_parfile_units()
+        normalized: Dict[str, str] = {}
+        for pta_name, content in parfile_contents.items():
+            normalized[pta_name] = self._normalize_parfile_to_tdb(pta_name, content)
+        return normalized
 
     def _get_default_time_units(self, pta_name: str) -> str:
         """Get the default time units for a PTA based on its timing package.
@@ -257,23 +353,29 @@ class ParameterManager:
     def _convert_mixed_units(
         self, file_units: Dict[str, str], parfile_contents: Dict[str, str]
     ) -> Dict[str, str]:
-        """Convert par files with mixed units to consistent TDB units using appropriate timing package."""
+        """Convert TCB pars to TDB using the owning timing package.
+
+        Retained for callers/tests that still pass precomputed unit maps; the
+        primary path is :meth:`_convert_units_if_needed`.
+        """
         converted_parfiles = {}
 
         for pta_name, parfile_content in parfile_contents.items():
             current_units = file_units[pta_name]
 
             if current_units == "TDB":
-                # Already in TDB, no conversion needed
-                converted_parfiles[pta_name] = parfile_content
+                converted_parfiles[pta_name] = self._normalize_parfile_to_tdb(
+                    pta_name, parfile_content
+                )
             else:
-                # Get timing package for this PTA
                 timing_package = self._get_timing_package(pta_name)
 
                 if timing_package == "pint":
-                    # Use PINT conversion for PINT PTAs
                     try:
                         converted_content = self._convert_pint_to_tdb(parfile_content)
+                        self._assert_single_units_tdb(
+                            converted_content, pta_name=pta_name
+                        )
                         converted_parfiles[pta_name] = converted_content
                         self.logger.debug(f"Converted PTA {pta_name} using PINT")
                     except Exception as e:
@@ -284,9 +386,11 @@ class ParameterManager:
                             f"PINT unit conversion failed for PTA {pta_name}"
                         ) from e
                 else:
-                    # Use Tempo2 conversion for Tempo2 PTAs, or fallback
                     try:
                         converted_content = self._convert_tempo2_to_tdb(parfile_content)
+                        self._assert_single_units_tdb(
+                            converted_content, pta_name=pta_name
+                        )
                         converted_parfiles[pta_name] = converted_content
                         self.logger.debug(f"Converted PTA {pta_name} using Tempo2")
                     except Exception as e:

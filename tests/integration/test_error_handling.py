@@ -95,7 +95,15 @@ C 12345.67890 0.0001
                             {
                                 "par": Path(temp_dir) / "J0030+0451.par",
                                 "tim": temp_tim,
-                                "par_content": "PSR J0030+0451\nRAJ 00:30:27.4\nDECJ 04:51:39.7\n",
+                                # Explicit UNITS TDB so M1 normalization does not
+                                # invoke tempo2 transform before the malformed
+                                # TIM is discovered.
+                                "par_content": (
+                                    "PSR J0030+0451\n"
+                                    "RAJ 00:30:27.4\n"
+                                    "DECJ 04:51:39.7\n"
+                                    "UNITS TDB\n"
+                                ),
                                 "timing_package": "tempo2",
                                 "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                             }
