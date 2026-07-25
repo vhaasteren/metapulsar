@@ -327,12 +327,12 @@ class TestMetaPulsarFactory:
         assert len(data_releases) > 0
 
     @patch("metapulsar.metapulsar_factory.ParameterManager")
-    def test_create_metapulsar_with_consistent_strategy(self, mock_param_manager):
-        """Test create_metapulsar with consistent strategy using ParameterManager."""
+    def test_create_metapulsar_with_shared_strategy(self, mock_param_manager):
+        """Test create_metapulsar with shared strategy using ParameterManager."""
         # Mock ParameterManager
         mock_manager_instance = Mock()
         mock_manager_instance.make_parfiles_shared.return_value = {
-            "epta_dr2": Path("/tmp/consistent_epta_dr2.par")
+            "epta_dr2": Path("/tmp/shared_epta_dr2.par")
         }
         mock_param_manager.return_value = mock_manager_instance
 

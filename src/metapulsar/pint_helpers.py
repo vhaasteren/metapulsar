@@ -444,6 +444,77 @@ def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]
     return value, is_frozen
 
 
+def _par_value_tokens_equal(a: Optional[str], b: Optional[str]) -> bool:
+    """Compare leading par-file value tokens, numerically when possible."""
+    if a is None or b is None:
+        return a == b
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return a == b
+
+
+def dedupe_nonrepeatable_par_lines(par_text: str) -> str:
+    """Collapse duplicate lines for non-repeatable parameters in par-file text.
+
+    Old tempo2 builds (before the NE_SW guard in textOutput.C, tempo2 commit
+    bf00f36) write NE_SW twice when it is explicitly set: once in the parameter
+    table and once (%.3f-formatted) in the conventions block. The IPTA DR2
+    dataset's own ``working/`` par files carry this signature, and PINT's
+    ModelBuilder rejects such content ("Parameter X is not a repeatable
+    parameter. However, multiple line use it."), so tempo2-written par content
+    is sanitized at the ingestion boundary.
+
+    Per parameter name (resolved through PINT aliases):
+    - unknown to PINT (tempo2 noise lines, control lines): left untouched
+    - PINT-repeatable (JUMP, EFAC, ...): left untouched
+    - duplicated non-repeatable with the same leading value (numeric compare
+      when possible): keep the first occurrence (the parameter-table line,
+      full precision), drop the rest with a warning
+    - duplicated non-repeatable with conflicting values: raise ValueError
+      rather than guess
+    """
+    all_components = _get_all_components()
+    repeatable = all_components.repeatable_param
+
+    def _canonical(name: str) -> Optional[str]:
+        try:
+            canonical, _ = all_components.alias_to_pint_param(name)
+            return str(canonical)
+        except Exception:
+            return None
+
+    first_values: Dict[str, Optional[str]] = {}
+    out_lines: List[str] = []
+    for line in par_text.splitlines():
+        tokens = line.split()
+        if not tokens or line.lstrip().startswith("#") or line.startswith("C "):
+            out_lines.append(line)
+            continue
+        name = tokens[0]
+        canonical = _canonical(name)
+        if canonical is None or name in repeatable or canonical in repeatable:
+            out_lines.append(line)
+            continue
+        value = tokens[1] if len(tokens) > 1 else None
+        if canonical not in first_values:
+            first_values[canonical] = value
+            out_lines.append(line)
+            continue
+        if _par_value_tokens_equal(first_values[canonical], value):
+            loguru_logger.warning(
+                f"Dropping duplicate par line for non-repeatable parameter "
+                f"{canonical}: {line.strip()!r} (keeping first occurrence)"
+            )
+            continue
+        raise ValueError(
+            f"Conflicting duplicate par lines for non-repeatable parameter "
+            f"{canonical}: first value {first_values[canonical]!r} vs "
+            f"duplicate line {line.strip()!r}"
+        )
+    return "\n".join(out_lines) + ("\n" if par_text.endswith("\n") else "")
+
+
 # ----------------------- Pulse-number helper utilities ----------------------- #
 
 from pint.toa import get_TOAs, TOAs  # noqa: E402 (import after top-level defs)

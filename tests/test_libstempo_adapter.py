@@ -47,7 +47,7 @@ class TestMockLibstempoMetaPulsarIntegration:
         assert np.all(mp._flags["pta_dataset"][:30] == "pta1")
         assert np.all(mp._flags["pta_dataset"][30:] == "pta2")
 
-    def test_consistent_strategy(self):
+    def test_shared_strategy(self):
         mock_lt1 = create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta1", seed=10
         )

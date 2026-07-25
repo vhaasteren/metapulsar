@@ -5,15 +5,23 @@ Tests the unified parameter and par file management functionality
 for multi-PTA pulsar data.
 """
 
+import logging
 import pytest
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch, mock_open
+
+from pint.models.model_builder import parse_parfile
 
 from metapulsar.parameter_manager import (
     ParameterManager,
     ParameterInconsistencyError,
     ParameterMapping,
+)
+from metapulsar.pint_helpers import (
+    get_parameters_by_type_from_models,
+    resolve_parameter_alias,
 )
 from tests.helpers import make_tim_metadata
 
@@ -111,7 +119,7 @@ UNITS TDB
     def test_get_output_filename(self, parameter_manager):
         """Test output filename generation."""
         filename = parameter_manager._get_output_filename("EPTA")
-        assert filename == "consistent_EPTA.par"
+        assert filename == "shared_EPTA.par"
 
     def test_is_parameter_for_component(self, parameter_manager):
         """Test parameter component checking."""
@@ -326,7 +334,7 @@ UNITS TDB
                 }
 
                 with patch.object(
-                    parameter_manager, "_make_parameters_consistent"
+                    parameter_manager, "_make_parameters_shared"
                 ) as mock_make_consistent:
                     mock_make_consistent.return_value = {
                         "EPTA": "consistent_epta_content",
@@ -337,8 +345,8 @@ UNITS TDB
                         parameter_manager, "_write_shared_parfiles"
                     ) as mock_write:
                         mock_write.return_value = {
-                            "EPTA": Path("/tmp/consistent_EPTA.par"),
-                            "PPTA": Path("/tmp/consistent_PPTA.par"),
+                            "EPTA": Path("/tmp/shared_EPTA.par"),
+                            "PPTA": Path("/tmp/shared_PPTA.par"),
                         }
 
                         result = parameter_manager.make_parfiles_shared()
@@ -440,42 +448,56 @@ UNITS TDB
         assert mapping.pta_specific_parameters == []
 
     def test_handle_dm_special_cases_missing_dm_error(self):
-        """Test that _handle_dm_special_cases raises error when DM is missing from reference dict."""
-        # Create file data without DM parameter
+        """Test that _handle_dm_special_cases raises when any PTA lacks DM."""
         file_data_without_dm = {
             "EPTA": {
                 "par": Path("test_parfiles/epta.par"),
                 "tim": Path("test_parfiles/epta.tim"),
                 "tim_metadata": make_tim_metadata(timespan_days=3650.5),
                 "timing_package": "pint",
-                "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "F1 -6.2e-16\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "DM 13.299\n"
+                    "UNITS TDB\n"
+                ),
             },
             "PPTA": {
                 "par": Path("test_parfiles/ppta.par"),
                 "tim": Path("test_parfiles/ppta.tim"),
                 "tim_metadata": make_tim_metadata(timespan_days=4200.3),
                 "timing_package": "tempo2",
-                "par_content": "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\nRAJ 18:57:36.3937\nDECJ +09:43:17.291\nUNITS TDB\n",
+                "par_content": (
+                    "PSR J1857+0943\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "F1 -6.2e-16\n"
+                    "RAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\n"
+                    "UNITS TDB\n"
+                ),
             },
         }
 
-        # Create ParameterManager with add_dm_derivatives=True to trigger DM handling
         parameter_manager = ParameterManager(
             file_data=file_data_without_dm,
             combine_components=["dispersion"],
             add_dm_derivatives=True,
         )
 
-        # Parse parfiles to get the reference dict
         parfile_dicts = parameter_manager._parse_parfiles()
-        reference_dict = parfile_dicts["EPTA"]  # First PTA is used as reference
+        reference_dict = parfile_dicts["EPTA"]
 
-        # Verify DM is not in reference dict
-        assert "DM" not in reference_dict
+        assert "DM" in reference_dict
+        assert "DM" not in parfile_dicts["PPTA"]
 
-        # Test that _handle_dm_special_cases raises an error when DM is missing
         with pytest.raises(
-            ValueError, match="DM parameter is missing from reference parfile"
+            ValueError,
+            match="DM parameter is missing from parfile for PTA PPTA",
         ):
             parameter_manager._handle_dm_special_cases(
                 parfile_dicts=parfile_dicts,
@@ -484,7 +506,7 @@ UNITS TDB
                 dmx_params_map={"EPTA": [], "PPTA": []},
             )
 
-    def test_apply_consistent_convention_rules_cross_engine_ecliptic(self):
+    def test_apply_shared_convention_rules_cross_engine_ecliptic(self):
         """Cross-engine ecliptic pars force ECL IERS2003 and remove T2CMETHOD TEMPO."""
         file_data = {
             "EPTA": {
@@ -518,9 +540,7 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        parameter_manager._apply_shared_convention_rules(parfile_dicts, reference_dict)
 
         for _, pd in parfile_dicts.items():
             assert pd["UNITS"] == ["TDB"]
@@ -530,7 +550,7 @@ UNITS TDB
             clock_value = pd["CLOCK"] if "CLOCK" in pd else pd["CLK"]
             assert clock_value == ["TT(BIPM2015)"]
 
-    def test_apply_consistent_convention_rules_cross_engine_equatorial_warning_and_no_ecl(
+    def test_apply_shared_convention_rules_cross_engine_equatorial_warning_and_no_ecl(
         self,
     ):
         """Cross-engine equatorial pars emit warning and should not carry ECL."""
@@ -566,7 +586,7 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with patch.object(parameter_manager.logger, "warning") as mock_warning:
-            parameter_manager._apply_consistent_convention_rules(
+            parameter_manager._apply_shared_convention_rules(
                 parfile_dicts, reference_dict
             )
 
@@ -576,7 +596,7 @@ UNITS TDB
             assert "T2CMETHOD" not in pd
         assert mock_warning.call_count == 2
 
-    def test_apply_consistent_convention_rules_pint_only_aligns_missing_ecl_to_iers2010(
+    def test_apply_shared_convention_rules_pint_only_aligns_missing_ecl_to_iers2010(
         self,
     ):
         file_data = {
@@ -609,7 +629,7 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with patch.object(parameter_manager.logger, "warning") as mock_warning:
-            parameter_manager._apply_consistent_convention_rules(
+            parameter_manager._apply_shared_convention_rules(
                 parfile_dicts, reference_dict
             )
 
@@ -619,7 +639,7 @@ UNITS TDB
         assert "T2CMETHOD" not in parfile_dicts["PPTA"]
         assert mock_warning.call_count == 0
 
-    def test_apply_consistent_convention_rules_tempo2_only_preserves_shared_t2cmethod(
+    def test_apply_shared_convention_rules_tempo2_only_preserves_shared_t2cmethod(
         self,
     ):
         file_data = {
@@ -654,15 +674,13 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        parameter_manager._apply_shared_convention_rules(parfile_dicts, reference_dict)
 
         for pd in parfile_dicts.values():
             assert pd["ECL"] == ["IERS2010"]
             assert pd["T2CMETHOD"] == ["TEMPO"]
 
-    def test_apply_consistent_convention_rules_tempo2_only_aligns_heterogeneous_conventions(
+    def test_apply_shared_convention_rules_tempo2_only_aligns_heterogeneous_conventions(
         self,
     ):
         file_data = {
@@ -697,16 +715,14 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        parameter_manager._apply_shared_convention_rules(parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2003"]
         assert parfile_dicts["PPTA"]["ECL"] == ["IERS2003"]
         assert parfile_dicts["EPTA"]["T2CMETHOD"] == ["TEMPO"]
         assert parfile_dicts["PPTA"]["T2CMETHOD"] == ["TEMPO"]
 
-    def test_apply_consistent_convention_rules_single_pta_skips_alignment(self):
+    def test_apply_shared_convention_rules_single_pta_skips_alignment(self):
         file_data = {
             "EPTA": {
                 "timing_package": "tempo2",
@@ -727,9 +743,7 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        parameter_manager._apply_shared_convention_rules(parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["T2CMETHOD"] == ["TEMPO"]
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
@@ -777,7 +791,240 @@ UNITS TDB
         assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
         assert parfile_dicts["EPTA"]["DM2"] == ["0.0 1"]
 
-    def test_apply_consistent_convention_rules_mixed_astrometry_raises(self):
+    @pytest.fixture
+    def file_data_with_two_different_dm_values(self):
+        return {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.2 1\n"
+                    "DMEPOCH 54000\n"
+                    "DM1 0.0 1\n"
+                    "DM2 0.0 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.7 1\n"
+                    "DMEPOCH 56000\n"
+                    "DM1 0.0 1\n"
+                    "DM2 0.0 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+
+    def test_consistent_dispersion_preserves_local_dm_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+        parameter_manager._make_component_parameters_shared(
+            parfile_dicts,
+            reference_dict,
+            "EPTA",
+            "dispersion",
+            ["DM", "DMEPOCH", "DM1", "DM2"],
+        )
+        parameter_manager._handle_dm_special_cases(
+            parfile_dicts=parfile_dicts,
+            reference_dict=reference_dict,
+            add_dm_derivatives=True,
+            dmx_params_map={"EPTA": [], "PPTA": []},
+        )
+
+        assert parfile_dicts["EPTA"]["DM"] == ["13.2 1"]
+        assert parfile_dicts["PPTA"]["DM"] == ["13.7 1"]
+        assert parfile_dicts["EPTA"]["DMEPOCH"] == ["54000.0 0"]
+        assert parfile_dicts["PPTA"]["DMEPOCH"] == ["54000.0 0"]
+        assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
+        assert parfile_dicts["PPTA"]["DM1"] == ["0.0 1"]
+
+    def test_discover_mergeable_parameters_excludes_dm_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" not in mergeable
+        assert "DM1" in mergeable
+        assert "DM2" in mergeable
+
+    def test_build_parameter_mappings_keeps_dm_pta_specific_by_default(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM_EPTA" in mapping.pta_specific_parameters
+        assert "DM_PPTA" in mapping.pta_specific_parameters
+        assert "DM1" in mapping.merged_parameters
+        assert "DM2" in mapping.merged_parameters
+        assert "DM" not in mapping.merged_parameters
+
+    def test_empty_exclude_from_shared_restores_merged_dm(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+            exclude_from_shared=[],
+        )
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" in mergeable
+
+        parfile_data = {
+            pta: data["par_content"]
+            for pta, data in file_data_with_two_different_dm_values.items()
+        }
+        consistent_parfiles = parameter_manager._make_parameters_shared(parfile_data)
+
+        for pta_name in file_data_with_two_different_dm_values:
+            parfile_dict = parse_parfile(StringIO(consistent_parfiles[pta_name]))
+            assert parfile_dict["DM"] == ["13.2 1"]
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM" in mapping.merged_parameters
+        assert "DM1" in mapping.merged_parameters
+        assert "DM2" in mapping.merged_parameters
+        assert "DM_EPTA" not in mapping.pta_specific_parameters
+        assert "DM_PPTA" not in mapping.pta_specific_parameters
+
+    @pytest.fixture
+    def file_data_with_two_different_f0_values(self):
+        return {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.494081 1\n"
+                    "F1 -6.2e-16 1\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.2 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1600-3053\n"
+                    "PEPOCH 55000\n"
+                    "F0 186.500000 1\n"
+                    "F1 -6.2e-16 1\n"
+                    "RAJ 16:00:51.9032\n"
+                    "DECJ -30:53:49.38\n"
+                    "DM 13.7 1\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+
+    def test_exclude_from_shared_keeps_f0_pta_specific(
+        self, file_data_with_two_different_f0_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_f0_values,
+            combine_components=["spindown"],
+            exclude_from_shared=("F0",),
+        )
+
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+        spindown_params = get_parameters_by_type_from_models(
+            "spindown", parameter_manager.pint_models
+        )
+        parameter_manager._make_component_parameters_shared(
+            parfile_dicts,
+            reference_dict,
+            "EPTA",
+            "spindown",
+            spindown_params,
+        )
+
+        assert parfile_dicts["EPTA"]["F0"] == ["186.494081 1"]
+        assert parfile_dicts["PPTA"]["F0"] == ["186.500000 1"]
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "F0_EPTA" in mapping.pta_specific_parameters
+        assert "F0_PPTA" in mapping.pta_specific_parameters
+        assert "F0" not in mapping.merged_parameters
+        assert "F1" in mapping.merged_parameters
+
+    def test_exclude_from_shared_accepts_lowercase_dm_alias(
+        self, file_data_with_two_different_dm_values
+    ):
+        parameter_manager = ParameterManager(
+            file_data=file_data_with_two_different_dm_values,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+            exclude_from_shared=("dm",),
+        )
+
+        assert parameter_manager.exclude_from_shared == {"DM"}
+
+        mergeable = {
+            resolve_parameter_alias(param)
+            for param in parameter_manager._discover_mergeable_parameters()
+        }
+
+        assert "DM" not in mergeable
+
+        mapping = parameter_manager.build_parameter_mappings()
+
+        assert "DM_EPTA" in mapping.pta_specific_parameters
+        assert "DM_PPTA" in mapping.pta_specific_parameters
+        assert "DM" not in mapping.merged_parameters
+
+    def test_apply_shared_convention_rules_mixed_astrometry_raises(self):
         """Mixed ecliptic/equatorial astrometry should fail fast."""
         file_data = {
             "EPTA": {
@@ -799,11 +1046,11 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with pytest.raises(ValueError, match="Mixed astrometry detected"):
-            parameter_manager._apply_consistent_convention_rules(
+            parameter_manager._apply_shared_convention_rules(
                 parfile_dicts, reference_dict
             )
 
-    def test_apply_consistent_convention_rules_pint_only_elong_elat_aliases(self):
+    def test_apply_shared_convention_rules_pint_only_elong_elat_aliases(self):
         file_data = {
             "EPTA": {
                 "timing_package": "pint",
@@ -833,14 +1080,12 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        parameter_manager._apply_shared_convention_rules(parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
         assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
 
-    def test_apply_consistent_convention_rules_missing_reference_clock_raises(self):
+    def test_apply_shared_convention_rules_missing_reference_clock_raises(self):
         """Reference parfile must contain CLOCK or CLK."""
         file_data = {
             "EPTA": {
@@ -859,11 +1104,11 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with pytest.raises(ValueError, match="CLOCK'.*CLK"):
-            parameter_manager._apply_consistent_convention_rules(
+            parameter_manager._apply_shared_convention_rules(
                 parfile_dicts, reference_dict
             )
 
-    def test_apply_consistent_convention_rules_missing_reference_ephem_raises(self):
+    def test_apply_shared_convention_rules_missing_reference_ephem_raises(self):
         """Reference parfile must contain EPHEM."""
         file_data = {
             "EPTA": {
@@ -882,6 +1127,276 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with pytest.raises(ValueError, match="EPHEM"):
-            parameter_manager._apply_consistent_convention_rules(
+            parameter_manager._apply_shared_convention_rules(
                 parfile_dicts, reference_dict
             )
+
+    def test_parse_ne_sw_value_present_and_absent(self):
+        """Parse explicit NE_SW from parfile dict or return None when absent."""
+        parameter_manager = ParameterManager(
+            file_data={"EPTA": {"timing_package": "pint", "par_content": ""}},
+            combine_components=[],
+        )
+        assert parameter_manager._parse_ne_sw_value({"NE_SW": ["4 0"]}) == 4.0
+        assert parameter_manager._parse_ne_sw_value({}) is None
+
+    def test_resolve_consistent_ne_sw_reference_explicit(self):
+        """Reference explicit NE_SW takes precedence over tempo2 fallback."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "tempo2", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        reference = {"NE_SW": ["0 0"]}
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw(reference, packages) == 0.0
+
+    def test_resolve_consistent_ne_sw_tempo2_fallback(self):
+        """Missing reference NE_SW with tempo2 PTA resolves to 4.0 cm^-3."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "tempo2", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw({}, packages) == 4.0
+
+    def test_resolve_consistent_ne_sw_pint_only_skip(self):
+        """PINT-only stack with no reference NE_SW leaves alignment unresolved."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "pint", "par_content": ""},
+                "PPTA": {"timing_package": "pint", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        packages = parameter_manager._normalized_timing_packages()
+        assert parameter_manager._resolve_consistent_ne_sw({}, packages) is None
+
+    def test_align_ne_sw_cross_engine_missing(self):
+        """Cross-engine stack without NE_SW lines gets tempo2 fallback on all PTAs."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["4 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    def test_align_ne_sw_tempo2_only_single_pta_missing(self):
+        """Single tempo2 PTA without NE_SW gets explicit tempo2 default."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    def test_align_ne_sw_pint_only_multi_pta_missing(self):
+        """PINT-only multi-PTA stack leaves NE_SW absent when reference omits it."""
+        file_data = {
+            "EPTA": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+            "PPTA": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert "NE_SW" not in parfile_dicts["EPTA"]
+        assert "NE_SW" not in parfile_dicts["PPTA"]
+
+    def test_align_ne_sw_reference_explicit_zero(self, caplog):
+        """Reference NE_SW 0 overwrites conflicting explicit values with warning."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nNE_SW 0 0\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nNE_SW 4 0\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        with caplog.at_level(logging.WARNING):
+            parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["0 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["0 0"]
+        assert any(
+            "overwriting NE_SW 4 with consistent value 0" in record.message
+            for record in caplog.records
+        )
+
+    def test_align_ne_sw_reference_explicit_four(self):
+        """Reference explicit NE_SW 4 is written on all PTAs including absent targets."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nNE_SW 4 0\nUNITS TDB\n",
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+        reference_dict = parfile_dicts["NG"]
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, reference_dict)
+
+        assert parfile_dicts["NG"]["NE_SW"] == ["4 0"]
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+
+    @patch.object(ParameterManager, "_apply_shared_convention_rules")
+    def test_make_parameters_shared_aligns_ne_sw_cross_engine(self, _mock_conv):
+        """_make_parameters_shared aligns NE_SW before convention rules."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+                    "F1 -6.2e-16\nUNITS TDB\n"
+                ),
+            },
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+                    "F1 -6.2e-16\nUNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            combine_components=[],
+        )
+        parfile_data = {pta: data["par_content"] for pta, data in file_data.items()}
+
+        result = parameter_manager._make_parameters_shared(parfile_data)
+
+        assert "NE_SW" in result["NG"] and "4" in result["NG"]
+        assert "NE_SW" in result["EPTA"] and "4" in result["EPTA"]
+
+    def test_parse_ne_sw_value_solarn0_alias(self):
+        """SOLARN0 (NANOGrav spelling) counts as an explicit NE_SW value."""
+        parameter_manager = ParameterManager(
+            file_data={"NG": {"timing_package": "pint", "par_content": ""}},
+            combine_components=[],
+        )
+        assert parameter_manager._parse_ne_sw_value({"SOLARN0": ["0.00"]}) == 0.0
+        assert parameter_manager._parse_ne_sw_value({"NE1AU": ["4"]}) == 4.0
+
+    def test_resolve_consistent_ne_sw_reference_solarn0_beats_fallback(self):
+        """Reference SOLARN0 0 is explicit; tempo2 fallback of 4.0 must not win."""
+        parameter_manager = ParameterManager(
+            file_data={
+                "NG": {"timing_package": "pint", "par_content": ""},
+                "EPTA": {"timing_package": "tempo2", "par_content": ""},
+            },
+            combine_components=[],
+        )
+        packages = parameter_manager._normalized_timing_packages()
+        assert (
+            parameter_manager._resolve_consistent_ne_sw({"SOLARN0": ["0.00"]}, packages)
+            == 0.0
+        )
+
+    def test_align_ne_sw_drops_alias_spellings(self):
+        """Aligner must remove SOLARN0/NE1AU so PINT never sees two NE_SW lines.
+
+        Regression for the IPTA DR2 notebook crash: NANOGrav 9y par files carry
+        SOLARN0 0.00; injecting NE_SW alongside it made PINT reject the shared
+        par with "Parameter NE_SW is not a repeatable parameter".
+        """
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": "PSR J1857+0943\nNE_SW 4\nUNITS TDB\n",
+            },
+            "NG": {
+                "timing_package": "pint",
+                "par_content": "PSR J1857+0943\nSOLARN0 0.00\nUNITS TDB\n",
+            },
+        }
+        parameter_manager = ParameterManager(file_data=file_data, combine_components=[])
+        parfile_dicts = parameter_manager._parse_parfiles()
+
+        parameter_manager._align_ne_sw_convention(parfile_dicts, parfile_dicts["EPTA"])
+
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["4 0"]
+        assert parfile_dicts["NG"]["NE_SW"] == ["4 0"]
+        assert "SOLARN0" not in parfile_dicts["NG"]
+
+    def test_make_parfiles_shared_solarn0_roundtrip(self, tmp_path):
+        """Written consistent pars must re-ingest cleanly through PINT.
+
+        End-to-end regression for the notebook crash: cross-engine stack where
+        the PINT PTA spells solar wind as SOLARN0. Every written par must build
+        a PINT model (the _create_pulsar_objects step) without duplicate-NE_SW
+        errors.
+        """
+        base = (
+            "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\n"
+            "RAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\n"
+            "EPHEM DE421\nCLK TT(BIPM2015)\nUNITS TDB\n"
+        )
+        file_data = {
+            "EPTA": {
+                "timing_package": "tempo2",
+                "par_content": base + "NE_SW 4\n",
+            },
+            "NG": {
+                "timing_package": "pint",
+                "par_content": base + "SOLARN0 0.00\n",
+            },
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            output_dir=tmp_path,
+            pulsar_name="J1857+0943",
+        )
+
+        output_files = parameter_manager.make_parfiles_shared()
+
+        from metapulsar.pint_helpers import create_pint_model
+
+        for pta_name, path in output_files.items():
+            content = Path(path).read_text()
+            assert "SOLARN0" not in content, f"{pta_name}: alias survived rewrite"
+            model = create_pint_model(content)  # must not raise
+            assert float(model.NE_SW.value) == pytest.approx(4.0)

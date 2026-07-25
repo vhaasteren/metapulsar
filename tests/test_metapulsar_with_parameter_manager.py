@@ -79,7 +79,7 @@ class TestMetaPulsarWithParameterManager:
             param_manager.reference_pta == "epta_dr2"
         )  # Should be the first dictionary key
 
-    def test_consistent_strategy_parameter_setup(self):
+    def test_shared_strategy_parameter_setup(self):
         """Test parameter setup for consistent strategy with ParameterManager."""
         # Test ParameterManager initialization directly
         mock_file_data = {

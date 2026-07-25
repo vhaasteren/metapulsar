@@ -1,5 +1,7 @@
 """Main MetaPulsar class for combining multi-PTA pulsar timing data."""
 
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass
 from itertools import groupby
@@ -85,6 +87,7 @@ class MetaPulsar:
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         pta_files: dict[str, dict] | None = None,
         clock_dir: str | Path | None = None,
         sort=False,
@@ -108,6 +111,11 @@ class MetaPulsar:
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
             add_dm_derivatives: Whether to ensure DM1, DM2 are present ("shared" strategy only)
+            exclude_from_shared: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in combine_components.
+                Defaults to ("DM",) so each PTA keeps its own reference DM while
+                shared dispersion still shares DM1/DM2. Pass an empty list to
+                merge all parameters in selected components.
             sort: Whether to sort data by time
         """
         self._pulsars = pulsars
@@ -116,6 +124,7 @@ class MetaPulsar:
             combine_components if self.combination_strategy == "shared" else []
         )
         self.add_dm_derivatives = add_dm_derivatives
+        self.exclude_from_shared = exclude_from_shared
         # Retained per-PTA par/tim must be available before reference-theta lookup:
         # pulse-number tracking uses temporary TRACK -2 par paths that are deleted
         # after libstempo construction.
@@ -329,6 +338,7 @@ class MetaPulsar:
             file_data=file_data,
             combine_components=combine_components,
             add_dm_derivatives=self.add_dm_derivatives,
+            exclude_from_shared=self.exclude_from_shared,
         )
 
         mapping = parameter_manager.build_parameter_mappings()

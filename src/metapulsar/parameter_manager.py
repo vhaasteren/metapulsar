@@ -7,6 +7,8 @@ This module consolidates all parameter management functionality:
 - Working with both PINT and Tempo2 PTAs
 """
 
+from __future__ import annotations
+
 import tempfile
 import subprocess
 from pathlib import Path
@@ -20,11 +22,13 @@ from pint.models.timing_model import TimingModel
 from .pint_helpers import (
     resolve_parameter_alias,
     resolve_parfile_parameter_name,
+    get_aliases_for_parameter,
     create_pint_model,
     get_parameters_by_type_from_models,
     check_component_available_in_model,
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
+    dedupe_nonrepeatable_par_lines,
     parse_parameter_using_pint,
     detect_astrometry_style,
 )
@@ -64,6 +68,7 @@ class ParameterManager:
         add_dm_derivatives: bool = True,
         output_dir: Path = None,
         pulsar_name: str = None,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     ):
         """Initialize with file data and configuration.
 
@@ -73,12 +78,20 @@ class ParameterManager:
             add_dm_derivatives: Whether to add DM1, DM2 parameters
             output_dir: Directory for output files
             pulsar_name: Name of the pulsar (used for output filename generation)
+            exclude_from_shared: Canonical timing-model parameter names to keep
+                PTA-specific even when their component is in combine_components.
+                Defaults to ("DM",) so each PTA keeps its own reference DM while
+                shared dispersion still shares DM1/DM2. Pass an empty list to
+                merge all parameters in selected components.
         """
         self.file_data = file_data
         self.combine_components = combine_components
         self.add_dm_derivatives = add_dm_derivatives
         self.output_dir = output_dir
         self.pulsar_name = pulsar_name
+        self.exclude_from_shared = self._normalize_excluded_shared_parameters(
+            exclude_from_shared
+        )
 
         # Use first dictionary key as reference (consistent with MetaPulsarFactory)
         self.reference_pta = next(iter(file_data.keys()))
@@ -106,6 +119,18 @@ class ParameterManager:
         """Clear the PINT models cache."""
         self._pint_models_cache = None
 
+    def _normalize_excluded_shared_parameters(
+        self, exclude_from_shared: List[str] | tuple[str, ...]
+    ) -> set[str]:
+        """Return canonical PINT names excluded from shared component merging."""
+        return {
+            resolve_parameter_alias(param).upper()
+            for param in tuple(exclude_from_shared)
+        }
+
+    def _is_excluded_from_shared(self, param_name: str) -> bool:
+        return resolve_parameter_alias(param_name).upper() in self.exclude_from_shared
+
     # ===== MAIN PUBLIC METHODS =====
 
     def make_parfiles_shared(self) -> Dict[str, Path]:
@@ -131,7 +156,7 @@ class ParameterManager:
         converted_parfiles = self._convert_units_if_needed(parfile_dicts)
 
         # 3. Make parameters consistent
-        shared_parfiles = self._make_parameters_consistent(converted_parfiles)
+        shared_parfiles = self._make_parameters_shared(converted_parfiles)
 
         # 4. Write consistent par files to output directory
         output_files = self._write_shared_parfiles(shared_parfiles)
@@ -372,6 +397,67 @@ class ParameterManager:
             return None
         return parts[0].upper()
 
+    def _parse_ne_sw_value(self, parfile_dict: Dict[str, List[str]]) -> Optional[float]:
+        """Return explicit NE_SW (cm^-3) from a parfile dict, or None if absent.
+
+        Alias-aware: NANOGrav-style par files spell it SOLARN0 (PINT aliases:
+        NE1AU, SOLARN0), which must count as an explicit value.
+        """
+        for alias in get_aliases_for_parameter("NE_SW"):
+            raw = parfile_dict.get(alias)
+            if raw:
+                value, _frozen = parse_parameter_using_pint(alias, raw)
+                return float(value)
+        return None
+
+    def _resolve_consistent_ne_sw(
+        self,
+        reference_dict: Dict[str, List[str]],
+        normalized_packages: Set[str],
+    ) -> Optional[float]:
+        """Resolve the consistent NE_SW density (cm^-3) for this pulsar stack."""
+        explicit = self._parse_ne_sw_value(reference_dict)
+        if explicit is not None:
+            return explicit
+        if "tempo2" in normalized_packages:
+            return 4.0
+        return None
+
+    def _align_ne_sw_convention(
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        reference_dict: Dict[str, List[str]],
+    ) -> None:
+        """Align explicit NE_SW across PTAs to resolve tempo2/PINT default mismatch."""
+        normalized = self._normalized_timing_packages()
+        consistent_ne_sw = self._resolve_consistent_ne_sw(reference_dict, normalized)
+        if consistent_ne_sw is None:
+            self.logger.info("NE_SW alignment skipped (reason=pint_only_implicit_zero)")
+            return
+
+        line = [f"{consistent_ne_sw:g} 0"]
+        for pta_name, parfile_dict in parfile_dicts.items():
+            old = self._parse_ne_sw_value(parfile_dict)
+            # Drop every alias spelling before writing the canonical line, so a
+            # SOLARN0 line can never coexist with the injected NE_SW (PINT maps
+            # both to NE_SW and rejects the pair as a repeated parameter).
+            for alias in get_aliases_for_parameter("NE_SW"):
+                if alias != "NE_SW" and alias in parfile_dict:
+                    parfile_dict.pop(alias)
+                    self.logger.info(
+                        f"PTA {pta_name}: replaced {alias} with canonical NE_SW"
+                    )
+            if old is not None and abs(old - consistent_ne_sw) > 1e-9:
+                self.logger.warning(
+                    f"PTA {pta_name}: overwriting NE_SW {old:g} with consistent "
+                    f"value {consistent_ne_sw:g} from reference/resolution policy"
+                )
+            elif old is None:
+                self.logger.info(
+                    f"PTA {pta_name}: NE_SW aligned to {consistent_ne_sw:g} (was absent)"
+                )
+            parfile_dict["NE_SW"] = line
+
     def _collect_convention_states(
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> Dict[str, Dict[str, Optional[str]]]:
@@ -534,7 +620,7 @@ class ParameterManager:
                 "(reason=homogeneous_t2cmethod_single_engine_tempo2)"
             )
 
-    def _apply_consistent_convention_rules(
+    def _apply_shared_convention_rules(
         self,
         parfile_dicts: Dict[str, Dict[str, List[str]]],
         reference_dict: Dict[str, List[str]],
@@ -573,10 +659,8 @@ class ParameterManager:
             f"(reason=unsupported_single_engine_packages:{sorted(normalized_packages)})"
         )
 
-    def _make_parameters_consistent(
-        self, parfile_data: Dict[str, str]
-    ) -> Dict[str, str]:
-        """Make parameters consistent using reference PTA values.
+    def _make_parameters_shared(self, parfile_data: Dict[str, str]) -> Dict[str, str]:
+        """Make parameters shared using reference PTA values.
 
         This function really is the workhorse of the MetaPulsar procedure to
         make par models consistent across PTAs. Method:
@@ -584,14 +668,15 @@ class ParameterManager:
         - Start with parfiles that have been unit-converted (done)
         - Get all parameters from the reference PTA
         - Determine which model 'components' (astrometry, spindown, etc.) are
-          being made consistent, and find all parameters in the models
+          being made shared, and find all parameters in the models
         - For each component, replace the parameters with the values of the
           reference PTA
         - For dispersion, remove DMX parameters
         - Optionally, add DM1 and DM2 parameters
+        - Align explicit NE_SW when required for tempo2/PINT parity
         - Always align CLOCK and EPHEM parameters
         - Convert back to par file strings
-        - Write consistent par files to output directory
+        - Write shared par files to output directory
 
         This method is deterministic, so we do not have to save the new parfiles
         (but we can, as an option)
@@ -600,10 +685,10 @@ class ParameterManager:
             parfile_data: Dictionary of parfile contents for each PTA
 
         Returns:
-            Dictionary of consistent parfile contents for each PTA
+            Dictionary of shared parfile contents for each PTA
         """
         self.logger.info(
-            f"Making parameters consistent using reference PTA: {self.reference_pta}"
+            f"Making parameters shared using reference PTA: {self.reference_pta}"
         )
 
         # Parse all par files
@@ -641,7 +726,7 @@ class ParameterManager:
             self.logger.info(f"Making {component} parameters consistent")
 
             # Always call standard component consistency logic first
-            self._make_component_parameters_consistent(
+            self._make_component_parameters_shared(
                 parfile_dicts,
                 reference_dict,
                 self.reference_pta,
@@ -658,12 +743,14 @@ class ParameterManager:
                     dmx_params_map,
                 )
 
+        self._align_ne_sw_convention(parfile_dicts, reference_dict)
+
         # Apply reference and engine-specific conventions after component updates.
         try:
-            self._apply_consistent_convention_rules(parfile_dicts, reference_dict)
+            self._apply_shared_convention_rules(parfile_dicts, reference_dict)
         except ValueError as e:
-            self.logger.error(f"Consistent convention rules failed: {e}")
-            raise RuntimeError(f"Consistent convention rules failed: {e}") from e
+            self.logger.error(f"Shared convention rules failed: {e}")
+            raise RuntimeError(f"Shared convention rules failed: {e}") from e
 
         # Convert back to par file strings
         shared_parfiles = {}
@@ -680,7 +767,7 @@ class ParameterManager:
 
         return shared_parfiles
 
-    def _make_component_parameters_consistent(
+    def _make_component_parameters_shared(
         self,
         parfile_dicts: Dict[str, Dict],
         reference_dict: Dict,
@@ -688,31 +775,32 @@ class ParameterManager:
         component: str,
         component_params: List[str],
     ) -> None:
-        """Make parameters for a specific component consistent."""
-        # If no parameters to process, nothing to do
-        if not component_params:
+        """Make parameters for a specific component shared across PTAs."""
+        shared_params = [
+            param
+            for param in component_params
+            if not self._is_excluded_from_shared(param)
+        ]
+
+        if not shared_params:
             self.logger.debug(
-                f"No parameters found for component {component}, skipping"
+                f"No non-excluded parameters found for component {component}, skipping"
             )
             return
 
-        # Extract reference values
         reference_values = {}
-        for param in component_params:
+        for param in shared_params:
             if param in reference_dict:
                 reference_values[param] = reference_dict[param]
 
-        # Apply to all PTAs
         for pta_name, parfile_dict in parfile_dicts.items():
             if pta_name == reference_pta:
-                continue  # Skip reference PTA
+                continue
 
-            # Remove ALL existing parameters for this component
-            for param in component_params:
+            for param in shared_params:
                 if param in parfile_dict:
                     parfile_dict.pop(param)
 
-            # Add reference values
             for param, value in reference_values.items():
                 parfile_dict[param] = value
 
@@ -725,49 +813,40 @@ class ParameterManager:
     ) -> None:
         """Handle DM-specific special cases: DMX removal, DMEPOCH, DM1/DM2 derivatives."""
 
-        # Handle DM and DMEPOCH explicitly - always add to all PTAs
-        dm_value = reference_dict.get("DM")
-        if dm_value is None:
-            raise ValueError(
-                "DM parameter is missing from reference parfile. "
-                "DM parameter is required when add_dm_derivatives=True. "
-                "Please ensure the reference parfile contains a DM parameter."
-            )
-
-        # Parse DM parameter using PINT's Parameter class
-        reference_dm, dm_is_frozen = parse_parameter_using_pint("DM", dm_value)
-
-        if dm_is_frozen:
-            self.logger.warning(
-                f"DM parameter in reference parfile for {self.reference_pta} is not free. "
-                "Setting to free."
-            )
-
-        # Handle DMEPOCH explicitly - always add to all PTAs
         dmepoch_value = reference_dict.get("DMEPOCH", ["55000"])
         reference_dmepoch, _ = parse_parameter_using_pint("DMEPOCH", dmepoch_value)
         self.logger.debug(f"Reference DMEPOCH: {reference_dmepoch}")
 
-        # Process each PTA (including reference PTA)
         for pta_name, parfile_dict in parfile_dicts.items():
-            # Remove DMX parameters using pre-computed list
             dmx_params = dmx_params_map[pta_name]
             for dmx_param in dmx_params:
                 old_value = parfile_dict[dmx_param]
                 parfile_dict.pop(dmx_param)
                 self.logger.debug(f"PTA {pta_name}: Removed {dmx_param} = {old_value}")
 
-            # Set DM for ALL PTAs (so we ensure it's always being fit for)
-            parfile_dict["DM"] = [f"{reference_dm} 1"]  # 1 = free
-            self.logger.debug(f"PTA {pta_name}: Set DM = {reference_dm} (free)")
+            dm_value = parfile_dict.get("DM")
+            if dm_value is None:
+                raise ValueError(
+                    f"DM parameter is missing from parfile for PTA {pta_name}. "
+                    "DM is required for consistent dispersion cleanup because it "
+                    "is kept as that PTA's local reference DM."
+                )
 
-            # Set DMEPOCH for ALL PTAs (need it for DM1 and DM2)
-            parfile_dict["DMEPOCH"] = [f"{reference_dmepoch} 0"]  # 0 = frozen
+            local_dm, dm_is_frozen = parse_parameter_using_pint("DM", dm_value)
+            if dm_is_frozen:
+                self.logger.warning(
+                    f"DM parameter in parfile for PTA {pta_name} is not free. "
+                    "Setting to free."
+                )
+
+            parfile_dict["DM"] = [f"{local_dm} 1"]
+            self.logger.debug(f"PTA {pta_name}: Preserved local DM = {local_dm} (free)")
+
+            parfile_dict["DMEPOCH"] = [f"{reference_dmepoch} 0"]
             self.logger.debug(
                 f"PTA {pta_name}: Set DMEPOCH = {reference_dmepoch} (frozen)"
             )
 
-            # Handle DM derivatives based on add_dm_derivatives flag
             if add_dm_derivatives:
                 parfile_dict["DM1"] = ["0.0 1"]
                 parfile_dict["DM2"] = ["0.0 1"]
@@ -810,11 +889,11 @@ class ParameterManager:
         return output_files
 
     def _get_output_filename(self, pta_name: str) -> str:
-        """Generate output filename for consistent par file."""
+        """Generate output filename for shared par file."""
         if self.pulsar_name:
-            return f"{self.pulsar_name}_consistent_{pta_name}.par"
+            return f"{self.pulsar_name}_shared_{pta_name}.par"
         else:
-            return f"consistent_{pta_name}.par"
+            return f"shared_{pta_name}.par"
 
     # ===== PARAMETER MAPPING METHODS =====
 
@@ -830,7 +909,9 @@ class ParameterManager:
 
             pint_models = self.pint_models  # Use cached models
             params = get_parameters_by_type_from_models(component_type, pint_models)
-            mergeable_params.extend(params)
+            mergeable_params.extend(
+                param for param in params if not self._is_excluded_from_shared(param)
+            )
         return mergeable_params
 
     def _process_all_pta_parameters(
@@ -1050,7 +1131,10 @@ class ParameterManager:
                     output_file.seek(0)
                     converted_content = output_file.read()
 
-                    return converted_content
+                    # Old tempo2 builds (pre-bf00f36) write NE_SW twice in
+                    # transform output; PINT rejects duplicated non-repeatable
+                    # parameters, so sanitize at this ingestion boundary.
+                    return dedupe_nonrepeatable_par_lines(converted_content)
 
                 except subprocess.CalledProcessError as e:
                     raise RuntimeError(f"Tempo2 conversion failed: {e.stderr}") from e
