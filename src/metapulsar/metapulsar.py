@@ -145,6 +145,7 @@ class MetaPulsar:
         self._combine_timing_data()
         self._build_design_matrix()
         self._remove_nonidentifiable_parameters()
+        self._assert_gauge_columns()
         self._setup_position_and_planets()
 
         self.sort_data()
@@ -571,6 +572,41 @@ class MetaPulsar:
 
         # Update fitpars to reflect kept parameters
         self.fitpars = [original_fitpars[i] for i in keep_indices]
+
+    def _assert_gauge_columns(self) -> None:
+        """Assert the combined Mmat spans one constant per PTA."""
+        from nltiming.nonlinear_timing_model import assert_gauge_column_present
+
+        pta_slices = self._get_pta_slices()
+
+        class _Leaf:
+            gauge_applied = False
+
+            def gauge_provenance(self):
+                from nltiming.protocols import GaugeProvenance
+
+                return GaugeProvenance(export="none", reference_mode="none")
+
+        class _Contribution:
+            def __init__(self, name: str, row_indices):
+                self.name = name
+                self.row_indices = np.asarray(row_indices, dtype=int)
+                self.engine = _Leaf()
+
+        contributions = [
+            _Contribution(pta, np.arange(slc.start, slc.stop, dtype=int))
+            for pta, slc in pta_slices.items()
+        ]
+
+        class _StubEngine:
+            def __init__(self, contribs):
+                self.contributions = contribs
+
+        assert_gauge_column_present(
+            self,
+            _StubEngine(contributions),
+            np.asarray(self._designmatrix, dtype=float),
+        )
 
     def _build_design_matrix_column(self, full_parname):
         """Build design matrix column for a single parameter."""
@@ -1181,7 +1217,7 @@ class MetaPulsar:
         engines="jug",
         *,
         linearized: bool = False,
-        design_matrix_method: str = "analytic",
+        derivative_method: str = "analytic",
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
         prime_sessions: bool = True,
@@ -1209,7 +1245,7 @@ class MetaPulsar:
         cache_key = (
             tuple(sorted(engines.items())),
             linearized,
-            design_matrix_method,
+            derivative_method,
             str(tempo2_native),
             tuple(sorted(resolved_options.items())),
             prime_sessions,
@@ -1237,9 +1273,11 @@ class MetaPulsar:
         global_index = {par: i for i, par in enumerate(fitpars)}
         contributions: list[PtaContribution] = []
 
+        # Prime any tempo2-compatible JUG contribution that will build a real
+        # JugEngine (not a linearized stand-in). Independent of derivative_method.
         if (
             prime_sessions
-            and design_matrix_method == "autodiff"
+            and not linearized
             and any(
                 _IMPL_FAMILY[engines[self._native_compat(pta)]] == "jug"
                 and str(self._native_compat(pta)).lower().startswith("tempo2")
@@ -1328,9 +1366,9 @@ class MetaPulsar:
                     tempo2_native=tempo2_native,
                     tempo2_jug_options=resolved_options,
                 )
-                if design_matrix_method == "autodiff" and str(
-                    native_compat
-                ).lower().startswith("tempo2"):
+                # Always required for tempo2 JUG: residual_delta goes through the
+                # JAX graph under either derivative_method.
+                if str(native_compat).lower().startswith("tempo2"):
                     cached = jug_session._cached_result_by_mode.get(subtract_tzr)
                     if cached is None:
                         jug_session.compute_residuals(
@@ -1347,12 +1385,13 @@ class MetaPulsar:
                     name: self._fitparameters.get(name, {}).get(pta_name, name)
                     for name in pta_fitpars
                 }
+                # Pass through timing_engine(subtract_tzr=...); previously the
+                # JugEngine default (True) silently ignored this kwarg.
                 engine = JugEngine.from_contribution(
                     jug_session,
                     linear_model=linear_model,
-                    compatibility=native_compat,
                     param_mapping=session_mapping,
-                    design_matrix_method=design_matrix_method,
+                    subtract_tzr=subtract_tzr,
                 )
 
             contributions.append(
@@ -1378,7 +1417,7 @@ class MetaPulsar:
         if verify_wiring:
             from nltiming.engines.jug import verify_jug_native_chain
 
-            verify_jug_native_chain(engine, design_matrix_method=design_matrix_method)
+            verify_jug_native_chain(engine)
         self._timing_engine_cache[cache_key] = engine
         return engine
 

@@ -11,9 +11,11 @@ own timing plan does:
   variance is fixed at ``1e40`` on the first sweep and then inferred, matching
   ``feature_flexible_fit.md``.
 
-Sign convention (mandated finite-difference check in :func:`sign_check`): the
-block matrix is ``+J_z = d r / d z`` with the residual vector taken as the
-current anchor residuals; the fitted coefficient ``m`` implies a physical step
+Sign convention (mandated finite-difference check in :func:`sign_check`):
+timing blocks are built from the residual Jacobian ``J = -M``
+(``J = ∂(Δr)/∂δ`` under the fitter contract
+``r(θ+δ) ≈ r(θ) - M δ``). The block matrix is therefore
+``J_z = dr/dz``; the fitted coefficient ``m`` still implies a physical step
 ``dz = -damping * m`` (Discovery's ``detres`` convention).
 """
 
@@ -62,7 +64,8 @@ class NltimingTimingModel(TimingModel):
     sampled_names: tuple[str, ...]
     sampled_indices: tuple[int, ...]
     marg_indices: tuple[int, ...]
-    design_matrix: np.ndarray
+    design_matrix: np.ndarray  # M (fitter sign); not used as a residual Jacobian
+    residual_jacobian: np.ndarray  # J = -M; used for blocks and sign_check
     base_residuals: np.ndarray
     z_anchor: np.ndarray
     initial_variance: float
@@ -131,7 +134,9 @@ class NltimingTimingModel(TimingModel):
 
     # --- block builders -----------------------------------------------------
     def _marginalized_block(self) -> BasisBlock:
-        cols = np.asarray(self.design_matrix, dtype=float)[:, list(self.marg_indices)]
+        cols = np.asarray(self.residual_jacobian, dtype=float)[
+            :, list(self.marg_indices)
+        ]
         basis = _normalized(cols)
         names = tuple(f"marg_{i}" for i in self.marg_indices)
         groups = tuple(
@@ -189,14 +194,14 @@ class NltimingTimingModel(TimingModel):
             return np.asarray(
                 self._evaluator.jacobian_z(self.space, z_anchor), dtype=float
             )
-        # Linear approximation at the reference: J_z = design[:, sampled] * (d delta / d z).
-        cols = np.asarray(self.design_matrix, dtype=float)[
+        # Linear approximation at the reference: J_z = J[:, sampled] * (dδ/dz).
+        cols = np.asarray(self.residual_jacobian, dtype=float)[
             :, list(self.sampled_indices)
         ]
         return cols * _d_delta_d_z(self.space, z_anchor)[None, :]
 
     def _full_delta(self, z_anchor: np.ndarray) -> np.ndarray:
-        n_fit = np.asarray(self.design_matrix).shape[1]
+        n_fit = np.asarray(self.residual_jacobian).shape[1]
         delta = np.zeros(n_fit, dtype=float)
         if self.sampled_names:
             delta[list(self.sampled_indices)] = _delta_from_z(self.space, z_anchor)
@@ -236,7 +241,8 @@ def timing_model(
     pulsar = ctx.pulsar
     # Geometry-plan API: TimingParameterPlan on ctx.plan (PartitionResult removed).
     plan = ctx.plan
-    design = np.asarray(ctx.design_matrix, dtype=float)
+    design = np.asarray(ctx.design_matrix, dtype=float)  # M
+    residual_jacobian = -design  # J = -M (fitter contract)
     n_fit = design.shape[1]
 
     if marginalize_all:
@@ -256,6 +262,7 @@ def timing_model(
         sampled_indices=sampled_indices,
         marg_indices=marg_indices,
         design_matrix=design,
+        residual_jacobian=residual_jacobian,
         base_residuals=np.asarray(pulsar.residuals, dtype=float),
         z_anchor=np.zeros(len(sampled_names), dtype=float),
         initial_variance=float(initial_variance),
@@ -272,20 +279,20 @@ def sign_check(
     eps: float = 1e-6,
     parameters: tuple[str, ...] | None = None,
 ) -> dict[str, float]:
-    """Finite-difference validation of the timing design/sign convention.
+    """Finite-difference validation of the residual-Jacobian sign convention.
 
-    Compares each sampled column of the delta-frame timing design against a
-    central finite difference of ``backend.residual_delta``. Returns the maximum
-    relative column error; a small value confirms both the magnitude and the
-    sign of ``d r / d delta`` (and hence, via the analytic prior Jacobian, of
-    ``J_z``). Raises if the convention is inconsistent.
+    Compares each sampled column of ``J = -M`` against a central finite
+    difference of ``backend.residual_delta``. Returns the maximum relative
+    column error; a small value confirms both the magnitude and the sign of
+    ``∂(Δr)/∂δ`` (and hence, via the analytic prior Jacobian, of ``J_z``).
+    Raises if the convention is inconsistent.
     """
     plan = ctx.plan
     backend = ctx.engine
-    design = np.asarray(ctx.design_matrix, dtype=float)
+    residual_jacobian = -np.asarray(ctx.design_matrix, dtype=float)
     names = tuple(plan.sampled) if parameters is None else tuple(parameters)
     index_of = {name: int(i) for name, i in zip(plan.sampled, plan.idx_sampled)}
-    n_fit = design.shape[1]
+    n_fit = residual_jacobian.shape[1]
 
     errors: dict[str, float] = {}
     for name in names:
@@ -298,13 +305,13 @@ def sign_check(
             np.asarray(backend.residual_delta(delta_plus), dtype=float)
             - np.asarray(backend.residual_delta(delta_minus), dtype=float)
         ) / (2.0 * eps)
-        analytic = design[:, col]
+        analytic = residual_jacobian[:, col]
         scale = np.linalg.norm(analytic) or 1.0
         errors[name] = float(np.linalg.norm(fd - analytic) / scale)
     worst = max(errors.values()) if errors else 0.0
     if worst > 1e-3:
         raise ValueError(
             f"timing sign/scale check failed: max relative column error {worst:.2e} "
-            "(the timing design does not match finite differences of residual_delta)"
+            "(J=-M does not match finite differences of residual_delta)"
         )
     return errors

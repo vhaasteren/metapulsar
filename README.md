@@ -87,12 +87,14 @@ Par files are aligned to PINT's orbital chart in `ParameterManager` before
 merging (hybrid `PB + FBn` → free `FB0`); see
 [`feature_orbital_chart_alignment.md`](feature_orbital_chart_alignment.md).
 
-**Linear objects (locked names):** `design_matrix` / \(M\) is the raw fitter
-basis (PINT/tempo2; what every other PTA package means by “design matrix”).
-`residual_jacobian` / \(J\) is \(\partial(\Delta r)/\partial\theta\) from the
-residual function — never called a design matrix.
-`waveform_jacobian` / \(W=-J\) is the delay tangent. Full vocabulary:
-[`docs/design_matrix_terminology.md`](docs/design_matrix_terminology.md).
+**Linear objects (locked names):** `design_matrix` / \(M\) is the delay tangent
+in the PINT/tempo2 fitter sign (uncentered; what every other PTA package means
+by “design matrix”). `residual_jacobian` / \(J=-M\) is
+\(\partial(\Delta r)/\partial\theta\) from the **gauge-free** residual function
+— never called a design matrix. The old `waveform_jacobian` noun is deleted:
+the delay tangent *is* \(M\). Full vocabulary:
+[`docs/design_matrix_terminology.md`](docs/design_matrix_terminology.md);
+design notes: `ref-packages/jug/feature_phase_gauge.md`.
 
 MetaPulsar exposes a live nonlinear-timing interface as well as an
 Enterprise/Discovery-compatible frozen-pulsar view. Open its engine-independent
@@ -105,7 +107,7 @@ from metapulsar import create_metapulsar
 mp = create_metapulsar(...)
 timing = mp.timing(
     engines={"pint": "jug", "tempo2": "jug"},
-    design_matrix_method="autodiff",
+    derivative_method="autodiff",
 )
 
 print(timing.parameters.names)

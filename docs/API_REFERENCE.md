@@ -71,14 +71,15 @@ class MetaPulsar:
 `MetaPulsar.timing()` opens nltiming's immutable, engine-independent evaluator.
 
 Locked linear vocabulary (see [`design_matrix_terminology.md`](design_matrix_terminology.md)):
-`design_matrix` / \(M\) = raw fitter basis; `residual_jacobian` / \(J\) =
-\(\partial(\Delta r)/\partial\theta\); `waveform_jacobian` / \(W=-J\). The
-evaluator’s `jacobian(...)` is a **residual Jacobian**, not a design matrix.
+`design_matrix` / \(M\) = delay tangent (fitter sign); `residual_jacobian` /
+\(J=-M\) from the gauge-free residual. The old `waveform_jacobian` noun is
+deleted. The evaluator’s `jacobian(...)` is a **residual Jacobian**, not a
+design matrix.
 
 ```python
 timing = metapulsar.timing(
     engines={"pint": "jug", "tempo2": "jug"},
-    design_matrix_method="autodiff",
+    derivative_method="autodiff",
 )
 
 timing.parameters["F0"]       # reference, units, uncertainty, PTA aliases

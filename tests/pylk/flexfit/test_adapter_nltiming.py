@@ -23,8 +23,11 @@ from pylk.flexfit import BasisBlock, DiagonalNoise, fastfit  # noqa: E402
 from pylk.flexfit.adapters import nltiming as nx  # noqa: E402
 
 
-def _linear_binding(names, design, residuals, *, sampled, sign=1.0, prior="normal"):
-    """Build a duck-typed nltiming ctx around a linear backend."""
+def _linear_binding(names, design, residuals, *, sampled, sign=-1.0, prior="normal"):
+    """Build a duck-typed nltiming ctx around a linear backend.
+
+    Default ``sign=-1`` matches the fitter contract ``Δr ≈ -M δ``.
+    """
     n_fit = len(names)
     idx = {name: i for i, name in enumerate(names)}
     # nltiming builds `space` over the *sampled* parameters only; mirror that.
@@ -81,8 +84,8 @@ def test_sign_check_raises_for_flipped_convention():
     rng = np.random.default_rng(1)
     names = ["F0", "F1"]
     design = rng.standard_normal((40, 2))
-    # backend residual_delta has the opposite sign of the stated design.
-    ctx = _linear_binding(names, design, np.zeros(40), sampled=("F0", "F1"), sign=-1.0)
+    # Wrong pre-fitter-sign convention: residual_delta = +M δ while J = -M.
+    ctx = _linear_binding(names, design, np.zeros(40), sampled=("F0", "F1"), sign=1.0)
     with pytest.raises(ValueError, match="sign/scale check failed"):
         nx.sign_check(ctx)
 
@@ -94,8 +97,8 @@ def test_linear_jz_equals_design_for_normal_prior():
     ctx = _linear_binding(names, design, np.zeros(30), sampled=("F0", "DM"))
     model = nx.timing_model(ctx)
     sampled_block = next(b for b in model.blocks() if b.name == "timing")
-    # normal(0,1) prior => d delta / d z = 1 => J_z == design columns.
-    np.testing.assert_allclose(sampled_block.matrix, design[:, [0, 2]])
+    # normal(0,1) prior => dδ/dz = 1 => J_z == J columns == -M columns.
+    np.testing.assert_allclose(sampled_block.matrix, -design[:, [0, 2]])
 
 
 def test_marginalize_all_uses_full_normalized_design():
@@ -109,7 +112,7 @@ def test_marginalize_all_uses_full_normalized_design():
     blocks = model.blocks()
     assert len(blocks) == 1
     assert blocks[0].name == "timing_marg"
-    np.testing.assert_allclose(blocks[0].matrix, normalized_basis(design))
+    np.testing.assert_allclose(blocks[0].matrix, normalized_basis(-design))
     assert model.sampled_block is None
 
 
