@@ -141,6 +141,7 @@ class MetaPulsar:
         # Elegant initialization flow
         self._create_enterprise_pulsars()
         self._setup_parameters()
+        self._assert_engine_chart_consistency()
         self._combine_timing_data()
         self._build_design_matrix()
         self._remove_nonidentifiable_parameters()
@@ -362,6 +363,42 @@ class MetaPulsar:
             # Create canonical versions of fitpars and setpars
             psr.fitpars_canonical = [resolve_parameter_alias(p) for p in psr.fitpars]
             psr.setpars_canonical = [resolve_parameter_alias(p) for p in psr.setpars]
+
+    def _assert_engine_chart_consistency(self) -> None:
+        """Fail loud when PINT identity and Enterprise columns disagree on chart.
+
+        Design-matrix assembly resolves ``_fitparameters`` names against each
+        PTA's ``fitpars_canonical``. A representation mismatch (canonical ``FB0``
+        vs a native ``PB`` column) otherwise surfaces as a bare
+        ``ValueError: 'FB0' is not in list`` from ``list.index``.
+        ``ParameterManager`` aligns the orbital chart of every par it produces
+        (see feature doc §5), so reaching this method means the engine object was
+        built from a par that never went through it -- typically by calling
+        ``MetaPulsar(...)`` directly with pre-built engine objects instead of
+        ``create_metapulsar()``.
+        """
+        from .pint_helpers import resolve_parameter_alias
+
+        for meta_param, owners in self._fitparameters.items():
+            for pta_name, provisional in owners.items():
+                psr = self._epulsars.get(pta_name)
+                if psr is None or not hasattr(psr, "fitpars_canonical"):
+                    continue
+                if resolve_parameter_alias(provisional) in psr.fitpars_canonical:
+                    continue
+                hint = ""
+                if resolve_parameter_alias(provisional).upper().startswith("FB"):
+                    hint = (
+                        " This is the hybrid PB+FBn orbital chart: the par must "
+                        "be aligned to FB0 before the engine is built. Construct "
+                        "via create_metapulsar() instead of MetaPulsar(...) "
+                        "directly."
+                    )
+                raise ValueError(
+                    f"PTA {pta_name!r} has no Enterprise fit column for meta "
+                    f"parameter {meta_param!r} (mapped name {provisional!r}); "
+                    f"available fitpars={list(psr.fitpars)!r}.{hint}"
+                )
 
     def _combine_timing_data(self):
         """Combine timing data from all PTAs."""

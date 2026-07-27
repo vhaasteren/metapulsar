@@ -2,7 +2,8 @@
 numpy>=1.20.0
 astropy>=5.0.0
 scipy>=1.7.0
-pint-pulsar>=0.9.0
+# nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Unpin to a release once merged.
+pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@5e9a68df4fdfaf9394b2fc2cb3515d0a50848292
 enterprise-pulsar>=3.0.0
 # Nonlinear timing stack (extracted from src/metapulsar/timing); from git
 # until the first PyPI release.

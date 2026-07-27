@@ -6,6 +6,14 @@ Given multiple public PTA data sets for the **same** pulsar—each consisting of
 
 After analytic marginalization over timing‑model parameters, the likelihood depends on the **column space** of the design matrix ( **M** ) rather than on the specific nominal parameter values ( β₀ ). Our procedure guarantees that the relevant column space is the same as in a traditional manual combination, so it is **statistically equivalent** to a full re‑timing while being vastly simpler and deterministic.
 
+> **Terminology.** Throughout this method note, **design matrix** / **M** means
+> the raw **fitter basis** in the PINT/tempo2 convention,
+> \(r(\theta+\delta)\approx r(\theta)-M\delta\). That is the same object classical
+> PTA packages call a design matrix. It is **not** the residual Jacobian
+> \(J=\partial(\Delta r)/\partial\theta\) used by nonlinear timing engines; that
+> object is named `residual_jacobian` and must not be called a design matrix.
+> See [`design_matrix_terminology.md`](design_matrix_terminology.md).
+
 ### Inputs and conventions
 
 For each PTA (p) that observed a given pulsar, MetaPulsar requires:
@@ -13,7 +21,7 @@ For each PTA (p) that observed a given pulsar, MetaPulsar requires:
 * a `.par` file specifying the **deterministic timing model** (astrometry, spin, binary, dispersion, and instrument/telescope‑specific deterministic delays such as **JUMPs**, **FD** coefficients, and overall **phase offsets**), and
 * a `.tim` file with TOAs and their formal uncertainties.
 
-Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about its nominal model ( β_{0,p} ), and let ( **M**_p ) be the corresponding design matrix (partial derivatives of the residuals with respect to timing‑model parameters). The full data vector is the concatenation ( **d** = ⨁_p **d**_p ). White‑ and red‑noise hyperparameters (EFAC/EQUAD/ECORR and RN/DM GP parameters) are **not** part of the deterministic timing model and are handled in the subsequent noise inference; MetaPulsar leaves them unchanged at this stage.
+Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about its nominal model ( β_{0,p} ), and let ( **M**_p ) be the corresponding **design matrix** — the raw fitter basis with sign \(r(\theta+\delta)\approx r(\theta)-M\delta\), in public fit units. The full data vector is the concatenation ( **d** = ⨁_p **d**_p ). White‑ and red‑noise hyperparameters (EFAC/EQUAD/ECORR and RN/DM GP parameters) are **not** part of the deterministic timing model and are handled in the subsequent noise inference; MetaPulsar leaves them unchanged at this stage.
 
 MetaPulsar uses **PINT** and **Tempo2/libstempo** to parse/realize timing models, and **Enterprise** classes to hold pulsar objects. The implementation provides two combination modes:
 

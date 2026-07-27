@@ -312,45 +312,41 @@ class MetaPulsarFactory:
                 raise ValueError(f"No files found for PTA {pta_name}")
             single_file_data[pta_name] = file_list[0]  # Take first file
 
-        # Create file_pairs from the file data
-        file_pairs = {
-            pta: (file_dict["par"], file_dict["tim"])
-            for pta, file_dict in single_file_data.items()
-        }
-
         # Create output directory if parfile_output_dir is provided
         if parfile_output_dir:
             parfile_output_dir = Path(parfile_output_dir).resolve()
             parfile_output_dir.mkdir(parents=True, exist_ok=True)
         pta_file_dir = Path(tempfile.mkdtemp(prefix="metapulsar_pta_files_")).resolve()
 
-        # Process par files based on strategy
+        # ParameterManager produces the par files the engines consume under both
+        # strategies. Orbital-chart alignment is its first step either way; only
+        # the shared strategy adds unit normalization and cross-PTA merging.
+        parameter_manager = ParameterManager(
+            file_data=single_file_data,
+            combine_components=combine_components,
+            add_dm_derivatives=add_dm_derivatives,
+            output_dir=parfile_output_dir,
+            pulsar_name=pulsar_name,
+            exclude_from_shared=exclude_from_shared,
+        )
+
         if combination_strategy == "shared":
             self._warn_single_pta_shared_dmx_strip(single_file_data, combine_components)
-            # Create ParameterManager for parfile consistency
-            parameter_manager = ParameterManager(
-                file_data=single_file_data,
-                combine_components=combine_components,
-                add_dm_derivatives=add_dm_derivatives,
-                output_dir=parfile_output_dir,
-                pulsar_name=pulsar_name,
-                exclude_from_shared=exclude_from_shared,
-            )
+            engine_pars = parameter_manager.make_parfiles_shared()
+        else:
+            engine_pars = parameter_manager.engine_parfiles()
+            if parfile_output_dir:
+                # Writes file_dict["par_content"], which is never mutated, so an
+                # "original" dump remains the data release's own bytes.
+                self._write_original_parfiles(
+                    single_file_data, parfile_output_dir, pulsar_name
+                )
 
-            # Make par files consistent
-            shared_parfiles = parameter_manager.make_parfiles_shared()
-
-            # Update file_pairs with shared par files
-            file_pairs = {
-                pta: (shared_parfiles[pta], single_file_data[pta]["tim"])
-                for pta in single_file_data.keys()
-                if pta in shared_parfiles
-            }
-        elif parfile_output_dir:
-            # For per_pta strategy, write original par files
-            self._write_original_parfiles(
-                single_file_data, parfile_output_dir, pulsar_name
-            )
+        file_pairs = {
+            pta: (engine_pars[pta], single_file_data[pta]["tim"])
+            for pta in single_file_data
+            if pta in engine_pars
+        }
 
         # Create PINT/Tempo2 objects from file pairs using file data
         created = self._create_pulsar_objects(

@@ -68,7 +68,12 @@ class MetaPulsar:
 
 ### Interactive timing evaluation
 
-`MetaPulsar.timing()` opens nltiming's immutable, engine-independent evaluator:
+`MetaPulsar.timing()` opens nltiming's immutable, engine-independent evaluator.
+
+Locked linear vocabulary (see [`design_matrix_terminology.md`](design_matrix_terminology.md)):
+`design_matrix` / \(M\) = raw fitter basis; `residual_jacobian` / \(J\) =
+\(\partial(\Delta r)/\partial\theta\); `waveform_jacobian` / \(W=-J\). The
+evaluator’s `jacobian(...)` is a **residual Jacobian**, not a design matrix.
 
 ```python
 timing = metapulsar.timing(
@@ -83,7 +88,7 @@ evaluation.residuals          # absolute residuals, seconds
 evaluation.delay              # -residual_delta, likelihood convention
 
 scan = timing.scan("TASC", [-0.5, 0.0, 0.5], scale="PB")
-jacobian = timing.jacobian(method="autodiff")
+jacobian = timing.jacobian(method="autodiff")  # residual Jacobian J
 fit = timing.fit(["F0", "F1"])
 ```
 

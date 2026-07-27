@@ -306,23 +306,19 @@ UNITS TDB
     # ===== INTEGRATION TESTS =====
 
     def test_make_parfiles_shared_integration(self, parameter_manager):
-        """Test full make_parfiles_shared workflow."""
-        with patch.object(parameter_manager, "_parse_parfiles") as mock_parse:
-            mock_parse.return_value = {
-                "EPTA": {
-                    "PSR": ["J1857+0943"],
-                    "F0": ["186.494081"],
-                    "RAJ": ["18:57:36.3937"],
-                    "DECJ": ["+09:43:17.291"],
-                    "UNITS": ["TDB"],
-                },
-                "PPTA": {
-                    "PSR": ["J1857+0943"],
-                    "F0": ["186.494082"],
-                    "RAJ": ["18:57:36.3938"],
-                    "DECJ": ["+09:43:17.292"],
-                    "UNITS": ["TDB"],
-                },
+        """Test full make_parfiles_shared workflow (align → units → share → write)."""
+        with patch.object(parameter_manager, "_aligned_parfile_contents") as mock_align:
+            mock_align.return_value = {
+                "EPTA": (
+                    "PSR J1857+0943\nF0 186.494081\nRAJ 18:57:36.3937\n"
+                    "DECJ +09:43:17.291\nUNITS TDB",
+                    False,
+                ),
+                "PPTA": (
+                    "PSR J1857+0943\nF0 186.494082\nRAJ 18:57:36.3938\n"
+                    "DECJ +09:43:17.292\nUNITS TDB",
+                    False,
+                ),
             }
 
             with patch.object(
@@ -354,7 +350,7 @@ UNITS TDB
                         assert len(result) == 2
                         assert "EPTA" in result
                         assert "PPTA" in result
-                        mock_parse.assert_called_once()
+                        mock_align.assert_called_once()
                         mock_convert.assert_called_once()
                         mock_make_consistent.assert_called_once()
                         mock_write.assert_called_once()
@@ -1557,7 +1553,9 @@ class TestUnitsNormalizationM1:
             "_convert_pint_to_tdb",
             return_value="PSR J1857+0943\nF0 1.0\nUNITS TDB\n",
         ) as mock_conv:
-            out = pm._convert_units_if_needed({})
+            out = pm._convert_units_if_needed(
+                {pta: pm._get_parfile_content(pta) for pta in pm.file_data}
+            )
         assert mock_conv.call_count == 2
         for text in out.values():
             assert (

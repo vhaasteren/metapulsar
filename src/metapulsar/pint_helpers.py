@@ -16,12 +16,14 @@ from typing import (
     TYPE_CHECKING,
 )
 from pint.models import TimingModel
+from pint.models.model_builder import parse_parfile
 from pint.models.parameter import Parameter
 from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import subprocess
 from io import StringIO
+import re
 import numpy as np
 
 # Parameter-name utilities live in the timing package (self-contained for the
@@ -866,6 +868,260 @@ def temporary_pn_tim_from_par_tim_libstempo(
         psr = t2.tempopulsar(parfile=str(par_tmp), timfile=str(tim_path), dofit=False)
         _write_pn_tim_libstempo(psr, out_tim)
         yield str(out_tim)
+
+
+SECONDS_PER_DAY_LD = np.longdouble(86400)
+
+# tempo2 binary models whose implementation actually reads ``param_fb``.
+# Verified against tempo2 source: only ELL1model.C and BTXmodel.C reference
+# param_fb. ELL1H, ELL1k, DD, DDGR, DDK, and T2 silently ignore every FBn.
+TEMPO2_FB_CAPABLE_BINARY_MODELS = frozenset({"ELL1", "BTX"})
+
+# Matches FB0..FBn and the bare ``FB`` alias (PINT alias for FB0; tempo2
+# readParfile.C:2055-2063 reads ``FB`` as index 0). Deliberately does not match
+# FBJ / TFBJ, which are orbital-frequency jumps, a different parameter.
+_FB_NAME_RE = re.compile(r"^FB(\d*)$", re.IGNORECASE)
+
+
+class OrbitalChartError(ValueError):
+    """A par file cannot be aligned to the canonical FBX orbital chart."""
+
+
+def format_longdouble_par_value(value) -> str:
+    """Format a computed par value with an exact long-double round trip.
+
+    NORMATIVE. ``unique=True`` asks numpy for the shortest decimal string that
+    reparses to the identical long double. It is the only option measured to be
+    exact for *computed* values; do not substitute any of these:
+
+    ==========================================  ============================
+    Alternative                                 Why it is rejected
+    ==========================================  ============================
+    ``format(x, '.20g')``, f-string, ``%g``     routes through float64;
+                                                rel err 2.7e-17 on J2241 FB0,
+                                                ~10 ns of orbital phase over
+                                                the 4409-day PPTA span
+    ``format_float_scientific(precision=19)``   rel err 1.2e-21 (FB0) and
+                                                2.5e-21 (sigma_FB0); the
+                                                round trip is NOT exact
+    ``precision=np.finfo(longdouble).precision``  failed 8895 of 20000 random
+                                                long doubles; also wrong on
+                                                x86-64, where ``.precision``
+                                                is 18 but 21 digits are needed
+    ==========================================  ============================
+
+    ``unique=True`` had 0 failures over the same 20000-sample stress test and
+    adapts automatically to 80-bit (x86-64) and 128-bit (aarch64) long doubles,
+    where any fixed digit count cannot.
+    """
+    value = np.longdouble(value)
+    if not np.isfinite(value):
+        raise OrbitalChartError(f"Non-finite computed par value: {value!r}")
+    return np.format_float_scientific(value, unique=True)
+
+
+def _require_wide_longdouble() -> None:
+    """Refuse to compute par values where ``longdouble`` is only float64.
+
+    On some platforms (notably arm64 macOS) ``np.longdouble`` aliases float64.
+    Computing FB0 there would introduce the ~10 ns error described above with
+    no visible symptom, so it is a hard error rather than a warning.
+    """
+    if np.finfo(np.longdouble).eps >= np.finfo(np.float64).eps:
+        raise OrbitalChartError(
+            "np.longdouble is not wider than float64 on this platform; "
+            "orbital chart alignment would lose ~10 ns of orbital phase. "
+            "Run inside the project devcontainer."
+        )
+
+
+def _par_float(token: str) -> np.longdouble:
+    """Parse a par-file numeric token, accepting Fortran ``D`` exponents."""
+    try:
+        return np.longdouble(token.replace("D", "E").replace("d", "e"))
+    except (ValueError, TypeError) as exc:
+        raise OrbitalChartError(f"Unparsable par value token {token!r}") from exc
+
+
+def align_orbital_chart(
+    par_text: str,
+    model,
+    *,
+    timing_package: str,
+    pta_name: str = "?",
+) -> tuple[str, bool]:
+    """Rewrite a par so its orbital chart matches the one its PINT model reports.
+
+    MetaPulsar names parameters from ``TimingModel.free_params`` and then
+    resolves Enterprise design-matrix columns by that name
+    (``metapulsar.py:561``), so the par and the model must agree on which
+    parameter carries each degree of freedom. They disagree for a published
+    hybrid ``PB + FB1..FBn`` par: PINT canonicalizes it to a complete FBX series
+    with free ``FB0`` (``PulsarBinary._bridge_pb_to_fb0``, upstream #2023) while
+    the par -- and hence a tempo2 engine reading it -- still says ``PB``.
+
+    This does not reimplement that canonicalization. It asks the model which
+    parameter is free and, when the par does not declare it, rewrites the one
+    line that does. tempo2 evaluates ``pb = 1/FB0`` whenever ``FB0`` is set
+    (``ELL1model.C:75-76``), so the edit is a coordinate relabel that leaves
+    residuals unchanged.
+
+    Applies to every PTA regardless of ``timing_package`` (feature doc S1.5): an
+    unaligned hybrid par used as the merge reference would reintroduce ``PB`` as
+    the shared binary chart even for PTAs that needed no alignment themselves.
+    ``timing_package`` selects only the tempo2 FB-capability guard.
+
+    Args:
+        par_text: Par text to align. Not mutated; a new string is returned.
+        model: PINT ``TimingModel`` built from **this same** par text.
+        timing_package: ``"tempo2"`` or ``"pint"``. Callers that cannot declare
+            an engine must pass ``"tempo2"`` (the strict default).
+        pta_name: Diagnostic label only.
+
+    Returns:
+        ``(aligned_text, changed)``. ``changed`` is False when the par already
+        agrees with its model, in which case ``aligned_text is par_text``.
+
+    Raises:
+        OrbitalChartError: when a tempo2-backed par sets FB terms on a binary
+            model tempo2 does not evaluate them for; when the model reports free
+            ``FB0`` but the par declares neither ``FB0`` nor ``PB``; on duplicate
+            ``BINARY``/``PB``/``FB`` entries; on non-finite or non-positive
+            ``PB``; on a platform where ``np.longdouble`` is only float64.
+
+    Idempotent: re-running on the returned text yields ``changed is False``.
+    """
+    parfile_dict = parse_parfile(StringIO(par_text))
+
+    def _single(name: str) -> str | None:
+        """Return the sole entry for ``name``, or None; raise on duplicates."""
+        entries = parfile_dict.get(name)
+        if not entries:
+            return None
+        if len(entries) > 1:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: duplicate {name} entries in par content: "
+                f"{entries!r}"
+            )
+        return entries[0]
+
+    fb_indices: dict[int, str] = {}
+    for name in parfile_dict:
+        match = _FB_NAME_RE.fullmatch(name)
+        if match is None:
+            continue
+        index = int(match.group(1)) if match.group(1) else 0
+        if index in fb_indices:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: FB{index} declared twice, as "
+                f"{fb_indices[index]!r} and {name!r}"
+            )
+        fb_indices[index] = name
+        _single(name)  # rejects a repeated FBn line
+
+    # Capability guard -- tempo2 only (invariant 3). Only ELL1 and BTX read
+    # param_fb in tempo2; every other binary model silently ignores FB terms, so
+    # PINT (which evaluates the full series for any binary model) and tempo2
+    # would be solving different physics with no error from either.
+    #
+    # DELIBERATELY evaluated whenever the par carries FB terms, including when no
+    # rewrite follows. That is intended, not an oversight to be "optimized" into
+    # the rewrite-only path: the cross-engine mismatch exists whichever spelling
+    # the constant term uses. It is a behaviour change for latent bad data that
+    # currently loads with silently dropped FB terms; the corpus survey (S1.2)
+    # finds zero such files, and failing loudly beats loading quietly.
+    if fb_indices and str(timing_package).strip().lower() == "tempo2":
+        binary_entry = _single("BINARY")
+        if binary_entry is None:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: par sets FB parameters but declares no "
+                f"BINARY model; tempo2 cannot evaluate an orbital frequency "
+                f"series without one"
+            )
+        binary_model = binary_entry.split()[0].upper()
+        if binary_model not in TEMPO2_FB_CAPABLE_BINARY_MODELS:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: BINARY {binary_model} does not evaluate FB "
+                f"parameters in tempo2 (only "
+                f"{sorted(TEMPO2_FB_CAPABLE_BINARY_MODELS)} read param_fb), but "
+                f"the par sets FB{sorted(fb_indices)}. tempo2 would silently "
+                f"drop these terms while PINT evaluates them. Refusing to build "
+                f"a cross-engine model that is not the same physics."
+            )
+
+    # The model is the authority on which parameter is free (invariant 2).
+    if "FB0" not in model.free_params or 0 in fb_indices:
+        return par_text, False
+
+    pb_entry = _single("PB")
+    if pb_entry is None:
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PINT reports free FB0 but the par declares "
+            f"neither FB0 nor PB; the constant orbital frequency has no source"
+        )
+
+    _require_wide_longdouble()
+
+    # Token layout: VALUE [FITFLAG] [UNCERTAINTY]. The fit flag is copied
+    # verbatim -- tempo2 accepts 0/1 and Y/N, and re-encoding would corrupt it.
+    pb_tokens = pb_entry.split()
+    pb_days = _par_float(pb_tokens[0])
+    if not np.isfinite(pb_days) or pb_days <= 0:
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PB must be finite and positive, got {pb_days!r}"
+        )
+
+    # Computed from THIS par's PB, never from model.FB0 -- feature doc S4.3.
+    fb0 = 1 / (SECONDS_PER_DAY_LD * pb_days)
+    new_tokens = [format_longdouble_par_value(fb0)]
+    if len(pb_tokens) >= 2:
+        new_tokens.append(pb_tokens[1])
+    if len(pb_tokens) >= 3:
+        # sigma_FB0 = |d(FB0)/d(PB)| * sigma_PB = sigma_PB / (86400 * PB**2)
+        sigma_fb0 = abs(_par_float(pb_tokens[2])) / (
+            SECONDS_PER_DAY_LD * pb_days * pb_days
+        )
+        new_tokens.append(format_longdouble_par_value(sigma_fb0))
+
+    # parse_parfile already proved there is exactly one active PB entry, so the
+    # first non-comment line whose leading token is PB is unambiguous.
+    out_lines = par_text.splitlines()
+    for index, line in enumerate(out_lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens = stripped.split()
+        if tokens[0].upper() == "C":
+            continue
+        if tokens[0].upper() == "PB":
+            prefix = line[: len(line) - len(line.lstrip())]
+            out_lines[index] = f"{prefix}{'FB0':<15}{' '.join(new_tokens)}"
+            break
+    else:  # pragma: no cover - parse_parfile guarantees the line exists
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PB present in the parfile dict but no active "
+            f"PB line found in the text"
+        )
+
+    result = "\n".join(out_lines)
+    if par_text.endswith("\n"):
+        result += "\n"
+
+    loguru_logger.info(
+        f"PTA {pta_name!r}: aligned orbital chart to canonical FBX: "
+        f"PB={pb_tokens[0]} -> FB0={new_tokens[0]} "
+        f"(FB{sorted(fb_indices)} present, timing_package={timing_package!r})"
+    )
+    if "PBDOT" in parfile_dict and 1 in fb_indices:
+        # Both engines resolve this the same way -- explicit FB1 wins and PBDOT
+        # is ignored (tempo2 ELL1model.C:134-142; PINT #2023 likewise) -- so the
+        # par is not rewritten further. Log it: a reader seeing a retained PBDOT
+        # next to FB1 should know it is inert, not applied.
+        loguru_logger.warning(
+            f"PTA {pta_name!r}: par sets both PBDOT and FB1; explicit FB1 wins "
+            f"in both tempo2 and PINT and the retained PBDOT is inert."
+        )
+    return result, True
 
 
 def par_text_with_track_minus_2(par_text: str) -> str:

@@ -83,10 +83,21 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 
 ### Nonlinear timing (`NonLinearTimingModel`)
 
+Par files are aligned to PINT's orbital chart in `ParameterManager` before
+merging (hybrid `PB + FBn` → free `FB0`); see
+[`feature_orbital_chart_alignment.md`](feature_orbital_chart_alignment.md).
+
+**Linear objects (locked names):** `design_matrix` / \(M\) is the raw fitter
+basis (PINT/tempo2; what every other PTA package means by “design matrix”).
+`residual_jacobian` / \(J\) is \(\partial(\Delta r)/\partial\theta\) from the
+residual function — never called a design matrix.
+`waveform_jacobian` / \(W=-J\) is the delay tangent. Full vocabulary:
+[`docs/design_matrix_terminology.md`](docs/design_matrix_terminology.md).
+
 MetaPulsar exposes a live nonlinear-timing interface as well as an
 Enterprise/Discovery-compatible frozen-pulsar view. Open its engine-independent
-evaluator for parameter inspection, residual evaluation, scans, Jacobians, and
-immutable local fits:
+evaluator for parameter inspection, residual evaluation, scans, residual
+Jacobians, and immutable local fits:
 
 ```python
 from metapulsar import create_metapulsar
@@ -232,7 +243,7 @@ Long-term plan:
 - **numpy** ≥ 1.20.0
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
-- **pint-pulsar** ≥ 0.9.0
+- **pint-pulsar** with [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` → free `FB0`; pinned in `pyproject.toml` / `requirements.txt` until that lands in a release). Dev checkouts: `pip install -e ref-packages/PINT`. Diagnose installs with `pathlib.Path(pint.__file__).resolve()` and `hasattr(PulsarBinary, "_bridge_pb_to_fb0")` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
 - **enterprise-pulsar** ≥ 3.0.0
 
 

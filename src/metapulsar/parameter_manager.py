@@ -134,37 +134,88 @@ class ParameterManager:
     # ===== MAIN PUBLIC METHODS =====
 
     def make_parfiles_shared(self) -> Dict[str, Path]:
-        """Make par files consistent across PTAs so that the certain model
-        components (astrometry, spindown, binary, dispersion) are have
-        consistent values between PTAs.
+        """Align charts, normalize units, then share model components across PTAs.
 
-        Args:
-            None
+        Chart alignment runs FIRST and unconditionally (feature doc S1.5): the
+        component merge copies values keyed by names present in the reference
+        PTA's parfile dict, so a hybrid reference would key the orbit as ``PB``
+        and reintroduce it as the shared binary chart. Aligning first makes the
+        merge chart-safe whatever the PTA ordering.
 
         Returns:
-            Dictionary of consistent parfile contents for each PTA
+            Dictionary of written par file paths for each PTA
         """
         self.logger.info("Making par files consistent across PTAs")
-
-        # Clear cache at start of new consistency run
+        # Existing pattern: start a consistency run with a clean model cache.
+        # file_data is never mutated (invariant 1), so a rebuild still yields
+        # *release* models -- do not "clear because alignment rewrote content".
         self._clear_pint_models_cache()
 
-        # 1. Parse par files into dictionaries
-        parfile_dicts = self._parse_parfiles()
-
-        # 2. Convert units if needed
-        converted_parfiles = self._convert_units_if_needed(parfile_dicts)
-
-        # 3. Make parameters consistent
+        contents = {
+            pta_name: content
+            for pta_name, (content, _) in self._aligned_parfile_contents().items()
+        }
+        converted_parfiles = self._convert_units_if_needed(contents)
         shared_parfiles = self._make_parameters_shared(converted_parfiles)
-
-        # 4. Write consistent par files to output directory
         output_files = self._write_shared_parfiles(shared_parfiles)
 
         self.logger.info(
             f"Successfully created {len(output_files)} consistent par files"
         )
         return output_files
+
+    def engine_parfiles(self) -> Dict[str, Path]:
+        """Par files each engine should consume, with no cross-PTA harmonization.
+
+        Used by the ``per_pta`` strategy: the orbital chart is aligned to PINT's,
+        and nothing else happens. No unit conversion, no parameter sharing.
+
+        Returns the caller's own path for every PTA whose par already agrees with
+        its model (invariant 5), so an unaffected pulsar writes no file at all
+        and its engine consumes -- and ``_retain_pta_files`` captures -- the data
+        release's file byte for byte.
+
+        The no-write path requires ``file_data[pta]["par"]`` to be a real path.
+        When ``par`` is ``None`` (test doubles), content is always written even
+        if ``changed`` is False so the caller still receives a usable path.
+        Factory discovery always supplies paths in production.
+        """
+        paths: Dict[str, Path] = {}
+        for pta_name, (content, changed) in self._aligned_parfile_contents().items():
+            source = self.file_data[pta_name].get("par")
+            if not changed and source is not None:
+                paths[pta_name] = Path(source)
+                continue
+            paths[pta_name] = self._write_parfile(pta_name, content, tag="aligned")
+        return paths
+
+    def _aligned_parfile_contents(self) -> Dict[str, Tuple[str, bool]]:
+        """Per-PTA par text with the orbital chart aligned to its PINT model.
+
+        Pipeline-local: ``self.file_data`` is NOT modified (feature doc
+        invariant 1), so ``par_content`` keeps the data release's own bytes and
+        ``pint_models`` stays a model of release content -- which is what makes
+        it the correct trigger authority.
+
+        Applies to every PTA regardless of ``timing_package``. See feature doc
+        S1.5: an unaligned hybrid par used as the merge reference would
+        reintroduce ``PB`` as the shared binary chart.
+        """
+        from .pint_helpers import align_orbital_chart
+
+        models = self.pint_models  # built from release content, cached
+        aligned: Dict[str, Tuple[str, bool]] = {}
+        for pta_name in self.file_data:
+            aligned[pta_name] = align_orbital_chart(
+                self._get_parfile_content(pta_name),
+                models[pta_name],
+                timing_package=self._get_timing_package(pta_name),
+                pta_name=pta_name,
+            )
+        changed = sorted(p for p, (_, c) in aligned.items() if c)
+        if changed:
+            self.logger.info(f"Orbital chart aligned for PTAs: {changed}")
+        return aligned
 
     def build_parameter_mappings(self) -> "ParameterMapping":
         """Build parameter mappings for MetaPulsar.
@@ -280,20 +331,6 @@ class ParameterManager:
             "(expected TDB, TCB, or tempo2-owned SI)"
         )
 
-    def _determine_parfile_units(self) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Determine effective units for all par files via raw active-line scan."""
-        self.logger.info("Determining units for all par files")
-
-        file_units: Dict[str, str] = {}
-        parfile_contents: Dict[str, str] = {}
-        for pta_name in self.file_data.keys():
-            parfile_content = self._get_parfile_content(pta_name)
-            file_units[pta_name] = self._effective_units_for_content(
-                pta_name, parfile_content
-            )
-            parfile_contents[pta_name] = parfile_content
-        return file_units, parfile_contents
-
     def _normalize_parfile_to_tdb(self, pta_name: str, content: str) -> str:
         """Normalize one par to explicit UNITS TDB (convert or stamp as needed)."""
         effective = self._effective_units_for_content(pta_name, content)
@@ -322,21 +359,19 @@ class ParameterManager:
         return content
 
     def _convert_units_if_needed(
-        self, parfile_dicts: Dict[str, Dict]
+        self, parfile_contents: Dict[str, str]
     ) -> Dict[str, str]:
-        """Normalize every retained par to explicit UNITS TDB before sharing.
+        """Normalize every supplied par to explicit UNITS TDB.
 
-        Unlike the previous early-return when all files already shared one unit
-        system, every TCB (including tempo2-owned SI and no-UNITS tempo2
-        defaults) is converted, and every TDB par is stamped if needed.
+        Operates on the text it is given. It previously discarded its argument
+        and re-read ``self.file_data``, which would undo chart alignment
+        (feature doc invariant 1).
         """
-        del parfile_dicts  # contents are re-read from source files
         self.logger.info("Normalizing all par files to explicit UNITS TDB")
-        _, parfile_contents = self._determine_parfile_units()
-        normalized: Dict[str, str] = {}
-        for pta_name, content in parfile_contents.items():
-            normalized[pta_name] = self._normalize_parfile_to_tdb(pta_name, content)
-        return normalized
+        return {
+            pta_name: self._normalize_parfile_to_tdb(pta_name, content)
+            for pta_name, content in parfile_contents.items()
+        }
 
     def _get_default_time_units(self, pta_name: str) -> str:
         """Get the default time units for a PTA based on its timing package.
@@ -970,34 +1005,30 @@ class ParameterManager:
 
         return dmx_params
 
+    def _write_parfile(self, pta_name: str, content: str, *, tag: str) -> Path:
+        """Write one par file into the output directory and return its path."""
+        if self.output_dir is None:
+            self.output_dir = Path(tempfile.mkdtemp(prefix="metapulsar_parfiles_"))
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.output_dir / self._get_output_filename(pta_name, tag)
+        output_path.write_text(content, encoding="utf-8")
+        self.logger.debug(f"Written {tag} par file: {output_path}")
+        return output_path
+
     def _write_shared_parfiles(
         self, shared_parfiles: Dict[str, str]
     ) -> Dict[str, Path]:
         """Write consistent par files to output directory."""
-        if self.output_dir is None:
-            self.output_dir = Path(tempfile.mkdtemp(prefix="shared_parfiles_"))
+        return {
+            pta_name: self._write_parfile(pta_name, content, tag="shared")
+            for pta_name, content in shared_parfiles.items()
+        }
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        output_files = {}
-
-        for pta_name, parfile_content in shared_parfiles.items():
-            output_filename = self._get_output_filename(pta_name)
-            output_path = self.output_dir / output_filename
-
-            with open(output_path, "w") as f:
-                f.write(parfile_content)
-
-            output_files[pta_name] = output_path
-            self.logger.debug(f"Written consistent par file: {output_path}")
-
-        return output_files
-
-    def _get_output_filename(self, pta_name: str) -> str:
-        """Generate output filename for shared par file."""
+    def _get_output_filename(self, pta_name: str, tag: str = "shared") -> str:
+        """Generate output filename for a written par file."""
         if self.pulsar_name:
-            return f"{self.pulsar_name}_shared_{pta_name}.par"
-        else:
-            return f"shared_{pta_name}.par"
+            return f"{self.pulsar_name}_{tag}_{pta_name}.par"
+        return f"{tag}_{pta_name}.par"
 
     # ===== PARAMETER MAPPING METHODS =====
 
