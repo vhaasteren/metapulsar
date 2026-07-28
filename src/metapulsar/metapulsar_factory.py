@@ -1,7 +1,7 @@
-"""Meta-Pulsar Factory for creating MetaPulsars by orchestrating Enterprise Pulsar creation.
+"""Meta-Pulsar Factory for creating MetaPulsars by orchestrating PTA timing objects.
 
 This module provides a factory class that creates MetaPulsars by discovering files,
-creating Enterprise Pulsars, and wrapping them with metadata.
+building per-PTA timing objects, and wrapping them with metadata.
 """
 
 from __future__ import annotations
@@ -12,13 +12,6 @@ import shutil
 import tempfile
 import warnings
 from loguru import logger
-
-# Import Enterprise Pulsar classes
-try:
-    from enterprise.pulsar import PintPulsar, Tempo2Pulsar
-except ImportError:
-    PintPulsar = None
-    Tempo2Pulsar = None
 
 # Import MetaPulsar and ParameterManager
 from .metapulsar import MetaPulsar, normalize_combination_strategy
@@ -113,9 +106,9 @@ DEFAULT_COMBINE_COMPONENTS: List[str] = [
 
 
 class MetaPulsarFactory:
-    """Factory for creating MetaPulsars by orchestrating Enterprise Pulsar creation.
+    """Factory for creating MetaPulsars by orchestrating PTA timing-object creation.
 
-    This class provides methods to discover files, create Enterprise Pulsars,
+    This class provides methods to discover files, build per-PTA timing objects,
     and wrap them in MetaPulsar objects with appropriate metadata.
 
     """
@@ -278,7 +271,7 @@ class MetaPulsarFactory:
 
         Raises:
             ValueError: If no files found, multiple pulsars detected, or invalid parameters
-            RuntimeError: If Enterprise Pulsar creation fails
+            RuntimeError: If PTA timing-object creation fails
         """
         combination_strategy = normalize_combination_strategy(combination_strategy)
         self.logger.info(f"Creating MetaPulsar using {combination_strategy} strategy")
@@ -1048,7 +1041,7 @@ def create_metapulsar(
 
     Raises:
         ValueError: If no files found, multiple pulsars detected, or invalid parameters
-        RuntimeError: If Enterprise Pulsar creation fails
+        RuntimeError: If PTA timing-object creation fails
     """
     factory = MetaPulsarFactory()
     return factory.create_metapulsar(

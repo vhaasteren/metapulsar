@@ -1,13 +1,16 @@
 """Enterprise ECORR construction smoke tests on unsorted standalone pulsars."""
 
-import numpy as np
 import pytest
 
-import enterprise.signals.parameter as parameter
-from enterprise.signals import white_signals
+pytest.importorskip("enterprise")
+pytestmark = pytest.mark.requires_enterprise
 
-from metapulsar.metapulsar import MetaPulsar
-from metapulsar.mockpulsar import create_mock_libstempo
+import numpy as np  # noqa: E402
+import enterprise.signals.parameter as parameter  # noqa: E402
+from enterprise.signals import white_signals  # noqa: E402
+
+from metapulsar.metapulsar import MetaPulsar  # noqa: E402
+from metapulsar.mockpulsar import create_mock_libstempo  # noqa: E402
 
 
 def _build_unsorted_pulsar():

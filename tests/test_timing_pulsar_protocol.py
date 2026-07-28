@@ -5,9 +5,9 @@ import pytest
 
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
-from nltiming.engines.base import (
+from nltiming.engine_support import (
     validate_engine_against_pulsar,
-    validate_enterprise_pulsar,
+    validate_pulsar_surface,
 )
 from nltiming.protocols import EnterprisePulsarLike, TimingPulsar
 
@@ -15,7 +15,7 @@ from nltiming.protocols import EnterprisePulsarLike, TimingPulsar
 def test_fake_pulsar_satisfies_protocol_and_shape_validators(fake_timing_pulsar):
     assert isinstance(fake_timing_pulsar, EnterprisePulsarLike)
     assert isinstance(fake_timing_pulsar, TimingPulsar)
-    validate_enterprise_pulsar(fake_timing_pulsar)
+    validate_pulsar_surface(fake_timing_pulsar)
 
     engine = fake_timing_pulsar.timing_engine({"tempo2": "jug", "pint": "pint"})
     assert tuple(fake_timing_pulsar.fitpars) == engine.fitpars
@@ -101,7 +101,7 @@ def test_non_metapulsar_pulsar_can_conform():
     fake_timing_pulsar_backend = LocalBackend()
     pulsar = LocalPulsar()
     assert isinstance(pulsar, TimingPulsar)
-    validate_enterprise_pulsar(pulsar)
+    validate_pulsar_surface(pulsar)
     validate_engine_against_pulsar(pulsar.timing_engine(), pulsar)
 
 
@@ -143,7 +143,7 @@ def _build_real_pulsar():
 def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip():
     pulsar = _build_real_pulsar()
     assert isinstance(pulsar, TimingPulsar)
-    validate_enterprise_pulsar(pulsar)
+    validate_pulsar_surface(pulsar)
 
     # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
     native_engines = {"tempo2": "libstempo", "pint": "jug"}
@@ -177,7 +177,7 @@ def test_metapulsar_pint_model_and_engine_error_paths():
 
 def test_metapulsar_reference_theta_missing_values_raise():
     pulsar = _build_real_pulsar()
-    pta = next(iter(pulsar._epulsars))
+    pta = next(iter(pulsar._pta_data))
     pulsar._parfile_dicts[pta] = {}
     pulsar._invalidate_timing_caches()
 
@@ -236,9 +236,9 @@ def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
     """LibstempoEngine should accept A1DOT->XDOT mapping built by ParameterManager."""
     from metapulsar.mockpulsar import MockParameter
     from metapulsar.parameter_manager import ParameterManager
-    from nltiming.engines.base import LinearModel
-    from nltiming.engines.engines import Tempo2DeltaEngine
-    from nltiming.engines.tempo2 import LibstempoEngine
+    from metapulsar.engines import LibstempoEngine
+    from metapulsar.engines.delta import Tempo2DeltaEngine
+    from nltiming.engine_support import LinearModel
 
     file_data = {
         "epta": {

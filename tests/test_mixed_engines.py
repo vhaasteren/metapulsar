@@ -3,12 +3,13 @@
 import numpy as np
 
 from metapulsar.metapulsar import MetaPulsar, PtaFiles
-from nltiming.engines.composite import PulsarTimingEngine
+from metapulsar.engines import PulsarTimingEngine
 
 
 class _SessionPulsar:
-    def __init__(self, n_toa: int):
+    def __init__(self, n_toa: int, *, timing_package: str):
         self._toas = np.arange(n_toa, dtype=float)
+        self.timing_package = timing_package
 
 
 def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
@@ -19,7 +20,10 @@ def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
 
     pulsar = MetaPulsar.__new__(MetaPulsar)
     pulsar.name = "J0000+0000"
-    pulsar._epulsars = {"epta": _SessionPulsar(2), "ng9": _SessionPulsar(2)}
+    pulsar._pta_data = {
+        "epta": _SessionPulsar(2, timing_package="tempo2"),
+        "ng9": _SessionPulsar(2, timing_package="pint"),
+    }
     pulsar._pta_files = {
         "epta": PtaFiles(par_path=par, tim_path=tim, timing_package="tempo2"),
         "ng9": PtaFiles(par_path=par, tim_path=tim, timing_package="pint"),

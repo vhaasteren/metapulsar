@@ -47,7 +47,7 @@ class TestEndToEnd:
                 # Basic validation
                 assert mp.name == pulsar
                 assert len(mp._pulsars) > 0  # Should have pulsar data from PTAs
-                assert len(mp._epulsars) > 0  # Should have Enterprise pulsars
+                assert len(mp._pta_data) > 0  # Should have PTA timing records
 
                 # Test design matrix
                 dm = mp._designmatrix

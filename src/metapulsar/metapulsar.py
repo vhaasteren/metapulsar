@@ -10,14 +10,9 @@ from typing import List, Mapping
 import numpy as np
 from loguru import logger
 
-# Import Enterprise Pulsar classes
-import enterprise.pulsar as ep
-
 # Import PINT classes
 from pint.models import TimingModel
 from pint.toa import TOAs
-
-# Import libstempo
 
 # Import our supporting infrastructure
 from .parameter_manager import ParameterInconsistencyError, ParameterManager
@@ -29,6 +24,7 @@ from .position_helpers import (
     _skycoord_from_pint_model,
     _skycoord_from_libstempo,
 )
+from .pta_data import _PtaTimingData, materialize_pint, materialize_tempo2
 
 
 @dataclass(frozen=True)
@@ -74,7 +70,7 @@ class MetaPulsar:
 
     This class combines pulsar timing data from multiple PTA collaborations
     into a unified object suitable for gravitational wave detection analysis.
-    This class implements the EnterprisePulsar-like surface directly.
+    This class implements an Enterprise-compatible duck surface directly.
 
     Supports two combination strategies:
     - "shared": shared timing-model params across PTAs (modifies par files for
@@ -146,7 +142,7 @@ class MetaPulsar:
         self._retained_pint_model_cache: dict = {}
 
         # Elegant initialization flow
-        self._create_enterprise_pulsars()
+        self._materialize_pta_data()
         self._setup_parameters()
         self._assert_engine_chart_consistency()
         self._combine_timing_data()
@@ -181,14 +177,13 @@ class MetaPulsar:
         Returns:
             str: Pulsar name if consistent, raises ValueError if not
         """
-        if not hasattr(self, "_epulsars") or self._epulsars is None:
-            raise ValueError("No Enterprise Pulsars created yet")
+        if not hasattr(self, "_pta_data") or self._pta_data is None:
+            raise ValueError("No PTA timing records created yet")
 
-        # Extract pulsar names from Enterprise Pulsars
         pulsar_names = []
-        for pta, psr in self._epulsars.items():
-            if hasattr(psr, "name") and psr.name and psr.name != "None":
-                pulsar_names.append(psr.name)
+        for pta, record in self._pta_data.items():
+            if record.name and record.name != "None":
+                pulsar_names.append(record.name)
             else:
                 logger.warning(f"PTA {pta} pulsar has no valid name attribute")
 
@@ -200,42 +195,17 @@ class MetaPulsar:
 
         return pulsar_names[0]
 
-    def _create_enterprise_pulsars(self):
-        """Create Enterprise Pulsar objects from input data."""
-        self._epulsars = {}
+    def _materialize_pta_data(self) -> None:
+        """Materialize MetaPulsar-owned PTA timing records from input data."""
+        self._pta_data = {}
         pint_models, pint_toas, lt_pulsars = self._unpack_pulsar_data()
-
-        if pint_models or lt_pulsars:
-            self.name = self._validate_pulsar_consistency(pint_models, lt_pulsars)
-
-            # Create Enterprise Pulsars from raw PINT objects
-            for pta, (pmodel, ptoas) in zip(
-                pint_models.keys(), zip(pint_models.values(), pint_toas.values())
-            ):
-                try:
-                    self._epulsars[pta] = ep.PintPulsar(
-                        ptoas, pmodel, sort=False
-                    )  # Use default planets=True
-                except Exception as e:
-                    logger.error(f"Failed to create PintPulsar for PTA {pta}: {e}")
-                    raise
-
-            # Create Enterprise Pulsars from raw Tempo2 objects
-            for pta, lt_psr in lt_pulsars.items():
-                try:
-                    self._epulsars[pta] = ep.Tempo2Pulsar(
-                        lt_psr, sort=False, planets=True
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to create Tempo2Pulsar for PTA {pta}: {e}")
-                    raise
-        else:
-            # All pulsars are already Enterprise Pulsars, get name from first one
-            if self._epulsars:
-                first_psr = next(iter(self._epulsars.values()))
-                self.name = getattr(first_psr, "name", "unknown")
-            else:
-                self.name = "unknown"
+        if not pint_models and not lt_pulsars:
+            raise ValueError("MetaPulsar requires at least one PTA input")
+        self.name = self._validate_pulsar_consistency(pint_models, lt_pulsars)
+        for pta, model in pint_models.items():
+            self._pta_data[pta] = materialize_pint(model, pint_toas[pta])
+        for pta, pulsar in lt_pulsars.items():
+            self._pta_data[pta] = materialize_tempo2(pulsar)
 
     def _unpack_pulsar_data(self):
         """Unpack pulsars dictionary into PINT and libstempo objects."""
@@ -370,16 +340,19 @@ class MetaPulsar:
         self._setup_canonical_parameters()
 
     def _setup_canonical_parameters(self):
-        """Setup canonical parameter lists for each pulsar."""
+        """Setup canonical parameter lists for each PTA timing record."""
         from .pint_helpers import resolve_parameter_alias
 
-        for pta_name, psr in self._epulsars.items():
-            # Create canonical versions of fitpars and setpars
-            psr.fitpars_canonical = [resolve_parameter_alias(p) for p in psr.fitpars]
-            psr.setpars_canonical = [resolve_parameter_alias(p) for p in psr.setpars]
+        for pta_name, record in self._pta_data.items():
+            record.fitpars_canonical = [
+                resolve_parameter_alias(name) for name in record.fitpars
+            ]
+            record.setpars_canonical = [
+                resolve_parameter_alias(name) for name in record.setpars
+            ]
 
     def _assert_engine_chart_consistency(self) -> None:
-        """Fail loud when PINT identity and Enterprise columns disagree on chart.
+        """Fail loud when PINT identity and PTA fit columns disagree on chart.
 
         Design-matrix assembly resolves ``_fitparameters`` names against each
         PTA's ``fitpars_canonical``. A representation mismatch (canonical ``FB0``
@@ -395,10 +368,10 @@ class MetaPulsar:
 
         for meta_param, owners in self._fitparameters.items():
             for pta_name, provisional in owners.items():
-                psr = self._epulsars.get(pta_name)
-                if psr is None or not hasattr(psr, "fitpars_canonical"):
+                record = self._pta_data.get(pta_name)
+                if record is None or not record.fitpars_canonical:
                     continue
-                if resolve_parameter_alias(provisional) in psr.fitpars_canonical:
+                if resolve_parameter_alias(provisional) in record.fitpars_canonical:
                     continue
                 hint = ""
                 if resolve_parameter_alias(provisional).upper().startswith("FB"):
@@ -409,21 +382,21 @@ class MetaPulsar:
                         "directly."
                     )
                 raise ValueError(
-                    f"PTA {pta_name!r} has no Enterprise fit column for meta "
+                    f"PTA {pta_name!r} has no PTA fit column for meta "
                     f"parameter {meta_param!r} (mapped name {provisional!r}); "
-                    f"available fitpars={list(psr.fitpars)!r}.{hint}"
+                    f"available fitpars={list(record.fitpars)!r}.{hint}"
                 )
 
     def _combine_timing_data(self):
         """Combine timing data from all PTAs."""
 
-        def concat(attribute):
-            """Concatenate attribute across all PTAs."""
-            values = []
-            for pta, psr in self._epulsars.items():
-                if hasattr(psr, attribute):
-                    values.append(getattr(psr, attribute))
-            return np.concatenate(values) if values else np.array([])
+        def concat(attribute: str) -> np.ndarray:
+            return np.concatenate(
+                [
+                    np.asarray(getattr(record, attribute))
+                    for record in self._pta_data.values()
+                ]
+            )
 
         # Combine core timing data
         self._toas = concat("_toas")
@@ -443,47 +416,18 @@ class MetaPulsar:
         pta_slice = self._get_pta_slices()
         flags = defaultdict(lambda: np.zeros(len(self._toas), dtype="U128"))
 
-        for pta, psr in self._epulsars.items():
+        for pta, record in self._pta_data.items():
             flag_pta = False
+            for flag, flag_values in record._flags.items():
+                flags[flag][pta_slice[pta]] = flag_values
 
-            # Handle both dictionary and structured array formats for flags
-            if isinstance(psr._flags, dict):
-                # Dictionary format (legacy Enterprise Pulsars)
-                for flag, flagvals in psr._flags.items():
-                    flags[flag][pta_slice[pta]] = flagvals
+                if flag == "pta" and not np.any(flag_values == ""):
+                    flags[flag][pta_slice[pta]] = [
+                        pta_flag.strip() for pta_flag in flag_values
+                    ]
+                    flag_pta = True
 
-                    # Handle PTA flag specifically
-                    if flag == "pta" and not np.any(flagvals == ""):
-                        flags[flag][pta_slice[pta]] = [
-                            pta_flag.strip() for pta_flag in flagvals
-                        ]
-                        flag_pta = True
-            else:
-                if hasattr(psr._flags, "dtype") and psr._flags.dtype.names:
-                    # Structured array with fields
-                    for field_name in psr._flags.dtype.names:
-                        flagvals = psr._flags[field_name]
-                        flags[field_name][pta_slice[pta]] = flagvals
-
-                        # Handle PTA flag specifically
-                        if field_name == "pta" and not np.any(flagvals == ""):
-                            flags[field_name][pta_slice[pta]] = [
-                                pta_flag.strip() for pta_flag in flagvals
-                            ]
-                            flag_pta = True
-                else:
-                    # Use the flags property for Enterprise Pulsars
-                    for flag, flagvals in psr.flags.items():
-                        flags[flag][pta_slice[pta]] = flagvals
-
-                        # Handle PTA flag specifically
-                        if flag == "pta" and not np.any(flagvals == ""):
-                            flags[flag][pta_slice[pta]] = [
-                                pta_flag.strip() for pta_flag in flagvals
-                            ]
-                            flag_pta = True
-
-            timing_package = self._get_timing_package(psr)
+            timing_package = self._get_timing_package(record)
             flags["pta_dataset"][pta_slice[pta]] = pta
             flags["timing_package"][pta_slice[pta]] = timing_package
 
@@ -502,29 +446,17 @@ class MetaPulsar:
         slices = {}
         start_idx = 0
 
-        for pta, psr in self._epulsars.items():
-            if hasattr(psr, "_toas"):
-                end_idx = start_idx + len(psr._toas)
-                slices[pta] = slice(start_idx, end_idx)
-                start_idx = end_idx
+        for pta, record in self._pta_data.items():
+            end_idx = start_idx + len(record._toas)
+            slices[pta] = slice(start_idx, end_idx)
+            start_idx = end_idx
 
         return slices
 
-    def _get_timing_package(self, psr):
-        """Determine timing package used by pulsar."""
-        if hasattr(psr, "_pint_model"):
-            return "pint"
-        elif hasattr(psr, "_lt_pulsar"):
-            return "tempo2"
-        else:
-            # Fallback: check Enterprise Pulsar type
-            if hasattr(psr, "__class__"):
-                class_name = psr.__class__.__name__
-                if "PintPulsar" in class_name:
-                    return "pint"
-                elif "Tempo2Pulsar" in class_name:
-                    return "tempo2"
-            return "unknown"
+    @staticmethod
+    def _get_timing_package(record: _PtaTimingData) -> str:
+        """Return the typed timing package for a PTA timing record."""
+        return record.timing_package
 
     def _build_design_matrix(self):
         """Build combined design matrix with unit conversion."""
@@ -627,28 +559,25 @@ class MetaPulsar:
         n_toas = len(self._toas)
         column = np.zeros(n_toas)
 
-        for pta, psr in self._epulsars.items():
+        for pta, record in self._pta_data.items():
             if pta not in pta_slices:
                 continue
 
             slice_obj = pta_slices[pta]
-            timing_package = self._get_timing_package(psr)
+            timing_package = self._get_timing_package(record)
+            dm = record._designmatrix
+            if full_parname in self._fitparameters:
+                for mapped_pta, mapped_param in self._fitparameters[
+                    full_parname
+                ].items():
+                    if mapped_pta == pta:
+                        from .pint_helpers import resolve_parameter_alias
 
-            # Get design matrix from Enterprise Pulsar
-            if hasattr(psr, "_designmatrix"):
-                dm = psr._designmatrix
-                if full_parname in self._fitparameters:
-                    for mapped_pta, mapped_param in self._fitparameters[
-                        full_parname
-                    ].items():
-                        if mapped_pta == pta:
-                            from .pint_helpers import resolve_parameter_alias
-
-                            par_idx = psr.fitpars_canonical.index(
-                                resolve_parameter_alias(mapped_param)
-                            )
-                            column[slice_obj] = dm[:, par_idx]
-                            break
+                        par_idx = record.fitpars_canonical.index(
+                            resolve_parameter_alias(mapped_param)
+                        )
+                        column[slice_obj] = dm[:, par_idx]
+                        break
 
             # Apply unit conversion if needed
             column[slice_obj] = self._convert_design_matrix_units(
@@ -690,48 +619,29 @@ class MetaPulsar:
         return column
 
     def _setup_position_and_planets(self):
-        """Setup position and planetary data using PositionHelpers."""
-        # Check if we have any pulsars
-        if not self._epulsars:
-            # No pulsars available, set default values
-            self._raj = 0.0
-            self._decj = 0.0
-            self._pos = np.zeros((len(self._toas), 3))
-            self._pos_t = np.zeros((len(self._toas), 3))
-            self._planetssb = None
-            self._sunssb = None
-            self._pdist = None
-            return
-
-        # Get reference pulsar for position
-        ref_psr = next(iter(self._epulsars.values()))
+        """Setup position and planetary data from PTA timing records."""
+        ref_record = next(iter(self._pta_data.values()))
 
         # Set basic position attributes
-        self._raj = ref_psr._raj
-        self._decj = ref_psr._decj
+        self._raj = ref_record._raj
+        self._decj = ref_record._decj
 
-        # Generate B/J name using position_helpers
-
-        bj_name = bj_name_from_pulsar(ref_psr)
+        bj_name = bj_name_from_pulsar(ref_record)
         logger.debug(f"Generated B/J name: {bj_name}")
 
-        # Set position vector and time array
         pta_slice = self._get_pta_slices()
         self._pos = np.zeros((len(self._toas), 3))
         self._pos_t = np.zeros((len(self._toas), 3))
         self._planetssb = np.zeros((len(self._toas), 9, 6))
         self._sunssb = np.zeros((len(self._toas), 6))
-        for pta, psr in self._epulsars.items():
-            self._pos[pta_slice[pta], :] = psr._pos
-            self._pos_t[pta_slice[pta], :] = psr._pos_t
-            self._planetssb[pta_slice[pta], :, :] = psr._planetssb
-            self._sunssb[pta_slice[pta], :] = psr._sunssb
+        for pta, record in self._pta_data.items():
+            self._pos[pta_slice[pta], :] = record._pos
+            self._pos_t[pta_slice[pta], :] = record._pos_t
+            self._planetssb[pta_slice[pta], :, :] = record._planetssb
+            self._sunssb[pta_slice[pta], :] = record._sunssb
 
-        # Set planetary data
-        self._pdist = ref_psr._pdist
-
-        # Set pulsar sky position
-        self._pos = ref_psr._pos
+        self._pdist = ref_record._pdist
+        self._pos = ref_record._pos
 
     def _parfile_content_for_pta(self, pta_name: str) -> str:
         """Return canonical parfile content for one PTA.
@@ -846,9 +756,9 @@ class MetaPulsar:
 
     def _reference_pta_name(self) -> str:
         """Return deterministic reference PTA key for pulsar-level metadata."""
-        if not self._epulsars:
+        if not self._pta_data:
             raise ValueError("No PTA sessions are available on this MetaPulsar")
-        return next(iter(self._epulsars.keys()))
+        return next(iter(self._pta_data.keys()))
 
     @staticmethod
     def _stringify_par_value(value) -> str:
@@ -944,7 +854,7 @@ class MetaPulsar:
         ref = self._reference_pta_name()
         if ref in owners:
             return ref
-        return next(pta for pta in self._epulsars if pta in owners)
+        return next(pta for pta in self._pta_data if pta in owners)
 
     def _retained_value_token(self, pta_name: str, name: str) -> str:
         """Raw value token for one fitpar from one PTA's retained par content.
@@ -1055,10 +965,10 @@ class MetaPulsar:
         """Return whether every PTA can honor the engine selection."""
         if getattr(self, "_timing_rows_filtered", False):
             return False
-        from nltiming.engines import _IMPL_FAMILY, normalize_engines
+        from .engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
-        for pta_name in self._epulsars:
+        for pta_name in self._pta_data:
             native_compat = self._native_compat(pta_name)
             if native_compat not in engines:
                 return False
@@ -1081,12 +991,29 @@ class MetaPulsar:
             elif family == "tempo2":
                 if pta_name not in self._pulsars:
                     return False
+            elif family == "vela":
+                if native_compat != "pint":
+                    return False
+                if not self._can_import_vela():
+                    return False
+                if not self._pta_files_available(pta_name):
+                    return False
+            else:
+                return False
         return True
 
     @staticmethod
     def _can_import_jug() -> bool:
         try:
             import jug.engine.session  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _can_import_vela() -> bool:
+        try:
+            from pyvela import SPNTA  # noqa: F401
         except Exception:
             return False
         return True
@@ -1121,7 +1048,7 @@ class MetaPulsar:
         files = self._pta_files.get(pta_name)
         if files is not None and files.timing_package in {"pint", "tempo2"}:
             return files.timing_package
-        return self._get_timing_package(self._epulsars[pta_name])
+        return self._get_timing_package(self._pta_data[pta_name])
 
     @staticmethod
     def _enforce_tempo2_native_cache_requirement(
@@ -1180,11 +1107,11 @@ class MetaPulsar:
         force_recompute: bool = False,
     ) -> list[str]:
         """Refresh tempo2 JUG session caches so native_chain_static can be built."""
-        from nltiming.engines import _IMPL_FAMILY, normalize_engines
+        from .engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines or {"tempo2": "jug", "pint": "jug"})
         primed: list[str] = []
-        for pta_name in self._epulsars:
+        for pta_name in self._pta_data:
             native = self._native_compat(pta_name)
             if not str(native).lower().startswith("tempo2"):
                 continue
@@ -1229,7 +1156,7 @@ class MetaPulsar:
                 "the retained engine per-PTA inputs still describe the original TOA rows. "
                 "Filter the input tim files before constructing MetaPulsar."
             )
-        from nltiming.engines import _IMPL_FAMILY, normalize_engines
+        from .engines import _IMPL_FAMILY, normalize_engines
 
         engines = normalize_engines(engines)
         if not self.can_use_engines(engines, linearized=linearized):
@@ -1254,7 +1181,9 @@ class MetaPulsar:
         if cache_key in self._timing_engine_cache:
             return self._timing_engine_cache[cache_key]
 
-        from nltiming.engines import (
+        from nltiming.engine_support import LinearModel, validate_engine_against_pulsar
+
+        from .engines import (
             JugEngine,
             LibstempoEngine,
             LinearizedJugEngine,
@@ -1264,7 +1193,6 @@ class MetaPulsar:
             PtaContribution,
             build_engine,
         )
-        from nltiming.engines.base import LinearModel, validate_engine_against_pulsar
 
         pta_slices = self._get_pta_slices()
         fitpars = tuple(self.fitpars)
@@ -1279,7 +1207,7 @@ class MetaPulsar:
             and any(
                 _IMPL_FAMILY[engines[self._native_compat(pta)]] == "jug"
                 and str(self._native_compat(pta)).lower().startswith("tempo2")
-                for pta in self._epulsars
+                for pta in self._pta_data
             )
         ):
             from jug.timing import resolve_tempo2_jug_options
@@ -1294,7 +1222,7 @@ class MetaPulsar:
                 force_recompute=force,
             )
 
-        for pta_name, psr in self._epulsars.items():
+        for pta_name, psr in self._pta_data.items():
             slc = pta_slices[pta_name]
             rows = np.arange(slc.start, slc.stop, dtype=int)
             pta_fitpars = tuple(
@@ -1325,7 +1253,7 @@ class MetaPulsar:
                         f"Cannot build Vela timing session for '{pta_name}': "
                         "missing par/tim inputs"
                     )
-                from nltiming.engines.vela import VelaEngine
+                from .engines.vela import VelaEngine
 
                 files = self._pta_files[pta_name]
                 session_mapping = {
@@ -1413,7 +1341,7 @@ class MetaPulsar:
         )
         validate_engine_against_pulsar(engine, self, tol=1e-9)
         if verify_wiring:
-            from nltiming.engines.jug import verify_jug_native_chain
+            from .engines.jug import verify_jug_native_chain
 
             verify_jug_native_chain(engine)
         self._timing_engine_cache[cache_key] = engine
@@ -1423,7 +1351,7 @@ class MetaPulsar:
         """Return stable token for pulsar-tied cache invalidation."""
         pta_tags = [
             f"{pta}:{self._get_timing_package(psr)}"
-            for pta, psr in self._epulsars.items()
+            for pta, psr in self._pta_data.items()
         ]
         dm_checksum = float(np.sum(np.abs(self._designmatrix)))
         return (
@@ -1519,16 +1447,6 @@ class MetaPulsar:
     def pdist(self):
         """Return tuple of pulsar distance and uncertainty in kpc."""
         return self._pdist
-
-    @property
-    def dm(self):
-        """Return DM parameter from parfile."""
-        return self._dm
-
-    @property
-    def dmx(self):
-        """Return DMX parameter dictionary from parfile."""
-        return self._dmx
 
     @property
     def flags(self):

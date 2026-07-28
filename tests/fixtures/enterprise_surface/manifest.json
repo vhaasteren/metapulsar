@@ -1,0 +1,15 @@
+{
+  "astropy_version": "7.1.1",
+  "enterprise_version": "3.5.1.dev55+g0c1881c00",
+  "files": [
+    "manifest.json",
+    "metapulsar_tempo2_pair.npz",
+    "pint_ecliptic.npz",
+    "pint_equatorial.npz",
+    "tempo2_mock_equatorial.npz"
+  ],
+  "numpy_version": "2.3.4",
+  "pint_version": "1.1.5+168.g5e9a68df",
+  "platform": "Linux-6.12.76-linuxkit-aarch64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
+}

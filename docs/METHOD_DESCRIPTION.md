@@ -23,7 +23,7 @@ For each PTA (p) that observed a given pulsar, MetaPulsar requires:
 
 Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about its nominal model ( β_{0,p} ), and let ( **M**_p ) be the corresponding **design matrix** — the raw fitter basis with sign \(r(\theta+\delta)\approx r(\theta)-M\delta\), in public fit units. The full data vector is the concatenation ( **d** = ⨁_p **d**_p ). White‑ and red‑noise hyperparameters (EFAC/EQUAD/ECORR and RN/DM GP parameters) are **not** part of the deterministic timing model and are handled in the subsequent noise inference; MetaPulsar leaves them unchanged at this stage.
 
-MetaPulsar uses **PINT** and **Tempo2/libstempo** to parse/realize timing models, and **Enterprise** classes to hold pulsar objects. The implementation provides two combination modes:
+MetaPulsar uses **PINT** and **Tempo2/libstempo** to parse/realize timing models, and MetaPulsar-owned `_PtaTimingData` records to hold per-PTA arrays. The implementation provides two combination modes:
 
 * **consistent** (default): make consistent astrophysical timing‑model components across PTAs while preserving detector‑specific timing‑model terms;
 * **composite**: leave all `.par` files untouched and compose them as‑is (useful for diagnostics; everything remains PTA‑specific).
@@ -139,12 +139,12 @@ During consistent parfile rewriting MetaPulsar aligns an explicit frozen `NE_SW`
 For PINT-only stacks with no reference `NE_SW`, no line is added (PINT effective zero).
 Conflicting explicit values on non-reference PTAs are overwritten with a warning.
 
-### Step 4: Build Enterprise pulsars and validate identity
+### Step 4: Materialize PTA timing records and validate identity
 
-For each PTA MetaPulsar builds an Enterprise pulsar object:
+For each PTA MetaPulsar materializes a validated `_PtaTimingData` record:
 
-* PINT path: `ep.PintPulsar(TOAs, TimingModel, planets=True)`.
-* Tempo2 path: `ep.Tempo2Pulsar(tempopulsar, planets=True)`.
+* PINT path: `materialize_pint(TimingModel, TOAs)` (requires `planets=True` TOAs).
+* Tempo2 path: `materialize_tempo2(tempopulsar)` (zeros `DMASSPLANET*` and forms BATs).
 
 MetaPulsar validates that all PTAs refer to the **same sky position** (pairwise separation ≤ 10″ at J2000 ICRS) and compatible catalog letter-suffix usage. The public **`MetaPulsar.name`** is the B-preferred **catalog** string from parfile `PSRJ`/`PSR`/`PSRB` fields (not a truncated coordinate designator).
 
@@ -174,14 +174,14 @@ Again, **no TOA value is altered**; this is a pure concatenation with bookkeepin
 Let ( **P** ) be the set of meta‑parameters (columns to be fit). For each meta‑parameter ( q ∈ **P** ):
 
 1. For each PTA, locate the corresponding underlying parameter (using the mapping).
-2. Copy the associated **design‑matrix column** from that PTA’s Enterprise object into the appropriate rows of the combined design matrix.
+2. Copy the associated **design‑matrix column** from that PTA’s `_PtaTimingData` record into the appropriate rows of the combined design matrix.
 3. Apply **unit matching** where PINT and Tempo2 differ (e.g., RA, DEC, ecliptic longitude/latitude in hourangle/deg vs radians); these conversions are explicit and limited to astrometric columns.
 
 After assembly MetaPulsar performs a **non‑identifiability check**: any column whose absolute sum is numerically zero (no support in any rows) is dropped from the fit list. This avoids singular normal matrices and is reported via warnings (note: if a parameter has zero support, this indicates an error in the underlying data release. This happens in, e.g., IPTA-DR2 datasets).
 
 ### Step 8: Planetary and positional metadata
 
-MetaPulsar adopts position vectors, SSB ephemerides, and related arrays directly from the underlying Enterprise objects and copies them into the combined structure row‑wise. This is bookkeeping only and does not alter any physical quantity.
+MetaPulsar adopts position vectors, SSB ephemerides, and related arrays directly from the materialized PTA timing records and copies them into the combined structure row‑wise. This is bookkeeping only and does not alter any physical quantity.
 
 ### Statistical equivalence to a manual combination (sketch)
 
@@ -211,7 +211,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **shared** strategy) calls `ParameterManager.make_parfiles_shared()` to emit shared `.par` files (optionally to disk). That method runs: parse → unit convert → `_make_parameters_shared` (component merge, then shared convention rules) → write.
 * **Parameter discovery and aliasing.** `ParameterManager` uses PINT’s model metadata plus a lightweight alias resolver to collect the parameter sets by *component type* and to resolve name differences between PINT and Tempo2.
 * **Design‑matrix assembly.** `MetaPulsar` implements the Enterprise/Discovery pulsar surface by duck typing. It builds `fitparameters`/`setparameters` from the mapping, concatenates the per‑PTA arrays, and assembles the combined `designmatrix` column‑by‑column—applying explicit unit corrections for astrometric columns where PINT and Tempo2 differ. A zero‑information column cull prevents singularities.
-* **Flags and metadata.** The combined flags include `pta`, `pta_dataset`, and `timing_package`. Planetary and positional arrays are copied row‑wise from the underlying Enterprise pulsars.
+* **Flags and metadata.** The combined flags include `pta`, `pta_dataset`, and `timing_package`. Planetary and positional arrays are copied row‑wise from the materialized PTA timing records.
 
 ### What this method does **not** do
 
@@ -223,7 +223,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 1. **Parse & normalize units** for all PTAs (`UNITS → TDB` only when needed).
 2. **Make consistent** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, preserve each PTA's local DM value and mark it free, set DMEPOCH (frozen), add DM1/DM2 (free, 0).
 3. **Apply consistent convention rules**: for single‑PTA pulsars, skip multi‑PTA alignment; for multi‑PTA pulsars, align `EPHEM`, `CLOCK/CLK`, then apply cross-engine rules only when both PINT and tempo2 are present, otherwise apply single-engine multi-PTA alignment only when conventions are heterogeneous.
-4. **Instantiate** Enterprise pulsars (PINT or Tempo2 path). Validate same pulsar by coordinates.
+4. **Materialize** PTA timing records (PINT or Tempo2 path). Validate same pulsar by coordinates.
 5. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).
 6. **Concatenate** per‑PTA arrays (TOAs, flags, etc.) without modification.
 7. **Assemble** the combined design matrix column‑by‑column using the mapping, with explicit unit conversions; drop zero‑information columns.

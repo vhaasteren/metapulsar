@@ -1,4 +1,4 @@
-"""Mock libstempo.tempopulsar for testing with Enterprise."""
+"""Mock libstempo.tempopulsar for testing without a tempo2 install."""
 
 import numpy as np
 from loguru import logger
@@ -13,7 +13,7 @@ class MockParameter:
 
 
 class MockLibstempo:
-    """Mock libstempo.tempopulsar with the interface Enterprise expects."""
+    """Mock libstempo.tempopulsar with a libstempo-compatible duck surface."""
 
     def __init__(
         self,

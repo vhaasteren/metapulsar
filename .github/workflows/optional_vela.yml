@@ -1,0 +1,41 @@
+name: Optional Vela backend
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/metapulsar/engines/vela.py"
+      - "tests/engines/test_timing_vela_engine.py"
+      - ".github/workflows/optional_vela.yml"
+
+jobs:
+  vela-python312-julia111:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_JULIACALL_HANDLE_SIGNALS: "yes"
+      PYTHON_JULIACALL_THREADS: "4"
+      JULIA_NUM_THREADS: "4"
+      JULIA_CONDAPKG_BACKEND: "Null"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.11"
+      - uses: julia-actions/cache@v2
+      - name: Configure JuliaCall
+        run: |
+          echo "PYTHON_JULIACALL_EXE=$(command -v julia)" >> "$GITHUB_ENV"
+          julia -e 'print("PYTHON_JULIACALL_PROJECT=" * joinpath(DEPOT_PATH[1], "environments", "v$(VERSION.major).$(VERSION.minor)"))' >> "$GITHUB_ENV"
+      - name: Install Vela and MetaPulsar
+        run: |
+          julia -e 'import Pkg; Pkg.Registry.add("General"); Pkg.Registry.add(url="https://github.com/abhisrkckl/julia_registry")'
+          julia -e 'import Pkg; Pkg.add(url="https://github.com/abhisrkckl/Vela.jl")'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e ".[dev,vela]"
+          python -c 'from pyvela import SPNTA'
+      - name: Test Vela adapter
+        run: pytest -m requires_vela tests/engines/test_timing_vela_engine.py

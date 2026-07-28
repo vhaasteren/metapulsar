@@ -7,10 +7,8 @@ import pytest
 
 from metapulsar.metapulsar import MetaPulsar, PtaFiles
 from metapulsar.metapulsar_factory import MetaPulsarFactory
-from nltiming.engines.base import LinearModel
-from nltiming.engines.jug import JugEngine
-from nltiming.engines.pint import PintEngine
-from nltiming.engines.tempo2 import LibstempoEngine
+from metapulsar.engines import JugEngine, LibstempoEngine, PintEngine
+from nltiming.engine_support import LinearModel
 from nltiming.protocols import JaxTimingEngine
 
 
@@ -132,7 +130,11 @@ def test_factory_retains_included_tim_files(tmp_path):
 
 def test_jug_capability_requires_readable_pta_files(monkeypatch, tmp_path):
     pulsar = MetaPulsar.__new__(MetaPulsar)
-    pulsar._epulsars = {"pta": object()}
+
+    class _Record:
+        timing_package = "pint"
+
+    pulsar._pta_data = {"pta": _Record()}
     pulsar._clock_dir = None
     monkeypatch.setattr(MetaPulsar, "_can_import_jug", staticmethod(lambda: True))
 

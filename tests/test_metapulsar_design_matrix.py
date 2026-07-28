@@ -131,14 +131,17 @@ class TestMetaPulsarDesignMatrix:
 
     def test_design_matrix_empty_pulsars(self):
         """Test design matrix with empty pulsar list."""
-        # Empty pulsars should raise an exception
-        with pytest.raises(StopIteration):
+        with pytest.raises(
+            ValueError, match="MetaPulsar requires at least one PTA input"
+        ):
             MetaPulsar({}, combination_strategy="per_pta")
 
     def test_timing_package_detection(self):
-        """Test timing package detection fallback for unknown object types."""
-        assert self.composite_mp._get_timing_package(object()) == "unknown"
-        assert self.consistent_mp._get_timing_package(object()) == "unknown"
+        """Test typed timing-package field on PTA records."""
+        for record in self.composite_mp._pta_data.values():
+            assert self.composite_mp._get_timing_package(record) == "tempo2"
+        for record in self.consistent_mp._pta_data.values():
+            assert self.consistent_mp._get_timing_package(record) == "tempo2"
 
     def test_design_matrix_parameter_mapping(self):
         """Test that parameter mapping works correctly for both strategies."""

@@ -23,9 +23,6 @@ fast:
 test-integration:
 	@pytest tests/ -m "integration" -v
 
-test-legacy:
-	@pytest tests/ -m "legacy_comparison" -v
-
 test-real-data:
 	@pytest tests/ -m "real_data" -v
 
@@ -89,7 +86,6 @@ help:
 	@echo "  test             - run all tests with pytest"
 	@echo "  fast             - run fast tests only (excludes slow tests)"
 	@echo "  test-integration - run integration tests only"
-	@echo "  test-legacy      - run legacy comparison tests"
 	@echo "  test-real-data   - run real data tests"
 	@echo "  test-slow        - run slow tests only"
 	@echo "  test-cov         - run tests with coverage report"

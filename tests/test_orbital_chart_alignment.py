@@ -430,8 +430,8 @@ def test_every_case_from_the_failure_map_now_builds(ptas, strategy, reference):
     mp = _build({p: [_entry(*SRC[p])] for p in ptas}, strategy, reference)
 
     for pta in ptas:
-        assert "FB0" in mp._epulsars[pta].fitpars
-        assert "PB" not in mp._epulsars[pta].fitpars
+        assert "FB0" in mp._pta_data[pta].fitpars
+        assert "PB" not in mp._pta_data[pta].fitpars
     meta = next(k for k in mp.fitpars if k == "FB0" or k.startswith("FB0_"))
     assert all(v == "FB0" for v in mp._fitparameters[meta].values())
     col = mp._designmatrix[:, mp.fitpars.index(meta)]

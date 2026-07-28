@@ -2,14 +2,15 @@
 Position helpers for pulsar coordinate conversion and B/J-name generation.
 
 This module provides robust coordinate conversion between different pulsar object
-types (PINT TimingModel, libstempo tempopulsar, Enterprise Pulsar) and generates
-canonical B-names (BHHMM±DD) or J-names (JHHMM±DDMM) from actual coordinate data.
+types (PINT TimingModel, libstempo tempopulsar, and timing records with
+``_raj``/``_decj``) and generates canonical B-names (BHHMM±DD) or J-names
+(JHHMM±DDMM) from actual coordinate data.
 
 Functions:
     bj_name_from_pulsar: Generate B-name or J-name from any supported pulsar object
     _skycoord_from_pint_model: Extract coordinates from PINT TimingModel
     _skycoord_from_libstempo: Extract coordinates from libstempo tempopulsar
-    _skycoord_from_enterprise: Extract coordinates from Enterprise Pulsar
+    _skycoord_from_enterprise: Extract coordinates from a ``_raj``/``_decj`` record
     _format_j_name_from_icrs: Format ICRS coordinates into J-name string
     _format_b_name_from_icrs: Format ICRS coordinates into B-name string
 """
@@ -220,12 +221,14 @@ def _skycoord_from_libstempo(psr: Any) -> SkyCoord:
 
 def _skycoord_from_enterprise(psr: Any) -> SkyCoord:
     """
-    Build a SkyCoord from an Enterprise Pulsar (PintPulsar or Tempo2Pulsar).
+    Build a SkyCoord from a timing record with ``_raj``/``_decj``.
 
     Uses internal _raj/_decj attributes stored in radians (ICRS-equivalent).
+    Accepts MetaPulsar ``_PtaTimingData`` records and any duck-typed surface
+    that exposes the same attributes.
 
     Args:
-        psr: Enterprise Pulsar object with _raj/_decj attributes
+        psr: Object with _raj/_decj attributes in radians
 
     Returns:
         SkyCoord object in ICRS frame
@@ -235,7 +238,7 @@ def _skycoord_from_enterprise(psr: Any) -> SkyCoord:
     """
     if hasattr(psr, "_raj") and hasattr(psr, "_decj"):
         return SkyCoord(ra=psr._raj * u.rad, dec=psr._decj * u.rad, frame=ICRS())
-    raise ValueError("Enterprise pulsar lacks _raj/_decj.")
+    raise ValueError("Timing record lacks _raj/_decj.")
 
 
 def bj_name_from_pulsar(psr_obj: Any, name_type: str = "J") -> str:
@@ -248,7 +251,7 @@ def bj_name_from_pulsar(psr_obj: Any, name_type: str = "J") -> str:
     - PINT TimingModel
     - PINT tuple (model, toas) - uses the model
     - libstempo tempopulsar
-    - Enterprise Pulsar (PintPulsar or Tempo2Pulsar)
+    - Timing records with ``_raj``/``_decj`` (e.g. ``_PtaTimingData``)
 
     Args:
         psr_obj: Pulsar object with coordinate information

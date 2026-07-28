@@ -64,7 +64,9 @@ class TestMetaPulsarDataCombination:
         assert slices["test_pta2"] == slice(50, 100)
 
     def test_timing_data_combination_empty_pulsars(self):
-        with pytest.raises(StopIteration):
+        with pytest.raises(
+            ValueError, match="MetaPulsar requires at least one PTA input"
+        ):
             MetaPulsar({}, combination_strategy="per_pta")
 
     def test_timing_data_combination_single_pulsar(self):

@@ -33,7 +33,7 @@ dependencies = [
     "scipy>=1.7.0",
     # nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Unpin to a release once merged.
     "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@5e9a68df4fdfaf9394b2fc2cb3515d0a50848292",
-    "enterprise-pulsar>=3.0.0",
+    "ephem>=4.1",
     "loguru>=0.7.3",
     "nltiming",
 ]
@@ -45,6 +45,7 @@ dev = [
     "black==25.11.0",
     "mypy>=0.900",
     "flake8>=4.0",
+    "build>=1.2",
 ]
 docs = [
     "sphinx>=4.0",
@@ -56,12 +57,16 @@ docs = [
 libstempo = [
     "libstempo>=2.0.0",
 ]
-timing = [
+jug = [
     "jug-timing",
     "jax>=0.4.0",
     "jaxlib>=0.4.0",
-    "numpyro>=0.13.0",
-    "discovery>=0.5",
+]
+enterprise = [
+    "enterprise-pulsar>=3.0.0",
+]
+vela = [
+    "pyvela @ git+https://github.com/abhisrkckl/Vela.jl.git",
 ]
 
 [project.urls]
@@ -73,6 +78,10 @@ Issues = "https://github.com/vhaasteren/metapulsar/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["metapulsar*", "pylk*"]
+exclude = ["metapulsar.legacy", "metapulsar.legacy.*"]
+
+[tool.setuptools.package-data]
+metapulsar = ["data/*.json", "data/*.md"]
 
 [tool.setuptools.package-dir]
 "" = "src"
@@ -145,15 +154,13 @@ filterwarnings = [
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "legacy_comparison: marks tests that compare legacy vs new implementation",
-    "legacy_sorted_row_order: marks legacy row-order identity checks that intentionally xfail after PR-A",
     "requires_jug: marks tests that need JUG/JAX timing backend support",
-    "requires_discovery: marks tests that need discovery package support",
     "real_data: marks tests that require real data files",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "requires_libstempo: marks tests that need libstempo/Tempo2 available",
     "requires_ipta_data: marks tests that need IPTA data files present",
-    "requires_legacy: marks tests that need metapulsar.legacy installed",
+    "requires_enterprise: marks tests that need enterprise-pulsar installed",
+    "requires_vela: marks tests that need pyvela/Julia Vela backend",
     "jug_numpy_jax_parity_deprecated: TEMPORARY — compares deprecated NumPy residual path to JAX; remove after JAX migration",
 ]

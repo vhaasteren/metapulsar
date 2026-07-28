@@ -162,7 +162,7 @@ def create_metapulsar(
 
     Raises:
         ValueError: If no files found, multiple pulsars detected, or invalid parameters
-        RuntimeError: If Enterprise Pulsar creation fails
+        RuntimeError: If PTA timing-record materialization fails
     """
 ```
 

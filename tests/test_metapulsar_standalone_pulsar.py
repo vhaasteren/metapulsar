@@ -2,8 +2,6 @@
 
 import numpy as np
 
-import enterprise.pulsar as ep
-
 from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 
@@ -37,10 +35,9 @@ def test_metapulsar_is_standalone_pulsar():
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
+    mp = MetaPulsar(pulsars, combination_strategy="per_pta")
 
-    assert not isinstance(metapulsar, ep.BasePulsar)
-    assert metapulsar.__class__.__mro__[1] is object
+    assert type(mp).__mro__ == (MetaPulsar, object)
 
 
 def test_metapulsar_preserves_storage_row_order_by_default():

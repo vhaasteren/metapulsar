@@ -25,9 +25,9 @@ def _build_mp():
 def test_combined_mmat_has_one_constant_column_per_pta():
     mp = _build_mp()
     gauge_names = [p for p in mp.fitpars if p == "Offset" or p.startswith("Offset_")]
-    assert len(gauge_names) >= len(mp._epulsars)
+    assert len(gauge_names) >= len(mp._pta_data)
     # Per-PTA layout uses suffixed offsets.
-    for pta in mp._epulsars:
+    for pta in mp._pta_data:
         assert f"Offset_{pta}" in mp.fitpars
 
     slices = mp._get_pta_slices()

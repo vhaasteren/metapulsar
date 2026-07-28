@@ -155,9 +155,10 @@ small sampled timing block whitened against the live `C(η)`, `whitening=None`).
 See the nltiming README and `examples/notebooks/03_j1640_decentering_validation.ipynb`
 (the three-mode comparison) for choosing among them.
 
-Install timing extras with `pip install "metapulsar[timing]"`.
-The JUG extra currently requires Python 3.12. The package base and nltiming
-require Python 3.11 or newer.
+Install the JUG engine with `pip install "metapulsar[jug]"` (Python 3.12+).
+Optional Vela support is `metapulsar[vela]` (requires a compatible Julia
+runtime). Discovery / NumPyro / PTMCMC extras are installed from nltiming
+directly. The package base and nltiming require Python 3.11 or newer.
 
 Introductory notebooks and the coordinate/geometry guide live in the
 `nltiming` package (`ref-packages/nltiming/examples/notebooks/` and that
@@ -241,12 +242,26 @@ Long-term plan:
 
 ## Dependencies
 
-- **Python 3.9+**
+- **Python ≥ 3.11**
 - **numpy** ≥ 1.20.0
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
+- **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
 - **pint-pulsar** with [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` → free `FB0`; pinned in `pyproject.toml` / `requirements.txt` until that lands in a release). Dev checkouts: `pip install -e ref-packages/PINT`. Diagnose installs with `pathlib.Path(pint.__file__).resolve()` and `hasattr(PulsarBinary, "_bridge_pb_to_fb0")` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
-- **enterprise-pulsar** ≥ 3.0.0
+- **nltiming** (protocols, engine selection, nonlinear timing math)
+
+Optional extras:
+
+| Extra | Capability |
+|---|---|
+| `metapulsar[libstempo]` | tempo2 PTA legs and libstempo engine |
+| `metapulsar[jug]` | JUG JAX timing engine |
+| `metapulsar[vela]` | Vela/pyvela engine (requires Julia) |
+| `metapulsar[enterprise]` | optional Enterprise duck-compat smoke tests only |
+
+MetaPulsar constructs without Enterprise. Timing engines are owned by
+`metapulsar.engines` (`pint`, `libstempo`, `jug`, `vela`) with native
+compatibility keys `pint` and `tempo2`.
 
 
 ## Contributing
