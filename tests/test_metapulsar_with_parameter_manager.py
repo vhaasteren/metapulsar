@@ -1,7 +1,7 @@
 """Tests for MetaPulsar with ParameterManager integration."""
 
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from pint.models import TimingModel
 from pint.toa import TOAs
 from metapulsar.metapulsar import MetaPulsar, PtaFiles
@@ -164,32 +164,20 @@ class TestMetaPulsarWithParameterManager:
         assert isinstance(result["epta_dr2"], dict)
         mock_t2.savepar.assert_not_called()
 
-    @patch("metapulsar.position_helpers.bj_name_from_pulsar")
-    def test_get_pulsar_name_pint(self, mock_bj_name):
+    def test_get_pulsar_name_pint(self):
         """Test _get_pulsar_name with PINT objects."""
-        # Mock position helper
-        mock_bj_name.return_value = "J1857+0943"
-
-        # Create a minimal MetaPulsar instance for testing
         metapulsar = MetaPulsar.__new__(MetaPulsar)
         metapulsar.logger = Mock()
 
-        # Test with PINT objects
         pulsars = {"epta_dr2": (self.mock_model1, self.mock_toas1)}
         result = metapulsar._get_pulsar_name(pulsars)
         assert result == "J1857+0943"
 
-    @patch("metapulsar.position_helpers.bj_name_from_pulsar")
-    def test_get_pulsar_name_tempo2(self, mock_bj_name):
+    def test_get_pulsar_name_tempo2(self):
         """Test _get_pulsar_name with Tempo2 objects."""
-        # Mock position helper
-        mock_bj_name.return_value = "J1857+0943"
-
-        # Create a minimal MetaPulsar instance for testing
         metapulsar = MetaPulsar.__new__(MetaPulsar)
         metapulsar.logger = Mock()
 
-        # Test with libstempo objects
         pulsars = {"epta_dr2": self.mock_libstempo_psr}
         result = metapulsar._get_pulsar_name(pulsars)
         assert result == "J1857+0943"

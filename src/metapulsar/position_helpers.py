@@ -14,7 +14,9 @@ Functions:
     _format_b_name_from_icrs: Format ICRS coordinates into B-name string
 """
 
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List, Iterable, Set
+import re
+import warnings
 import numpy as np
 from astropy.coordinates import (
     SkyCoord,
@@ -421,6 +423,349 @@ def _get_pulsar_name_from_parfile_dict(parfile_dict: Dict[str, str]) -> str:
     return "<unknown>"
 
 
+_CATALOG_NAME_RE = re.compile(r"^([BJ]\d{4}[+-]\d{2,4})([A-Z])?$")
+
+
+def parse_catalog_names(parfile_content: str) -> Dict[str, Optional[str]]:
+    """Parse PSRJ / PSRB / PSR fields from parfile content."""
+    parfile_dict = _parse_parfile_optimized(parfile_content)
+    result: Dict[str, Optional[str]] = {"psrj": None, "psrb": None, "psr": None}
+    for key, out_key in (("PSRJ", "psrj"), ("PSRB", "psrb"), ("PSR", "psr")):
+        val = parfile_dict.get(key)
+        if val:
+            result[out_key] = val.strip()
+    return result
+
+
+def catalog_name_candidates(parfile_dict: Dict[str, str]) -> List[str]:
+    """Ordered unique catalog strings present on a parfile."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for key in ("PSRJ", "PSRB", "PSR"):
+        val = parfile_dict.get(key)
+        if val:
+            name = val.strip()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def letter_suffix(name: str) -> Optional[str]:
+    """Trailing cluster letter (A–Z) after the numeric designator, if any."""
+    m = _CATALOG_NAME_RE.match(name.strip())
+    if not m:
+        return None
+    return m.group(2)
+
+
+def preferred_file_label(parfile_dict: Dict[str, str], path_name: Optional[str]) -> str:
+    """B-preferred catalog label for one file; path_name is last resort."""
+    psrj = (parfile_dict.get("PSRJ") or "").strip() or None
+    psrb = (parfile_dict.get("PSRB") or "").strip() or None
+    psr = (parfile_dict.get("PSR") or "").strip() or None
+
+    if psrb:
+        return psrb
+    if psr and psr.startswith("B") and len(psr) >= 6:
+        return psr
+    if psrj:
+        return psrj
+    if psr:
+        return psr
+    if path_name:
+        logger.warning(
+            f"No PSRJ/PSRB/PSR in parfile; using path name {path_name!r} as label"
+        )
+        return path_name
+    return "<unknown>"
+
+
+def preferred_group_name(catalog_strings: Iterable[str]) -> str:
+    """B-preferred display name for a pulsar group from all member catalog strings."""
+    names = [n.strip() for n in catalog_strings if n and n.strip()]
+    if not names:
+        raise ValueError("Cannot determine group name: no catalog strings")
+
+    b_names = sorted({n for n in names if n.startswith("B") and len(n) >= 6})
+    if b_names:
+        return b_names[0]
+
+    j_names = sorted({n for n in names if n.startswith("J")})
+    if j_names:
+        suffixed = sorted(n for n in j_names if letter_suffix(n))
+        if suffixed:
+            return suffixed[0]
+        return j_names[0]
+
+    return sorted(set(names))[0]
+
+
+def _suffix_sets_compatible(
+    suffixes_a: Set[Optional[str]], suffixes_b: Set[Optional[str]]
+) -> Tuple[bool, Optional[str], bool]:
+    """Compare suffix sets for two clusters. Returns (may_merge, error, warn_separate)."""
+    combined = suffixes_a | suffixes_b
+    non_null = {s for s in combined if s is not None}
+    has_null = None in combined
+
+    if non_null and has_null and len(non_null) > 0:
+        return (
+            False,
+            f"Ambiguous pulsar identity: mixed letter suffix and bare catalog names "
+            f"(suffixes={non_null}) within match tolerance",
+            False,
+        )
+    if len(non_null) > 1:
+        return False, None, True
+    return True, None, False
+
+
+def _collect_suffixes_from_catalogs(catalogs: Iterable[str]) -> Set[Optional[str]]:
+    out: Set[Optional[str]] = set()
+    for name in catalogs:
+        out.add(letter_suffix(name))
+    if not out:
+        out.add(None)
+    return out
+
+
+class _UnionFind:
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[rb] = ra
+
+
+def _build_position_records(
+    file_data: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """One record per file with sky position and catalog metadata."""
+    from pathlib import Path
+
+    from .file_discovery import extract_pulsar_name_from_path
+
+    records: List[Dict[str, Any]] = []
+    for pta_name, file_list in file_data.items():
+        for file_dict in file_list:
+            par_content = file_dict.get("par_content")
+            if not par_content:
+                logger.warning(
+                    f"Skipping file without par_content: {file_dict.get('par', 'unknown')}"
+                )
+                continue
+
+            coords = extract_coordinates_from_parfile_optimized(par_content)
+            if coords is None:
+                logger.warning(
+                    f"Could not extract coordinates from {file_dict.get('par', 'unknown')}"
+                )
+                continue
+
+            ra_hours, dec_deg = coords
+            parfile_dict = _parse_parfile_optimized(par_content)
+            path_name: Optional[str] = None
+            par_path = file_dict.get("par")
+            if par_path is not None:
+                try:
+                    path_name = extract_pulsar_name_from_path(Path(par_path))
+                except ValueError:
+                    path_name = None
+
+            catalogs = catalog_name_candidates(parfile_dict)
+            if path_name and path_name not in catalogs:
+                catalogs = catalogs + [path_name]
+
+            file_label = preferred_file_label(parfile_dict, path_name)
+            skycoord = SkyCoord(
+                ra=ra_hours * u.hourangle, dec=dec_deg * u.deg, frame=ICRS()
+            )
+
+            records.append(
+                {
+                    "pta_name": pta_name,
+                    "file_dict": file_dict,
+                    "skycoord": skycoord,
+                    "catalogs": catalogs,
+                    "file_label": file_label,
+                    "suffixes": _collect_suffixes_from_catalogs(catalogs),
+                }
+            )
+
+            file_dict["catalog_names"] = list(catalog_name_candidates(parfile_dict))
+            file_dict["path_name"] = path_name
+            file_dict["file_label"] = file_label
+
+    return records
+
+
+def _cluster_records_by_position(
+    records: List[Dict[str, Any]], match_tol_arcsec: float
+) -> List[List[int]]:
+    """Cluster record indices by on-sky separation and suffix rules."""
+    n = len(records)
+    if n == 0:
+        return []
+
+    tol = match_tol_arcsec * u.arcsec
+    uf = _UnionFind(n)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            sep = records[i]["skycoord"].separation(records[j]["skycoord"])
+            if sep > tol:
+                continue
+
+            ok, err, warn_sep = _suffix_sets_compatible(
+                records[i]["suffixes"], records[j]["suffixes"]
+            )
+            if err:
+                raise ValueError(err)
+            if warn_sep:
+                warnings.warn(
+                    f"Pulsars within {match_tol_arcsec}″ have different letter suffixes "
+                    f"({records[i]['catalogs']!r} vs {records[j]['catalogs']!r}); "
+                    "keeping separate groups",
+                    stacklevel=2,
+                )
+                continue
+            if ok:
+                uf.union(i, j)
+
+    clusters: Dict[int, List[int]] = {}
+    for idx in range(n):
+        root = uf.find(idx)
+        clusters.setdefault(root, []).append(idx)
+
+    return list(clusters.values())
+
+
+def _check_catalog_alias_position_consistency(
+    records: List[Dict[str, Any]], match_tol_arcsec: float
+) -> None:
+    """Same catalog/path alias on files separated by > tolerance → ValueError."""
+    tol = match_tol_arcsec * u.arcsec
+    alias_to_idx: Dict[str, int] = {}
+    for idx, rec in enumerate(records):
+        for alias in rec["catalogs"]:
+            if alias in alias_to_idx:
+                other = alias_to_idx[alias]
+                sep = records[other]["skycoord"].separation(rec["skycoord"])
+                if sep > tol:
+                    raise ValueError(
+                        f"Catalog name {alias!r} appears on distinct sky positions "
+                        f"(separation {sep.to(u.arcsec).value:.3f}″ > {match_tol_arcsec}″)"
+                    )
+            else:
+                alias_to_idx[alias] = idx
+
+
+def discover_pulsars_by_position(
+    file_data: Dict[str, List[Dict[str, Any]]],
+    match_tol_arcsec: float = 10.0,
+) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Group PTA file data by J2000 position (≤ match_tol) and catalog identity."""
+    records = _build_position_records(file_data)
+    if not records:
+        logger.info("Discovered 0 unique pulsars across all PTAs")
+        return {}
+
+    _check_catalog_alias_position_consistency(records, match_tol_arcsec)
+    cluster_lists = _cluster_records_by_position(records, match_tol_arcsec)
+
+    groups: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for member_indices in cluster_lists:
+        all_catalogs: List[str] = []
+        for idx in member_indices:
+            all_catalogs.extend(records[idx]["catalogs"])
+
+        group_name = preferred_group_name(all_catalogs)
+        if group_name in groups:
+            raise ValueError(
+                f"Duplicate pulsar group name {group_name!r} for distinct clusters"
+            )
+
+        pta_map: Dict[str, List[Dict[str, Any]]] = {}
+        for idx in member_indices:
+            rec = records[idx]
+            pta = rec["pta_name"]
+            pta_map.setdefault(pta, []).append(rec["file_dict"])
+
+        groups[group_name] = pta_map
+        logger.debug(
+            f"Group {group_name!r}: {len(member_indices)} file(s), "
+            f"aliases={sorted(set(all_catalogs))}"
+        )
+
+    logger.info(f"Discovered {len(groups)} unique pulsars across all PTAs")
+    return groups
+
+
+def build_alias_map(
+    pulsar_groups: Dict[str, Dict[str, List[Dict[str, Any]]]],
+) -> Dict[str, str]:
+    """Map catalog and path aliases to group display names (no truncated coord names)."""
+    alias_map: Dict[str, str] = {}
+    for group_name, pta_data in pulsar_groups.items():
+        alias_map[group_name] = group_name
+        for files in pta_data.values():
+            for file_dict in files:
+                for key in ("catalog_names",):
+                    for alias in file_dict.get(key) or []:
+                        if alias in alias_map and alias_map[alias] != group_name:
+                            raise ValueError(
+                                f"Alias {alias!r} maps to both "
+                                f"{alias_map[alias]!r} and {group_name!r}"
+                            )
+                        alias_map[alias] = group_name
+                path_name = file_dict.get("path_name")
+                if path_name:
+                    if path_name in alias_map and alias_map[path_name] != group_name:
+                        raise ValueError(
+                            f"Path alias {path_name!r} maps to both "
+                            f"{alias_map[path_name]!r} and {group_name!r}"
+                        )
+                    alias_map[path_name] = group_name
+    return alias_map
+
+
+def positions_within_tolerance(
+    coords: Iterable[SkyCoord], match_tol_arcsec: float = 10.0
+) -> bool:
+    """True if all sky positions are pairwise within match_tol_arcsec."""
+    coord_list = list(coords)
+    if len(coord_list) <= 1:
+        return True
+    tol = match_tol_arcsec * u.arcsec
+    for i in range(len(coord_list)):
+        for j in range(i + 1, len(coord_list)):
+            if coord_list[i].separation(coord_list[j]) > tol:
+                return False
+    return True
+
+
+def assert_catalog_suffixes_compatible(catalog_names: Iterable[str]) -> None:
+    """Raise if letter-suffix rules forbid a single MetaPulsar."""
+    names = [n for n in catalog_names if n]
+    suffixes = {letter_suffix(n) for n in names}
+    non_null = {s for s in suffixes if s is not None}
+    if None in suffixes and non_null:
+        raise ValueError(
+            f"Inconsistent pulsar letter suffixes across PTAs: {sorted(names)}"
+        )
+    if len(non_null) > 1:
+        raise ValueError(f"Distinct letter suffixes in one MetaPulsar: {sorted(names)}")
+
+
 def _get_posepoch_mjd_optimized(parfile_dict: Dict[str, str]) -> Optional[float]:
     """Return POSEPOCH (MJD), falling back to PEPOCH when POSEPOCH is absent.
 
@@ -743,58 +1088,13 @@ def _format_b_name_from_coordinates_optimized(ra_hours: float, dec_deg: float) -
 def discover_pulsars_by_coordinates_optimized(
     file_data: Dict[str, List[Dict[str, Any]]],
 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-    """
-    Discover pulsars by extracting coordinates directly from parfiles (optimized version).
+    """Deprecated alias for :func:`discover_pulsars_by_position`."""
+    import warnings
 
-    This optimized version bypasses PINT model creation and extracts
-    coordinates using lightweight parsing for significant performance improvements.
-
-    Args:
-        file_data: Dictionary mapping PTA names to file lists
-
-    Returns:
-        Dictionary mapping J-names to PTA file data
-    """
-    coordinate_map = {}
-
-    for pta_name, file_list in file_data.items():
-        logger.debug(f"Processing {len(file_list)} files for PTA {pta_name}")
-
-        for file_dict in file_list:
-            try:
-                # Extract coordinates directly from parfile content
-                coords = extract_coordinates_from_parfile_optimized(
-                    file_dict["par_content"]
-                )
-
-                if coords is None:
-                    logger.warning(
-                        f"Could not extract coordinates from {file_dict.get('par', 'unknown')}"
-                    )
-                    continue
-
-                ra_hours, dec_deg = coords
-
-                # Generate J-name directly from coordinates
-                j_name = bj_name_from_coordinates_optimized(ra_hours, dec_deg, "J")
-
-                # Add to coordinate map
-                if j_name not in coordinate_map:
-                    coordinate_map[j_name] = {}
-                if pta_name not in coordinate_map[j_name]:
-                    coordinate_map[j_name][pta_name] = []
-
-                coordinate_map[j_name][pta_name].append(file_dict)
-
-                logger.debug(
-                    f"Found pulsar {j_name} at RA={ra_hours:.4f}h, DEC={dec_deg:.4f}°"
-                )
-
-            except Exception as e:
-                logger.warning(
-                    f"Failed to process {file_dict.get('par', 'unknown')}: {e}"
-                )
-                continue
-
-    logger.info(f"Discovered {len(coordinate_map)} unique pulsars across all PTAs")
-    return coordinate_map
+    warnings.warn(
+        "discover_pulsars_by_coordinates_optimized is deprecated; "
+        "use discover_pulsars_by_position",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return discover_pulsars_by_position(file_data)

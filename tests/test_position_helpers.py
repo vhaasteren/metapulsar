@@ -21,7 +21,7 @@ from metapulsar.position_helpers import (
     bj_name_from_pulsar,
     extract_coordinates_from_parfile_optimized,
     bj_name_from_coordinates_optimized,
-    discover_pulsars_by_coordinates_optimized,
+    discover_pulsars_by_position,
     _parse_parfile_optimized,
     _get_first_par_value_by_aliases,
     _parse_ra_string_optimized,
@@ -392,15 +392,13 @@ DM 10.0
         }
 
         # Run optimized discovery
-        coordinate_map = discover_pulsars_by_coordinates_optimized(file_data)
+        coordinate_map = discover_pulsars_by_position(file_data)
 
-        # Verify results
+        # Verify results (catalog name from parfile, not truncated coords)
         assert len(coordinate_map) > 0, "No pulsars discovered"
-        assert "J1857+0943" in coordinate_map, "Expected pulsar not found"
-        assert "EPTA" in coordinate_map["J1857+0943"], "PTA not found in results"
-        assert (
-            len(coordinate_map["J1857+0943"]["EPTA"]) == 1
-        ), "Incorrect number of files"
+        group_name = next(iter(coordinate_map))
+        assert "EPTA" in coordinate_map[group_name], "PTA not found in results"
+        assert len(coordinate_map[group_name]["EPTA"]) == 1
 
     def test_optimized_vs_original_consistency(self, load_parfile_text):
         """Test that optimized functions produce same results as original."""

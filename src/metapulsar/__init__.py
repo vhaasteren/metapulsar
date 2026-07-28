@@ -47,6 +47,7 @@ from .mockpulsar import (
     create_mock_flags,
     validate_mock_data,
 )
+from .position_helpers import discover_pulsars_by_position
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 from .selection_utils import create_staggered_selection
 
@@ -133,6 +134,7 @@ __all__ = [
     "pta_summary",
     "get_pulsar_names_from_file_data",
     "filter_file_data_by_pulsars",
+    "discover_pulsars_by_position",
     # Nonlinear timing (lazy; see nltiming)
     "NonLinearTimingModel",
     "ParameterSpace",

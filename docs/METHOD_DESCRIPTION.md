@@ -146,7 +146,7 @@ For each PTA MetaPulsar builds an Enterprise pulsar object:
 * PINT path: `ep.PintPulsar(TOAs, TimingModel, planets=True)`.
 * Tempo2 path: `ep.Tempo2Pulsar(tempopulsar, planets=True)`.
 
-MetaPulsar validates that all PTAs refer to the **same sky position** by converting names to a canonical **J‑name** derived from coordinates. “B‑vs‑J” selection is only for **display**—coordinate matching is authoritative.
+MetaPulsar validates that all PTAs refer to the **same sky position** (pairwise separation ≤ 10″ at J2000 ICRS) and compatible catalog letter-suffix usage. The public **`MetaPulsar.name`** is the B-preferred **catalog** string from parfile `PSRJ`/`PSR`/`PSRB` fields (not a truncated coordinate designator).
 
 ### Step 5: Parameter mapping (merged vs PTA‑specific)
 
@@ -202,7 +202,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Choice of consistent components.** The default choice `{astrometry, spindown, binary, dispersion}` fits most pulsars. For problematic sources one can drop a component from the consistent set; all parameters of that component then remain PTA‑specific.
 * **DM modeling.** Removing DMX in favor of {DM, DMEPOCH, DM1, DM2} makes the deterministic DM part uniform. Stochastic DM variations are handled entirely in the noise model (e.g., a DM GP) during inference.
 * **Challenging timing models.** If a pulsar resides in a regime where ( **M** ) varies rapidly with ( β₀ ) (high‑order binary models, poorly constrained orbital evolution), manual inspection is recommended. For Pulsar Timing Array purposes this is typically not an important regime to take into account. Note that the factory allows a **composite** strategy (no merging model components) for such cases (aka: FrankenStat) that is slightly more forgiving in this regard.
-* **Name handling.** Pulsar identity is validated via **coordinates**. B‑ vs J‑name is a display convention only and does not enter any computation.
+* **Name handling.** Pulsar identity uses **10″ J2000 position matching** plus parfile catalog names. B‑ vs J‑name strings that refer to the same source are aliases of one group; truncated `JHHMM±DDMM` strings are not used for identity or lookup.
 * **Determinism and provenance.** Given the set of `.par`/`.tim` inputs, the chosen reference PTA, and the list of consistent components, the output is deterministic. The code can optionally write the **shared** `.par` files it constructs for full auditability.
 * **Single‑PTA behavior.** A single‑PTA pulsar may still have its `.par`/`.tim` artifacts rewritten for DM model cleanup and pulse‑number handling. What is skipped is only the multi‑PTA consistency/alignment step, because there is no cross‑PTA reference relationship to enforce.
 
@@ -241,5 +241,5 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **Detector‑specific timing‑model parameters remain local:** anything not in the consistent component set becomes PTA‑suffixed in `_add_pta_specific_parameter`.
 * **Phase offset exposure:** if `PHOFF` is absent MetaPulsar defines a meta‑parameter mapped to the canonical “Offset” column so that per‑dataset constant phase terms are explicit.
 * **Combined design matrix:** `MetaPulsar._build_design_matrix` (with unit corrections in `_convert_design_matrix_units`) and the zero‑information cull in `_remove_nonidentifiable_parameters`.
-* **Identity validation and naming:** `bj_name_from_pulsar` and coordinate‑based checks in `_validate_pulsar_consistency`.
+* **Identity validation and naming:** `discover_pulsars_by_position`, `positions_within_tolerance`, and catalog suffix checks in `_validate_pulsar_consistency`; `MetaPulsar.name` from `preferred_group_name`.
 * **No TOA edits:** `MetaPulsar._combine_timing_data` concatenates; there are no writes or transforms of TOAs.

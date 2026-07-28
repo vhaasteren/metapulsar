@@ -452,13 +452,13 @@ def get_pulsar_names_from_file_data(
     file_data: Dict[str, List[Dict[str, Any]]],
 ) -> List[str]:
     """
-    Extract canonical pulsar names from file data using coordinate-based discovery.
+    Extract catalog pulsar names from file data using position-based discovery.
 
     Args:
         file_data: File data from FileDiscovery (per data release)
 
     Returns:
-        List of canonical J-names (e.g., ['J0613-0200', 'J1857+0943'])
+        List of B-preferred catalog names (e.g. ['J0613-0200', 'B1855+09'])
 
     Raises:
         ValueError: If no valid pulsar files found
@@ -480,12 +480,12 @@ def filter_file_data_by_pulsars(
     """
     Filter file data to include only specified pulsars.
 
-    Supports both J-names (J1857+0943) and B-names (B1855+09) and handles
-    the conversion between them using coordinate-based matching.
+    Accepts catalog names (PSRJ/PSR/PSRB) and path-derived aliases from par/tim
+    filenames. Truncated coordinate designators are not registered.
 
     Args:
         file_data: File data from FileDiscovery (per data release)
-        pulsar_names: Single pulsar name or list of pulsar names (J or B format)
+        pulsar_names: Single pulsar name or list of catalog/path aliases
 
     Returns:
         Filtered file data containing only the specified pulsars
@@ -494,65 +494,36 @@ def filter_file_data_by_pulsars(
         ValueError: If no matching pulsars found
     """
     from .metapulsar_factory import MetaPulsarFactory
-    from .position_helpers import (
-        bj_name_from_coordinates_optimized,
-        extract_coordinates_from_parfile_optimized,
-    )
+    from .position_helpers import build_alias_map
 
     # Normalize input to list
     if isinstance(pulsar_names, str):
         pulsar_names = [pulsar_names]
 
-    # Get all pulsars using coordinate-based discovery
     factory = MetaPulsarFactory()
     pulsar_groups = factory.group_files_by_pulsar(file_data)
 
     if not pulsar_groups:
         raise ValueError("No valid pulsar files found in file_data")
 
-    # Create mapping from both J and B names to the canonical J-names
-    name_mapping = {}
-    for j_name, pta_data in pulsar_groups.items():
-        # Add J-name mapping
-        name_mapping[j_name] = j_name
+    name_mapping = build_alias_map(pulsar_groups)
 
-        # Generate B-name for this pulsar and add mapping
-        try:
-            # Get coordinates from first available file
-            coords = None
-            for pta_name, files in pta_data.items():
-                if files and "par_content" in files[0]:
-                    coords = extract_coordinates_from_parfile_optimized(
-                        files[0]["par_content"]
-                    )
-                    break
-
-            if coords:
-                ra_hours, dec_deg = coords
-                b_name = bj_name_from_coordinates_optimized(ra_hours, dec_deg, "B")
-                name_mapping[b_name] = j_name
-        except Exception:
-            # If B-name generation fails, skip it
-            pass
-
-    # Find matching canonical J-names
-    matching_j_names = []
+    matching_group_names = []
     for requested_name in pulsar_names:
         if requested_name in name_mapping:
             canonical_name = name_mapping[requested_name]
-            if canonical_name not in matching_j_names:
-                matching_j_names.append(canonical_name)
+            if canonical_name not in matching_group_names:
+                matching_group_names.append(canonical_name)
         else:
             raise ValueError(f"Pulsar '{requested_name}' not found in file data")
 
-    if not matching_j_names:
+    if not matching_group_names:
         raise ValueError(f"No matching pulsars found for: {pulsar_names}")
 
-    # Filter file data to only include matching pulsars
     filtered_file_data = {}
-    for j_name in matching_j_names:
-        if j_name in pulsar_groups:
-            for pta_name, files in pulsar_groups[j_name].items():
+    for group_name in matching_group_names:
+        if group_name in pulsar_groups:
+            for pta_name, files in pulsar_groups[group_name].items():
                 if pta_name not in filtered_file_data:
                     filtered_file_data[pta_name] = []
                 filtered_file_data[pta_name].extend(files)

@@ -8,6 +8,14 @@ from metapulsar import discover_files
 from tests.helpers import make_tim_metadata
 
 
+def _with_catalog_aliases(file_entry, catalog_names, path_name=None):
+    """Attach identity fields expected by build_alias_map in filter tests."""
+    enriched = dict(file_entry)
+    enriched["catalog_names"] = list(catalog_names)
+    enriched["path_name"] = path_name or catalog_names[0]
+    return enriched
+
+
 class TestFileDiscovery:
     """Test FileDiscovery functionality."""
 
@@ -481,32 +489,19 @@ class TestPulsarHelperFunctions:
             ],
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["J0613-0200"])
+        ppta_file = _with_catalog_aliases(file_data["ppta_dr2"][0], ["J1857+0943"])
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]},
-                "J1857+0943": {"ppta_dr2": [file_data["ppta_dr2"][0]]},
+                "J0613-0200": {"epta_dr2": [epta_file]},
+                "J1857+0943": {"ppta_dr2": [ppta_file]},
             }
-
-            # Mock coordinate extraction and B-name generation
-            mock_extract.side_effect = [
-                (1.0, 2.0),  # For J0613-0200
-                (3.0, 4.0),  # For J1857+0943
-            ]
-            mock_bj_name.side_effect = ["B0613-02", "B1857+09"]
 
             result = filter_file_data_by_pulsars(file_data, "J0613-0200")
 
-            assert result == {"epta_dr2": [file_data["epta_dr2"][0]]}
+            assert result == {"epta_dr2": [epta_file]}
 
     def test_filter_file_data_by_pulsars_multiple_j_names(self):
         """Test filtering file data by multiple J-names."""
@@ -533,36 +528,23 @@ class TestPulsarHelperFunctions:
             ],
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["J0613-0200"])
+        ppta_file = _with_catalog_aliases(file_data["ppta_dr2"][0], ["J1857+0943"])
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]},
-                "J1857+0943": {"ppta_dr2": [file_data["ppta_dr2"][0]]},
+                "J0613-0200": {"epta_dr2": [epta_file]},
+                "J1857+0943": {"ppta_dr2": [ppta_file]},
             }
-
-            # Mock coordinate extraction and B-name generation
-            mock_extract.side_effect = [
-                (1.0, 2.0),  # For J0613-0200
-                (3.0, 4.0),  # For J1857+0943
-            ]
-            mock_bj_name.side_effect = ["B0613-02", "B1857+09"]
 
             result = filter_file_data_by_pulsars(
                 file_data, ["J0613-0200", "J1857+0943"]
             )
 
             expected = {
-                "epta_dr2": [file_data["epta_dr2"][0]],
-                "ppta_dr2": [file_data["ppta_dr2"][0]],
+                "epta_dr2": [epta_file],
+                "ppta_dr2": [ppta_file],
             }
             assert result == expected
 
@@ -573,37 +555,26 @@ class TestPulsarHelperFunctions:
         file_data = {
             "epta_dr2": [
                 {
-                    "par": "test/J0613-0200.par",
-                    "tim": "test/J0613-0200.tim",
-                    "par_content": "PSR J0613-0200\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
+                    "par": "test/B0613-02.par",
+                    "tim": "test/B0613-02.tim",
+                    "par_content": "PSR B0613-02\nRAJ 06:13:43.9754\nDECJ -02:00:47.1755\n",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
             ]
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["B0613-02"])
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]}
+                "B0613-02": {"epta_dr2": [epta_file]}
             }
-
-            # Mock coordinate extraction and B-name generation
-            mock_extract.return_value = (1.0, 2.0)
-            mock_bj_name.return_value = "B0613-02"
 
             result = filter_file_data_by_pulsars(file_data, "B0613-02")
 
-            assert result == {"epta_dr2": [file_data["epta_dr2"][0]]}
+            assert result == {"epta_dr2": [epta_file]}
 
     def test_filter_file_data_by_pulsars_mixed_names(self):
         """Test filtering file data by mixed J and B names."""
@@ -630,34 +601,25 @@ class TestPulsarHelperFunctions:
             ],
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["J0613-0200"])
+        ppta_file = _with_catalog_aliases(
+            file_data["ppta_dr2"][0],
+            ["J1857+0943", "B1855+09"],
+            path_name="J1857+0943",
+        )
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]},
-                "J1857+0943": {"ppta_dr2": [file_data["ppta_dr2"][0]]},
+                "J0613-0200": {"epta_dr2": [epta_file]},
+                "B1855+09": {"ppta_dr2": [ppta_file]},
             }
 
-            # Mock coordinate extraction and B-name generation
-            mock_extract.side_effect = [
-                (1.0, 2.0),  # For J0613-0200
-                (3.0, 4.0),  # For J1857+0943
-            ]
-            mock_bj_name.side_effect = ["B0613-02", "B1857+09"]
-
-            result = filter_file_data_by_pulsars(file_data, ["J0613-0200", "B1857+09"])
+            result = filter_file_data_by_pulsars(file_data, ["J0613-0200", "B1855+09"])
 
             expected = {
-                "epta_dr2": [file_data["epta_dr2"][0]],
-                "ppta_dr2": [file_data["ppta_dr2"][0]],
+                "epta_dr2": [epta_file],
+                "ppta_dr2": [ppta_file],
             }
             assert result == expected
 
@@ -677,24 +639,13 @@ class TestPulsarHelperFunctions:
             ]
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["J0613-0200"])
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]}
+                "J0613-0200": {"epta_dr2": [epta_file]}
             }
-
-            # Mock coordinate extraction and B-name generation
-            mock_extract.return_value = (1.0, 2.0)
-            mock_bj_name.return_value = "B0613-02"
 
             with pytest.raises(
                 ValueError, match="Pulsar 'J9999\\+9999' not found in file data"
@@ -732,24 +683,13 @@ class TestPulsarHelperFunctions:
             ]
         }
 
-        with (
-            patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory,
-            patch(
-                "metapulsar.position_helpers.bj_name_from_coordinates_optimized"
-            ) as mock_bj_name,
-            patch(
-                "metapulsar.position_helpers.extract_coordinates_from_parfile_optimized"
-            ) as mock_extract,
-        ):
+        epta_file = _with_catalog_aliases(file_data["epta_dr2"][0], ["J0613-0200"])
 
+        with patch("metapulsar.metapulsar_factory.MetaPulsarFactory") as mock_factory:
             mock_instance = mock_factory.return_value
             mock_instance.group_files_by_pulsar.return_value = {
-                "J0613-0200": {"epta_dr2": [file_data["epta_dr2"][0]]}
+                "J0613-0200": {"epta_dr2": [epta_file]}
             }
-
-            # Mock coordinate extraction and B-name generation
-            mock_extract.return_value = (1.0, 2.0)
-            mock_bj_name.return_value = "B0613-02"
 
             with pytest.raises(
                 ValueError, match="Pulsar 'J9999\\+9999' not found in file data"

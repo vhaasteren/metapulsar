@@ -21,7 +21,14 @@ from pint.toa import TOAs
 
 # Import our supporting infrastructure
 from .parameter_manager import ParameterInconsistencyError, ParameterManager
-from .position_helpers import bj_name_from_pulsar
+from .position_helpers import (
+    assert_catalog_suffixes_compatible,
+    bj_name_from_pulsar,
+    positions_within_tolerance,
+    preferred_group_name,
+    _skycoord_from_pint_model,
+    _skycoord_from_libstempo,
+)
 
 
 @dataclass(frozen=True)
@@ -254,26 +261,32 @@ class MetaPulsar:
         return pint_models, pint_toas, lt_pulsars
 
     def _validate_pulsar_consistency(self, pint_models, lt_pulsars):
-        """Validate single pulsar across all PTAs using standardized J-names."""
-        pulsar_names = []
+        """Validate single pulsar across all PTAs by sky position and catalog suffixes."""
+        sky_coords = []
 
-        # Extract standardized J-names from PINT models
         for m in pint_models.values():
-            j_name = bj_name_from_pulsar(m, "J")
-            pulsar_names.append(j_name)
+            sky_coords.append(_skycoord_from_pint_model(m))
 
-        # Extract standardized J-names from libstempo pulsars
         for psr in lt_pulsars.values():
-            j_name = bj_name_from_pulsar(psr, "J")
-            pulsar_names.append(j_name)
+            sky_coords.append(_skycoord_from_libstempo(psr))
 
-        if not pulsar_names:
+        if not sky_coords:
             raise ValueError("No valid pulsars found for validation")
 
-        if not self._all_equal(pulsar_names):
-            raise ValueError(f"Not all the same pulsar: {pulsar_names}")
+        if not positions_within_tolerance(sky_coords, match_tol_arcsec=10.0):
+            raise ValueError(
+                "Not all PTAs refer to the same sky position within 10″ tolerance"
+            )
 
-        return pulsar_names[0]
+        catalog_names = []
+        for m in pint_models.values():
+            catalog_names.append(m.PSR.value)
+        for psr in lt_pulsars.values():
+            catalog_names.append(psr.name)
+
+        assert_catalog_suffixes_compatible(catalog_names)
+
+        return preferred_group_name(catalog_names)
 
     def _all_equal(self, iterable):
         """Check if all items in iterable are equal."""
@@ -794,24 +807,9 @@ class MetaPulsar:
         return parfile_dicts
 
     def _get_pulsar_name(self, pulsars):
-        """Get canonical pulsar name with B-name preference logic.
-
-        Returns B-name if any PTA uses B-names internally, otherwise J-name.
-        Matching is always done on J-name for coordinate-based identification.
-        """
-        from .position_helpers import bj_name_from_pulsar
-
-        # Extract all pulsar names to check for B-name usage
+        """Return B-preferred catalog name from parfile PSR fields across PTAs."""
         pulsar_names = self._extract_pulsar_names(pulsars)
-
-        # Use first pulsar for coordinate-based name generation
-        first_pulsar = next(iter(pulsars.values()))
-
-        # Check if any PTA uses B-names and return appropriate name
-        if any(name.startswith("B") and len(name) >= 6 for name in pulsar_names):
-            return bj_name_from_pulsar(first_pulsar, "B")
-        else:
-            return bj_name_from_pulsar(first_pulsar, "J")
+        return preferred_group_name(pulsar_names)
 
     def _extract_pulsar_names(self, pulsars):
         """Extract all pulsar names from PTA objects.
