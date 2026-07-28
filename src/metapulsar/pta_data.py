@@ -89,7 +89,7 @@ class _PtaTimingData:
 
 @lru_cache(maxsize=1)
 def _load_pulsar_distances() -> dict[str, list[float]]:
-    path = resources.files("metapulsar") / "data" / "pulsar_distances.json"
+    path = resources.files("metapulsar") / "resources" / "pulsar_distances.json"
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 

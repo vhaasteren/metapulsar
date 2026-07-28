@@ -81,7 +81,7 @@ include = ["metapulsar*", "pylk*"]
 exclude = ["metapulsar.legacy", "metapulsar.legacy.*"]
 
 [tool.setuptools.package-data]
-metapulsar = ["data/*.json", "data/*.md"]
+metapulsar = ["resources/*.json", "resources/*.md"]
 
 [tool.setuptools.package-dir]
 "" = "src"
