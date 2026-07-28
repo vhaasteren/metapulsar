@@ -136,9 +136,20 @@ class JugEngine:
         linear_model: LinearModel,
         param_mapping: Mapping[str, str] | None = None,
         subtract_tzr: bool = True,
+        nonlinear_params: str | None = None,
     ) -> "JugEngine":
-        """Build a native JUG engine from an already-created JUG session."""
+        """Build a native JUG engine from an already-created JUG session.
+
+        ``nonlinear_params`` (when provided) sets the session residual-
+        linearization mode before export. When omitted, the session's existing
+        ``nonlinear_params`` is left unchanged.
+        """
         from jug.fitting.residual_model import export_frozen_residual_model
+
+        if nonlinear_params is not None:
+            from jug.fitting.nonlinear_params import validate_nonlinear_params
+
+            session.nonlinear_params = validate_nonlinear_params(nonlinear_params)
 
         fitpars = tuple(linear_model.fitpars)
         mapping = dict(param_mapping or {})
@@ -187,6 +198,9 @@ class JugEngine:
         engine._jug_fitpars = tuple(jug_fitpars)
         engine._jug_indices = tuple(fitpars.index(name) for name in jug_fitpars)
         engine.compatibility = str(getattr(state, "compatibility", "auto"))
+        engine.nonlinear_params = getattr(
+            state, "nonlinear_params", getattr(session, "nonlinear_params", None)
+        )
         engine._binary_facts = _resolve_binary_facts(session, tuple(jug_fitpars))
         return engine
 

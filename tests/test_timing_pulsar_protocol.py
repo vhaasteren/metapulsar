@@ -1,5 +1,8 @@
 """Slice-3 tests for pulsar protocol and engine conformance helpers."""
 
+import inspect
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -197,6 +200,38 @@ def test_metapulsar_timing_engine_cache_tracks_pulsar_state():
 
     assert pulsar.state_id() != token
     assert changed is not engine
+
+
+def test_timing_engine_accepts_nonlinear_params_kwarg():
+    assert "nonlinear_params" in inspect.signature(MetaPulsar.timing_engine).parameters
+    assert (
+        "nonlinear_params"
+        in inspect.signature(MetaPulsar._build_jug_session).parameters
+    )
+
+
+def test_build_jug_session_forwards_nonlinear_params(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("jug.engine.session.TimingSession", FakeSession)
+
+    par = tmp_path / "a.par"
+    tim = tmp_path / "a.tim"
+    par.write_text("PSRJ J0000+0000\n")
+    tim.write_text("FORMAT 1\n")
+
+    mp = MetaPulsar.__new__(MetaPulsar)
+    mp._clock_dir = None
+    mp._pta_files = {"epta": SimpleNamespace(par_path=par, tim_path=tim)}
+    mp._ensure_clock_aliases = lambda: None  # type: ignore[method-assign]
+    mp._pta_files_available = lambda _name: True  # type: ignore[method-assign]
+
+    MetaPulsar._build_jug_session(mp, "epta", "pint", nonlinear_params="binary+")
+    assert captured["nonlinear_params"] == "binary+"
 
 
 def test_metapulsar_timing_opens_nltiming_evaluator():

@@ -1078,6 +1078,7 @@ class MetaPulsar:
         *,
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
+        nonlinear_params: str | None = None,
     ):
         if not self._pta_files_available(pta_name):
             raise ValueError(
@@ -1095,6 +1096,7 @@ class MetaPulsar:
             compatibility=compatibility,
             tempo2_native=tempo2_native,
             tempo2_jug_options=tempo2_jug_options,
+            nonlinear_params=nonlinear_params,
         )
 
     def prime_jug_tempo2_sessions(
@@ -1103,6 +1105,7 @@ class MetaPulsar:
         *,
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
+        nonlinear_params: str | None = None,
         subtract_tzr: bool = False,
         force_recompute: bool = False,
     ) -> list[str]:
@@ -1122,6 +1125,7 @@ class MetaPulsar:
                 native,
                 tempo2_native=tempo2_native,
                 tempo2_jug_options=tempo2_jug_options,
+                nonlinear_params=nonlinear_params,
             )
             session.compute_residuals(
                 subtract_tzr=subtract_tzr,
@@ -1145,6 +1149,7 @@ class MetaPulsar:
         derivative_method: str = "analytic",
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
+        nonlinear_params: str | None = None,
         prime_sessions: bool = True,
         verify_wiring: bool = False,
         subtract_tzr: bool = False,
@@ -1173,6 +1178,7 @@ class MetaPulsar:
             derivative_method,
             str(tempo2_native),
             tuple(sorted(resolved_options.items())),
+            str(nonlinear_params),
             prime_sessions,
             verify_wiring,
             subtract_tzr,
@@ -1218,6 +1224,7 @@ class MetaPulsar:
                 engines,
                 tempo2_native=tempo2_native,
                 tempo2_jug_options=options,
+                nonlinear_params=nonlinear_params,
                 subtract_tzr=subtract_tzr,
                 force_recompute=force,
             )
@@ -1291,6 +1298,7 @@ class MetaPulsar:
                     native_compat,
                     tempo2_native=tempo2_native,
                     tempo2_jug_options=resolved_options,
+                    nonlinear_params=nonlinear_params,
                 )
                 # Always required for tempo2 JUG: residual_delta goes through the
                 # JAX graph under either derivative_method.
@@ -1318,6 +1326,7 @@ class MetaPulsar:
                     linear_model=linear_model,
                     param_mapping=session_mapping,
                     subtract_tzr=subtract_tzr,
+                    nonlinear_params=nonlinear_params,
                 )
 
             contributions.append(
