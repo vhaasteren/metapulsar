@@ -23,7 +23,7 @@ except ImportError:
 # Import MetaPulsar and ParameterManager
 from .metapulsar import MetaPulsar, normalize_combination_strategy
 from .parameter_manager import ParameterManager
-from .position_helpers import discover_pulsars_by_coordinates_optimized
+from .position_helpers import discover_pulsars_by_position
 
 # Import PINT for model creation
 try:
@@ -301,7 +301,7 @@ class MetaPulsarFactory:
             )
 
         # 4. Get pulsar name for output filename generation
-        pulsar_groups = discover_pulsars_by_coordinates_optimized(validated_data)
+        pulsar_groups = discover_pulsars_by_position(validated_data)
         pulsar_name = list(pulsar_groups.keys())[0] if pulsar_groups else "unknown"
 
         # 5. Create MetaPulsar
@@ -383,7 +383,7 @@ class MetaPulsarFactory:
             ValueError: If multiple pulsars detected or no valid files found
         """
         # Group files by pulsar using coordinate-based identification
-        pulsar_groups = discover_pulsars_by_coordinates_optimized(file_data)
+        pulsar_groups = discover_pulsars_by_position(file_data)
 
         if not pulsar_groups:
             raise ValueError("No valid pulsar files found in file_data")
@@ -404,7 +404,7 @@ class MetaPulsarFactory:
     def group_files_by_pulsar(
         self, file_data: Dict[str, List[Dict[str, Any]]]
     ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-        """Group file data by pulsar using coordinate-based identification.
+        """Group file data by pulsar using J2000 position matching and catalog names.
 
         This utility function takes multi-pulsar file data and groups it by pulsar,
         making it suitable for creating individual MetaPulsars.
@@ -429,10 +429,10 @@ class MetaPulsarFactory:
             ValueError: If no valid pulsar files found
         """
         self.logger.info(
-            "Grouping files by pulsar using coordinate-based identification"
+            "Grouping files by pulsar using position-based catalog identification"
         )
 
-        pulsar_groups = discover_pulsars_by_coordinates_optimized(file_data)
+        pulsar_groups = discover_pulsars_by_position(file_data)
 
         if not pulsar_groups:
             raise ValueError("No valid pulsar files found in file_data")
@@ -462,7 +462,7 @@ class MetaPulsarFactory:
             }
         """
         # First, group by pulsar using coordinate-based identification
-        pulsar_groups = discover_pulsars_by_coordinates_optimized(file_data)
+        pulsar_groups = discover_pulsars_by_position(file_data)
 
         if not pulsar_groups:
             raise ValueError("No valid pulsar files found in file_data")
@@ -626,50 +626,8 @@ class MetaPulsarFactory:
     def _get_display_name_for_pulsar(
         self, pulsar_name: str, pulsar_file_data: Dict[str, List[Dict[str, Any]]]
     ) -> str:
-        """Get display name for pulsar using B-name preference logic.
-
-        Returns B-name if any PTA uses B-names internally, otherwise J-name.
-        This matches the naming logic used in MetaPulsar.
-
-        Args:
-            pulsar_name: J-name from coordinate-based discovery
-            pulsar_file_data: File data for this pulsar
-
-        Returns:
-            Display name (B-name or J-name)
-        """
-        # Check if any PTA uses B-names internally
-        if self._any_pta_uses_b_names(pulsar_file_data):
-            # Extract coordinates from first file and convert to B-name
-            from .position_helpers import (
-                extract_coordinates_from_parfile_optimized,
-                bj_name_from_coordinates_optimized,
-            )
-
-            first_pta = list(pulsar_file_data.keys())[0]
-            first_file = pulsar_file_data[first_pta][0]
-            coords = extract_coordinates_from_parfile_optimized(
-                first_file["par_content"]
-            )
-
-            if coords:
-                return bj_name_from_coordinates_optimized(coords[0], coords[1], "B")
-
+        """Return catalog display name (group key from position-based discovery)."""
         return pulsar_name
-
-    def _any_pta_uses_b_names(
-        self, pulsar_file_data: Dict[str, List[Dict[str, Any]]]
-    ) -> bool:
-        """Check if any PTA uses B-names internally."""
-        for pta_name, files in pulsar_file_data.items():
-            for file_info in files:
-                from .pint_helpers import create_pint_model
-
-                model = create_pint_model(file_info["par_content"])
-                pta_pulsar_name = model.PSR.value
-                if pta_pulsar_name.startswith("B") and len(pta_pulsar_name) >= 6:
-                    return True
-        return False
 
     def pta_summary(self, file_data: Dict[str, List[Dict[str, Any]]]) -> None:
         """Display summary statistics for all pulsars and PTAs in the file data.

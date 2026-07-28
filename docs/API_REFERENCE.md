@@ -256,25 +256,25 @@ def discover_files(
 
 ### get_pulsar_names_from_file_data
 
-Extract pulsar names from file data using coordinate-based matching.
+Extract B-preferred catalog pulsar names from file data (10″ J2000 position grouping).
 
 ```python
 def get_pulsar_names_from_file_data(
     file_data: Dict[str, List[Dict[str, Any]]]
 ) -> List[str]:
-    """Extract pulsar names from file data using coordinate-based matching.
+    """Extract pulsar names from file data using position-based catalog identity.
     
     Args:
         file_data: File data from FileDiscoveryService
         
     Returns:
-        List of canonical J-names (e.g., 'J0613-0200')
+        List of catalog names (B-preferred when parfiles use B-names, e.g. 'B1855+09')
     """
 ```
 
 ### filter_file_data_by_pulsars
 
-Filter file data to specific pulsars.
+Filter file data to specific pulsars by catalog or path alias.
 
 ```python
 def filter_file_data_by_pulsars(
@@ -285,11 +285,23 @@ def filter_file_data_by_pulsars(
     
     Args:
         file_data: File data from FileDiscoveryService
-        pulsar_names: Single pulsar name or list of names (J or B formats accepted)
+        pulsar_names: Catalog names (PSRJ/PSR/PSRB) or path-derived aliases
         
     Returns:
         Filtered file data containing only specified pulsars
     """
+```
+
+### discover_pulsars_by_position
+
+Group discovered file pairs by on-sky position (default 10″ at J2000) and catalog identity.
+
+```python
+def discover_pulsars_by_position(
+    file_data: Dict[str, List[Dict[str, Any]]],
+    match_tol_arcsec: float = 10.0,
+) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Returns dict keyed by B-preferred catalog name → PTA → file records."""
 ```
 
 ## Layout Discovery

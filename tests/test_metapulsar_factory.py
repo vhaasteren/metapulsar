@@ -117,11 +117,8 @@ class TestMetaPulsarFactory:
         assert factory.logger is not None
         assert not hasattr(factory, "parfile_manager")
 
-    @patch("metapulsar.position_helpers.bj_name_from_pulsar")
-    def test_create_metapulsar_success(self, mock_bj_name):
+    def test_create_metapulsar_success(self):
         """Test successful MetaPulsar creation using MockLibstempo directly."""
-        # Mock position helper
-        mock_bj_name.return_value = "J1857+0943"
         from metapulsar.mockpulsar import create_mock_libstempo
 
         mock_psr = create_mock_libstempo(
@@ -149,7 +146,7 @@ class TestMetaPulsarFactory:
         empty_file_data = {}
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value={},
         ):
             with pytest.raises(ValueError, match="No valid pulsar files found"):
@@ -180,7 +177,7 @@ class TestMetaPulsarFactory:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value=mock_pulsar_groups,
         ):
             with pytest.raises(ValueError, match="Multiple pulsars detected"):
@@ -213,7 +210,7 @@ class TestMetaPulsarFactory:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value=mock_pulsar_groups,
         ):
             # Should not raise an exception
@@ -224,7 +221,7 @@ class TestMetaPulsarFactory:
         empty_file_data = {}
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value={},
         ):
             with pytest.raises(ValueError, match="No valid pulsar files found"):
@@ -269,7 +266,7 @@ class TestMetaPulsarFactory:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value=expected_groups,
         ):
             result = self.factory.group_files_by_pulsar(file_data)
@@ -306,7 +303,7 @@ class TestMetaPulsarFactory:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position",
             return_value=mock_pulsar_groups,
         ):
             with patch.object(self.factory, "_ensure_parfile_content") as mock_ensure:
@@ -531,7 +528,7 @@ class TestPerPulsarOrdering:
 
         # Mock the coordinate-based discovery to return grouped data
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position"
         ) as mock_discover:
             mock_discover.return_value = {
                 "J1857+0943": {
@@ -569,7 +566,7 @@ class TestPerPulsarOrdering:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position"
         ) as mock_discover:
             mock_discover.return_value = {
                 "J1857+0943": {
@@ -607,7 +604,7 @@ class TestPerPulsarOrdering:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position"
         ) as mock_discover:
             mock_discover.return_value = {
                 "J1857+0943": {
@@ -730,7 +727,7 @@ class TestPerPulsarOrdering:
         }
 
         with patch(
-            "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+            "metapulsar.metapulsar_factory.discover_pulsars_by_position"
         ) as mock_discover:
             mock_discover.return_value = {
                 "J1857+0943": {
@@ -802,7 +799,7 @@ class TestPtaSummary:
 
         with (
             patch(
-                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+                "metapulsar.metapulsar_factory.discover_pulsars_by_position"
             ) as mock_discover,
             patch.object(
                 factory, "_get_display_name_for_pulsar", return_value="J1857+0943"
@@ -855,7 +852,7 @@ class TestPtaSummary:
 
         with (
             patch(
-                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized"
+                "metapulsar.metapulsar_factory.discover_pulsars_by_position"
             ) as mock_discover,
             patch.object(
                 factory, "_get_display_name_for_pulsar", return_value="J1857+0943"
@@ -940,7 +937,7 @@ class TestSinglePtaSharedDmxWarning:
             patch.object(factory, "_ensure_tim_metadata", return_value=file_data),
             patch.object(factory, "_validate_single_pulsar_data"),
             patch(
-                "metapulsar.metapulsar_factory.discover_pulsars_by_coordinates_optimized",
+                "metapulsar.metapulsar_factory.discover_pulsars_by_position",
                 return_value={"J1640+2224": {"ng12": file_data["ng12"]}},
             ),
             patch.object(
