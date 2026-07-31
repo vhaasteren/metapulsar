@@ -461,10 +461,23 @@ class TestLegacyComparison:
 
     @pytest.mark.slow
     @pytest.mark.legacy_comparison
+    @pytest.mark.xfail(
+        reason=(
+            "Known divergence vs legacy: consistent rewrite aligns NE_SW "
+            "(NANOGrav SOLARN0 0 → stack value 4 when Tempo2 is present), "
+            "which shifts DM-family design-matrix columns past the relaxed "
+            "atol. exclude_from_consistent does not gate NE_SW; there is no "
+            "skip switch yet. Legacy comparison suite is scheduled for removal."
+        ),
+        strict=False,
+    )
     def test_design_matrix_construction(
         self, legacy_module, new_module, available_data_sets, test_pulsars
     ):
-        """Test design matrix construction equivalence."""
+        """Test design matrix construction equivalence.
+
+        Known failure: see xfail reason (NE_SW convention alignment vs legacy).
+        """
         if not available_data_sets:
             pytest.skip("No data available for testing")
 
