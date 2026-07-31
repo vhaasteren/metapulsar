@@ -1359,6 +1359,45 @@ UNITS TDB
             model = create_pint_model(content)  # must not raise
             assert float(model.NE_SW.value) == pytest.approx(4.0)
 
+    def test_make_parfiles_consistent_writes_engine_native_clock_keys(self, tmp_path):
+        """PINT targets use CLOCK and Tempo2 targets use CLK after alignment."""
+        body = (
+            "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\n"
+            "RAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\n"
+            "EPHEM DE440\nUNITS TDB\n"
+        )
+        manager = ParameterManager(
+            file_data={
+                "NG": {
+                    "timing_package": "pint",
+                    "par_content": body + "CLK TT(BIPM2019)\n",
+                },
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": body + "CLOCK TT(BIPM2015)\n",
+                },
+            },
+            combine_components=[],
+            output_dir=tmp_path,
+            pulsar_name="J1857+0943",
+        )
+
+        output_files = manager.make_parfiles_consistent()
+
+        rows_by_pta = {}
+        for pta_name, path in output_files.items():
+            content = Path(path).read_text()
+            rows_by_pta[pta_name] = {
+                line.split()[0]: line.split()[1:]
+                for line in content.splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+
+        assert rows_by_pta["NG"]["CLOCK"] == ["TT(BIPM2019)"]
+        assert "CLK" not in rows_by_pta["NG"]
+        assert rows_by_pta["EPTA"]["CLK"] == ["TT(BIPM2019)"]
+        assert "CLOCK" not in rows_by_pta["EPTA"]
+
 
 # ===================================================================
 # Complete cross-engine alignment: policy, stripping, transformations

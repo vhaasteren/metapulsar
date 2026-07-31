@@ -1080,6 +1080,19 @@ class ParameterManager:
             target_key = aliases[0]
         parfile_dict[target_key] = [value]
 
+    def _set_engine_clock_value(
+        self,
+        pta_name: str,
+        parfile_dict: Dict[str, List[str]],
+        value: str,
+    ) -> None:
+        """Write the resolved clock with the target engine's native keyword."""
+        package = self._normalize_timing_package(self._get_timing_package(pta_name))
+        target_key = "CLK" if package == "tempo2" else "CLOCK"
+        for alias in ("CLOCK", "CLK"):
+            parfile_dict.pop(alias, None)
+        parfile_dict[target_key] = [value]
+
     def _align_reference_conventions(
         self,
         parfile_dicts: Dict[str, Dict[str, List[str]]],
@@ -1087,9 +1100,9 @@ class ParameterManager:
         clock: str,
     ) -> None:
         """Apply the resolved EPHEM and clock convention to every PTA."""
-        for parfile_dict in parfile_dicts.values():
+        for pta_name, parfile_dict in parfile_dicts.items():
             self._set_aliased_value(parfile_dict, ["EPHEM"], ephem)
-            self._set_aliased_value(parfile_dict, ["CLOCK", "CLK"], clock)
+            self._set_engine_clock_value(pta_name, parfile_dict, clock)
 
     def _apply_cross_engine_rules(
         self,
