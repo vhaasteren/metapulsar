@@ -19,6 +19,11 @@ import numpy as np
 if TYPE_CHECKING:
     from .tim_file_analyzer import TimMetadata
 
+#: Which orthometric Shapiro expression PINT evaluates for ELL1H/``T2`` binaries.
+#: ``"full"`` is PINT's default (Freire & Wex 2010, Eq. 29); ``"absorbed"``
+#: (Eq. 28) matches Tempo2's ELL1H/T2 mode 1.
+Ell1hShapiroMode = Literal["full", "absorbed"]
+
 
 class PINTDiscoveryError(Exception):
     """Raised when PINT component discovery fails"""
@@ -314,13 +319,16 @@ def get_parameters_by_type_from_models(
 
 
 def get_parameters_by_type_from_parfiles(
-    param_type: str, parfile_dicts: Dict[str, Dict]
+    param_type: str,
+    parfile_dicts: Dict[str, Dict],
+    ell1h_shapiro: Ell1hShapiroMode = "full",
 ) -> List[str]:
     """Get parameters by type from parfile dictionaries using PINT, including dynamic derivatives and aliases.
 
     Args:
         param_type: Type of parameters to discover ('astrometry', 'spindown', etc.)
         parfile_dicts: Dictionary mapping PTA names to parfile dictionaries
+        ell1h_shapiro: ELL1H orthometric Shapiro convention (see ``create_pint_model``)
 
     Returns:
         List of parameter names discovered from actual parfiles, including all aliases
@@ -334,7 +342,9 @@ def get_parameters_by_type_from_parfiles(
     pint_models = {}
     for pta_name, parfile_dict in parfile_dicts.items():
         try:
-            pint_models[pta_name] = create_pint_model(parfile_dict)
+            pint_models[pta_name] = create_pint_model(
+                parfile_dict, ell1h_shapiro=ell1h_shapiro
+            )
         except Exception as e:
             logger.warning(f"Failed to create PINT model for PTA {pta_name}: {e}")
             continue
@@ -343,11 +353,18 @@ def get_parameters_by_type_from_parfiles(
     return get_parameters_by_type_from_models(param_type, pint_models)
 
 
-def create_pint_model(parfile_data) -> TimingModel:
+def create_pint_model(
+    parfile_data: Any, ell1h_shapiro: Ell1hShapiroMode = "full"
+) -> TimingModel:
     """Create PINT model from parfile data (string or dict).
 
     Args:
         parfile_data: String content or dictionary representation of parfile
+        ell1h_shapiro: Which Freire & Wex (2010) orthometric Shapiro expression PINT
+            evaluates for ELL1H/``T2`` models with ``H3``+``STIG``. ``"full"`` is
+            PINT's default (Eq. 29); ``"absorbed"`` (Eq. 28) is what Tempo2
+            ELL1H/T2 mode 1 evaluates and is required for cross-engine residual
+            parity on mixed PINT+Tempo2 stacks.
 
     Returns:
         PINT TimingModel instance
@@ -371,9 +388,13 @@ def create_pint_model(parfile_data) -> TimingModel:
 
         # Handle both string and dict inputs
         if isinstance(parfile_data, str):
-            model = builder(StringIO(parfile_data), allow_tcb=True, allow_T2=True)
-        else:  # dict
-            model = builder(parfile_data, allow_tcb=True, allow_T2=True)
+            parfile_data = StringIO(parfile_data)
+        model = builder(
+            parfile_data,
+            allow_tcb=True,
+            allow_T2=True,
+            ell1h_shapiro=ell1h_shapiro,
+        )
 
         return model
     except (

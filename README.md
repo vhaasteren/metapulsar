@@ -62,6 +62,41 @@ print(f"Number of TOAs: {len(metapulsar.toas)}")
 print(f"PTA names: {list(metapulsar._pulsars.keys())}")
 ```
 
+### Cross-engine alignment (`alignment_policy`)
+
+The `consistent` strategy rewrites every PTA's par file onto one common
+PINT/Tempo2 deterministic surface: explicit `TDB`, a shared ephemeris and dated
+clock, numerically transformed ecliptic astrometry, and — when both engines are
+in the stack — explicit `T2CMETHOD`, `TIMEEPH`, troposphere, planetary-Shapiro,
+and solar-wind settings. Deterministic terms outside that surface (`DMMODEL`,
+glitches, WaveX/IFUNC, chromatic extensions, external realization overrides, …)
+are **stripped by default**, with a warning naming the PTA and every removed key.
+
+The default needs no configuration:
+
+```python
+mp = create_metapulsar(files, combination_strategy="consistent")
+```
+
+To be told about unsupported terms instead of having them removed:
+
+```python
+from metapulsar import AlignmentPolicy
+
+mp = create_metapulsar(
+    files,
+    combination_strategy="consistent",
+    alignment_policy=AlignmentPolicy(unsupported="error"),
+)
+```
+
+`AlignmentPolicy` also pins the reference conventions (`ephem`, `clock`,
+`bipm_version`, `ne_sw`). To keep a release's native deterministic model
+untouched, use `combination_strategy="composite"` instead — the policy applies
+only to `consistent` and raises otherwise. See
+[docs/API_REFERENCE.md](docs/API_REFERENCE.md#alignmentpolicy) and
+[docs/METHOD_DESCRIPTION.md](docs/METHOD_DESCRIPTION.md).
+
 ### Pulse-number tracking (`use_pulse_numbers`)
 
 When combining PTAs with `combination_strategy="consistent"`, merged par files can

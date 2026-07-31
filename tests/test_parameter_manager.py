@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch, mock_open
 from pint.models.model_builder import parse_parfile
 
 from metapulsar.parameter_manager import (
+    AlignmentPolicy,
     ParameterManager,
     ParameterInconsistencyError,
     ParameterMapping,
@@ -27,6 +28,46 @@ from tests.helpers import make_tim_metadata
 
 # Mark all tests as slow
 pytestmark = pytest.mark.slow
+
+
+def align_conventions(parameter_manager, parfile_dicts, reference_dict):
+    """Run the two consistent-alignment steps in pipeline order.
+
+    ``_make_parameters_consistent`` numerically transforms ecliptic astrometry
+    first and only then applies the convention rules; tests that exercise the
+    convention surface must do the same.
+    """
+    parameter_manager._transform_ecliptic_for_all(parfile_dicts, reference_dict)
+    parameter_manager._apply_consistent_convention_rules(parfile_dicts, reference_dict)
+
+
+# Enough of a timing model that PINT can build one (needed for the numeric
+# ecliptic transformation), kept small on purpose.
+ECLIPTIC_BODY = (
+    "PSR J1600-3053\n"
+    "PEPOCH 55000\n"
+    "F0 277.937 1\n"
+    "F1 -7.3e-16 1\n"
+    "LAMBDA 244.347677 1\n"
+    "BETA -10.071873 1\n"
+    "PMLAMBDA -0.35 1\n"
+    "PMBETA -7.0 1\n"
+    "POSEPOCH 55000\n"
+    "DM 52.3 1\n"
+    "DMEPOCH 55000\n"
+)
+
+EQUATORIAL_BODY = (
+    "PSR J1857+0943\n"
+    "PEPOCH 55000\n"
+    "F0 186.494081 1\n"
+    "F1 -6.2e-16 1\n"
+    "RAJ 18:57:36.3937 1\n"
+    "DECJ +09:43:17.291 1\n"
+    "POSEPOCH 55000\n"
+    "DM 13.299 1\n"
+    "DMEPOCH 55000\n"
+)
 
 
 class TestParameterManager:
@@ -462,15 +503,12 @@ UNITS TDB
             )
 
     def test_apply_consistent_convention_rules_cross_engine_ecliptic(self):
-        """Cross-engine ecliptic pars force ECL IERS2003 and remove T2CMETHOD TEMPO."""
+        """Cross-engine ecliptic pars land on IERS2003 with explicit IAU2000B."""
         file_data = {
             "EPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE436\n"
                     "CLOCK TT(BIPM2015)\n"
@@ -480,10 +518,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE440\n"
                     "CLK TT(BIPM2021)\n"
@@ -495,14 +530,12 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         for _, pd in parfile_dicts.items():
             assert pd["UNITS"] == ["TDB"]
             assert pd["ECL"] == ["IERS2003"]
-            assert "T2CMETHOD" not in pd
+            assert pd["T2CMETHOD"] == ["IAU2000B"]
             assert pd["EPHEM"] == ["DE436"]
             clock_value = pd["CLOCK"] if "CLOCK" in pd else pd["CLK"]
             assert clock_value == ["TT(BIPM2015)"]
@@ -515,10 +548,7 @@ UNITS TDB
             "EPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1857+0943\n"
-                    "RAJ 18:57:36.3937\n"
-                    "DECJ +09:43:17.291\n"
-                    "ECL IERS2010\n"
+                    EQUATORIAL_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE440\n"
                     "CLOCK TT(BIPM2021)\n"
@@ -528,10 +558,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1857+0943\n"
-                    "RAJ 18:57:36.3937\n"
-                    "DECJ +09:43:17.291\n"
-                    "T2CMETHOD TEMPO\n"
+                    EQUATORIAL_BODY + "T2CMETHOD TEMPO\n"
                     "EPHEM DE436\n"
                     "CLK TT(BIPM2015)\n"
                     "UNITS TDB\n"
@@ -543,14 +570,12 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with patch.object(parameter_manager.logger, "warning") as mock_warning:
-            parameter_manager._apply_consistent_convention_rules(
-                parfile_dicts, reference_dict
-            )
+            align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         for _, pd in parfile_dicts.items():
             assert pd["UNITS"] == ["TDB"]
             assert "ECL" not in pd
-            assert "T2CMETHOD" not in pd
+            assert pd["T2CMETHOD"] == ["IAU2000B"]
         assert mock_warning.call_count == 2
 
     def test_apply_consistent_convention_rules_pint_only_aligns_missing_ecl_to_iers2010(
@@ -560,10 +585,7 @@ UNITS TDB
             "EPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "EPHEM DE440\n"
                     "CLOCK TT(BIPM2021)\n"
                     "UNITS TDB\n"
@@ -572,12 +594,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "EPHEM DE436\n"
-                    "CLK TT(BIPM2015)\n"
-                    "UNITS TDB\n"
+                    ECLIPTIC_BODY + "EPHEM DE436\nCLK TT(BIPM2015)\nUNITS TDB\n"
                 ),
             },
         }
@@ -586,14 +603,16 @@ UNITS TDB
         reference_dict = parfile_dicts["EPTA"]
 
         with patch.object(parameter_manager.logger, "warning") as mock_warning:
-            parameter_manager._apply_consistent_convention_rules(
-                parfile_dicts, reference_dict
-            )
+            align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
         assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
+        # PINT-only stacks keep the thinner profile: no forced T2CMETHOD and no
+        # forced troposphere / planetary-Shapiro switches.
         assert "T2CMETHOD" not in parfile_dicts["EPTA"]
         assert "T2CMETHOD" not in parfile_dicts["PPTA"]
+        assert "CORRECT_TROPOSPHERE" not in parfile_dicts["EPTA"]
+        assert "TIMEEPH" not in parfile_dicts["EPTA"]
         assert mock_warning.call_count == 0
 
     def test_apply_consistent_convention_rules_tempo2_only_preserves_shared_t2cmethod(
@@ -603,10 +622,7 @@ UNITS TDB
             "EPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE436\n"
                     "CLOCK TT(BIPM2015)\n"
@@ -616,10 +632,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE440\n"
                     "CLK TT(BIPM2021)\n"
@@ -631,9 +644,7 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         for pd in parfile_dicts.values():
             assert pd["ECL"] == ["IERS2010"]
@@ -646,10 +657,7 @@ UNITS TDB
             "EPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2010\n"
+                    ECLIPTIC_BODY + "ECL IERS2010\n"
                     "T2CMETHOD TEMPO\n"
                     "EPHEM DE436\n"
                     "CLOCK TT(BIPM2015)\n"
@@ -659,10 +667,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "tempo2",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "LAMBDA 244.347\n"
-                    "BETA -10.07\n"
-                    "ECL IERS2003\n"
+                    ECLIPTIC_BODY + "ECL IERS2003\n"
                     "T2CMETHOD IAU2000B\n"
                     "EPHEM DE440\n"
                     "CLK TT(BIPM2021)\n"
@@ -674,9 +679,7 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2003"]
         assert parfile_dicts["PPTA"]["ECL"] == ["IERS2003"]
@@ -1016,14 +1019,15 @@ UNITS TDB
             )
 
     def test_apply_consistent_convention_rules_pint_only_elong_elat_aliases(self):
+        # LAMBDA/BETA -> ELONG/ELAT, and PMLAMBDA/PMBETA -> PMELONG/PMELAT
+        elong_body = ECLIPTIC_BODY.replace("LAMBDA ", "ELONG ").replace(
+            "BETA ", "ELAT "
+        )
         file_data = {
             "EPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "ELONG 244.347\n"
-                    "ELAT -10.07\n"
-                    "ECL IERS2010\n"
+                    elong_body + "ECL IERS2010\n"
                     "EPHEM DE440\n"
                     "CLOCK TT(BIPM2021)\n"
                     "UNITS TDB\n"
@@ -1032,12 +1036,7 @@ UNITS TDB
             "PPTA": {
                 "timing_package": "pint",
                 "par_content": (
-                    "PSR J1600-3053\n"
-                    "ELONG 244.347\n"
-                    "ELAT -10.07\n"
-                    "EPHEM DE436\n"
-                    "CLK TT(BIPM2015)\n"
-                    "UNITS TDB\n"
+                    elong_body + "EPHEM DE436\nCLK TT(BIPM2015)\nUNITS TDB\n"
                 ),
             },
         }
@@ -1045,9 +1044,7 @@ UNITS TDB
         parfile_dicts = parameter_manager._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
 
-        parameter_manager._apply_consistent_convention_rules(
-            parfile_dicts, reference_dict
-        )
+        align_conventions(parameter_manager, parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["ECL"] == ["IERS2010"]
         assert parfile_dicts["PPTA"]["ECL"] == ["IERS2010"]
@@ -1255,17 +1252,11 @@ UNITS TDB
         file_data = {
             "NG": {
                 "timing_package": "pint",
-                "par_content": (
-                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
-                    "F1 -6.2e-16\nUNITS TDB\n"
-                ),
+                "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
             },
             "EPTA": {
                 "timing_package": "tempo2",
-                "par_content": (
-                    "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
-                    "F1 -6.2e-16\nUNITS TDB\n"
-                ),
+                "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
             },
         }
         parameter_manager = ParameterManager(
@@ -1367,3 +1358,1071 @@ UNITS TDB
             assert "SOLARN0" not in content, f"{pta_name}: alias survived rewrite"
             model = create_pint_model(content)  # must not raise
             assert float(model.NE_SW.value) == pytest.approx(4.0)
+
+
+# ===================================================================
+# Complete cross-engine alignment: policy, stripping, transformations
+# ===================================================================
+
+
+def _cross_engine_file_data(
+    reference_extra: str = "",
+    other_extra: str = "",
+    body: str = EQUATORIAL_BODY,
+    reference_package: str = "tempo2",
+    other_package: str = "pint",
+):
+    """Two-PTA file data with a tempo2 reference and a PINT partner."""
+    return {
+        "EPTA": {
+            "timing_package": reference_package,
+            "par_content": (
+                body + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n" + reference_extra
+            ),
+        },
+        "NG": {
+            "timing_package": other_package,
+            "par_content": (
+                body + "EPHEM DE436\nCLOCK TT(BIPM2015)\nUNITS TDB\n" + other_extra
+            ),
+        },
+    }
+
+
+def _prepared_dicts(parameter_manager):
+    """Parse and run the common-surface preparation step."""
+    parfile_dicts = parameter_manager._parse_parfiles()
+    parameter_manager._prepare_common_surface(parfile_dicts)
+    return parfile_dicts
+
+
+class TestAlignmentPolicy:
+    """The one new public knob for the consistent strategy."""
+
+    def test_defaults(self):
+        policy = AlignmentPolicy()
+        assert policy.unsupported == "strip"
+        assert policy.ephem is None
+        assert policy.clock is None
+        assert policy.bipm_version is None
+        assert policy.ne_sw is None
+
+    def test_rejects_unknown_unsupported_policy(self):
+        with pytest.raises(ValueError, match="strip.*error"):
+            AlignmentPolicy(unsupported="keep")
+
+    def test_rejects_negative_ne_sw(self):
+        with pytest.raises(ValueError, match="ne_sw must be non-negative"):
+            AlignmentPolicy(ne_sw=-1.0)
+
+    def test_is_frozen(self):
+        policy = AlignmentPolicy()
+        with pytest.raises(Exception):
+            policy.unsupported = "error"
+
+    def test_parameter_manager_defaults_to_strip(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        assert pm.alignment_policy == AlignmentPolicy()
+
+    def test_exported_from_package_root(self):
+        import metapulsar
+
+        assert metapulsar.AlignmentPolicy is AlignmentPolicy
+
+
+class TestTempo1Expansion:
+    """Section 6.1: the aggregate TEMPO1 switch becomes six explicit states."""
+
+    def test_absent_tempo1_is_a_no_op(self):
+        from metapulsar.parameter_manager import expand_tempo1
+
+        par = {"PSR": ["J1857+0943"], "UNITS": ["TDB"]}
+        assert expand_tempo1(par) == []
+        assert par == {"PSR": ["J1857+0943"], "UNITS": ["TDB"]}
+
+    def test_tempo1_is_removed_and_expanded(self):
+        from metapulsar.parameter_manager import TEMPO1_DEFAULTS, expand_tempo1
+
+        par = {"PSR": ["J1857+0943"], "TEMPO1": ["1"]}
+        filled = expand_tempo1(par)
+
+        assert "TEMPO1" not in par
+        assert set(filled) == set(TEMPO1_DEFAULTS)
+        for key, value in TEMPO1_DEFAULTS.items():
+            assert par[key] == value
+
+    def test_explicit_values_win_over_tempo1_defaults(self):
+        from metapulsar.parameter_manager import expand_tempo1
+
+        par = {"TEMPO1": ["1"], "T2CMETHOD": ["IAU2000B"], "UNITS": ["TCB"]}
+        filled = expand_tempo1(par)
+
+        assert "T2CMETHOD" not in filled
+        assert par["T2CMETHOD"] == ["IAU2000B"]
+        assert par["UNITS"] == ["TCB"]
+        assert par["TIMEEPH"] == ["FB90"]
+
+    def test_pipeline_expands_tempo1_for_multi_pta(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_extra="TEMPO1\n")
+        )
+        parfile_dicts = _prepared_dicts(pm)
+
+        assert "TEMPO1" not in parfile_dicts["EPTA"]
+        assert parfile_dicts["EPTA"]["TIMEEPH"] == ["FB90"]
+        assert parfile_dicts["EPTA"]["DILATEFREQ"] == ["N"]
+
+
+class TestUnsupportedFamilyMatchers:
+    """Section 6.2-6.4: anchored matchers, never generic prefix stripping."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "EPHEM_FILE",
+            "EPH_FILE",
+            "EOP_FILE",
+            "CLK_CORR_CHAIN",
+            "NE_SW_SIN",
+            "NE_SW_IFUNC",
+            "_NE_SW",
+            "DMMODEL",
+            "_DM",
+            "_CM",
+            "DMOFF",
+            "SATJUMP",
+            "PMRA2",
+            "PMDEC2",
+            "PMLAMBDA2",
+            "PMBETA2",
+            "PMELONG2",
+            "PMELAT2",
+            "PMRV",
+            "DSHK",
+            "D_AOP",
+            "STEL_DX",
+            "TELEPOCH",
+            "TELX",
+            "TELY",
+            "TELZ",
+            "TEL_DX",
+            "TEL_DX1",
+            "TEL_DX_1",
+        ],
+    )
+    def test_pint_unsafe_positives(self, key):
+        from metapulsar.parameter_manager import _is_pint_unsafe
+
+        assert _is_pint_unsafe(key)
+
+    @pytest.mark.parametrize(
+        "key", ["NE_SW", "DM", "CM", "DMX_0001", "PMRA", "PMDEC", "TELESCOPE"]
+    )
+    def test_pint_unsafe_negatives(self, key):
+        from metapulsar.parameter_manager import _is_pint_unsafe
+
+        assert not _is_pint_unsafe(key)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "SWP",
+            "SWEPOCH",
+            "VLBIAX",
+            "VLBIAY",
+            "VLBIAZ",
+            "NE_SW1",
+            "NE_SW2",
+            "NE_SW12",
+            "SWXDM_0001",
+            "SWXP_0001",
+            "SWXR1_0001",
+            "SWXR2_0001",
+            "DMWXEPOCH",
+            "DMWXFREQ_0001",
+            "DMWXSIN_0001",
+            "DMWXCOS_0001",
+        ],
+    )
+    def test_tempo2_unsafe_positives(self, key):
+        from metapulsar.parameter_manager import _is_tempo2_unsafe
+
+        assert _is_tempo2_unsafe(key)
+
+    @pytest.mark.parametrize(
+        "key", ["NE_SW", "NE_SW_SIN", "SWM", "DM", "DMX_0001", "DMJUMP"]
+    )
+    def test_tempo2_unsafe_negatives(self, key):
+        from metapulsar.parameter_manager import _is_tempo2_unsafe
+
+        assert not _is_tempo2_unsafe(key)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "WAVE1",
+            "WAVE12",
+            "WAVEEPOCH",
+            "WAVE_OM",
+            "WXEPOCH",
+            "WXFREQ_0001",
+            "WXSIN_0001",
+            "WXCOS_0001",
+            "IFUNC1",
+            "SIFUNC",
+            "CM",
+            "CM1",
+            "CM2",
+            "CMEPOCH",
+            "CMX_0001",
+            "CHROMX_0001",
+            "CMWXEPOCH",
+            "CMWXFREQ_0001",
+            "GLEP_1",
+            "GLPH_1",
+            "GLF0_1",
+            "GLF1_1",
+            "GLF2_1",
+            "GLF0D_1",
+            "GLTD_1",
+            "GLF0D2_1",
+            "GLTD2_1",
+            "DMASSPLANET5",
+            "DPHASEPLANET3",
+            "EXPEP_1",
+            "EXPPH_1",
+            "EXPTAU_1",
+            "EXPINDEX_1",
+            "GAUSEP_1",
+            "GAUSAMP_1",
+            "GAUSSIG_1",
+            "GAUSINDEX_1",
+            "EXPDIPEP_1",
+            "EXPDIPAMP_1",
+            "PWSTART_1",
+            "PWF0_1",
+            "CHROMGAUSS_FREF",
+            "TNDMEVENT",
+            "TNSHAPELETEVENT",
+        ],
+    )
+    def test_mixed_unsafe_positives(self, key):
+        from metapulsar.parameter_manager import _is_mixed_unsafe
+
+        assert _is_mixed_unsafe(key)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # Noise hyperparameters are out of scope and must never be matched.
+            "EFAC",
+            "EQUAD",
+            "ECORR",
+            "T2EFAC",
+            "T2EQUAD",
+            "TNEF",
+            "TNEQ",
+            "TNECORR",
+            "TNREDAMP",
+            "TNREDGAM",
+            "TNDMAMP",
+            "TNDMGAM",
+            "TNCHROMAMP",
+            "TNCHROMGAM",
+            "RNAMP",
+            "RNIDX",
+            "DMEFAC",
+            "DMJUMP",
+            # Ordinary deterministic terms that stay.
+            "DM",
+            "DM1",
+            "DM2",
+            "DMX_0001",
+            "DMEPOCH",
+            "JUMP",
+            "FD1",
+            "FD2",
+            "FDJUMP1",
+            "FDJUMPDM",
+            "FDDC",
+            "FDDI",
+            "TZRMJD",
+            "TZRSITE",
+            "TZRFRQ",
+            "NE_SW",
+            "PX",
+            "WAVE",
+            "GLEP",
+            "CMWX",
+        ],
+    )
+    def test_mixed_unsafe_negatives(self, key):
+        from metapulsar.parameter_manager import _is_mixed_unsafe
+
+        assert not _is_mixed_unsafe(key)
+
+
+class TestUnsupportedPolicy:
+    """Section 6: default strip with a warning, or a hard error."""
+
+    UNSUPPORTED_EXTRA = (
+        "DMMODEL 1\n"
+        "CONSTRAIN DMMODEL\n"
+        "CONSTRAIN IFUNC\n"
+        "EPHEM_FILE DE440.bsp\n"
+        "GLEP_1 55000\n"
+        "WAVE1 1e-8 1e-8\n"
+        "CMX_0001 0.1\n"
+        "DMASSPLANET5 1e-9\n"
+        "PMRA2 0.1\n"
+        "TELX 0.1\n"
+    )
+    PINT_EXTRA = "NE_SW1 0.1\nSWX_0001 1.0\nDMWXFREQ_0001 0.01\nSWEPOCH 55000\n"
+    NOISE_EXTRA = (
+        "TNRedAmp -14.0\n"
+        "TNRedGam 3.0\n"
+        "EFAC -f L-wide 1.1\n"
+        "ECORR -f L-wide 0.5\n"
+        "DMJUMP -fe Rcvr 0.01\n"
+    )
+    LOCAL_EXTRA = (
+        "JUMP -fe Rcvr_800 1.2e-6 1\n"
+        "FD1 1.0e-5 1\n"
+        "FDJUMP1 1.0e-6 1\n"
+        "FDDC 1.0\n"
+        "FDDI 2.0\n"
+        "TZRMJD 55000\n"
+        "TZRSITE ao\n"
+        "TZRFRQ 1400.0\n"
+    )
+
+    def _manager(self, policy=None):
+        return ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra=self.UNSUPPORTED_EXTRA
+                + self.NOISE_EXTRA
+                + self.LOCAL_EXTRA,
+                other_extra=self.PINT_EXTRA + self.NOISE_EXTRA,
+            ),
+            alignment_policy=policy,
+        )
+
+    def test_default_policy_strips_every_family(self):
+        pm = self._manager()
+        parfile_dicts = _prepared_dicts(pm)
+
+        reference = parfile_dicts["EPTA"]
+        for key in (
+            "DMMODEL",
+            "EPHEM_FILE",
+            "GLEP_1",
+            "WAVE1",
+            "CMX_0001",
+            "DMASSPLANET5",
+            "PMRA2",
+            "TELX",
+        ):
+            assert key not in reference, f"{key} survived the strip policy"
+
+        other = parfile_dicts["NG"]
+        for key in ("NE_SW1", "SWX_0001", "DMWXFREQ_0001", "SWEPOCH"):
+            assert key not in other, f"{key} survived the strip policy"
+
+    def test_default_policy_keeps_noise_hyperparameters(self):
+        pm = self._manager()
+        parfile_dicts = _prepared_dicts(pm)
+
+        for pta in ("EPTA", "NG"):
+            par = parfile_dicts[pta]
+            for key in ("TNREDAMP", "TNREDGAM", "EFAC", "ECORR", "DMJUMP"):
+                assert key in par, f"{pta}: noise key {key} was stripped"
+
+    def test_default_policy_keeps_pta_local_deterministic_terms(self):
+        pm = self._manager()
+        parfile_dicts = _prepared_dicts(pm)
+
+        par = parfile_dicts["EPTA"]
+        for key in (
+            "JUMP",
+            "FD1",
+            "FDJUMP1",
+            "FDDC",
+            "FDDI",
+            "TZRMJD",
+            "TZRSITE",
+            "TZRFRQ",
+        ):
+            assert key in par, f"PTA-local key {key} was stripped"
+
+    def test_dmmodel_constraints_are_filtered_without_touching_others(self):
+        pm = self._manager()
+        parfile_dicts = _prepared_dicts(pm)
+
+        assert parfile_dicts["EPTA"]["CONSTRAIN"] == ["IFUNC"]
+
+    def test_strip_warning_names_pta_and_removed_keys(self, caplog):
+        pm = self._manager()
+        with caplog.at_level(logging.WARNING):
+            _prepared_dicts(pm)
+
+        messages = [r.message for r in caplog.records if "stripped" in r.message]
+        assert any("PTA EPTA" in m and "DMMODEL" in m for m in messages)
+        assert any("PTA NG" in m and "SWX_0001" in m for m in messages)
+
+    def test_error_policy_reports_all_offending_keys(self):
+        pm = self._manager(AlignmentPolicy(unsupported="error"))
+        parfile_dicts = pm._parse_parfiles()
+
+        with pytest.raises(ValueError) as excinfo:
+            pm._prepare_common_surface(parfile_dicts)
+
+        message = str(excinfo.value)
+        assert "PTA EPTA" in message
+        for key in ("DMMODEL", "EPHEM_FILE", "GLEP_1", "WAVE1", "TELX"):
+            assert key in message
+        assert "CONSTRAIN DMMODEL" in message
+
+    def test_single_pta_surface_is_not_rewritten(self):
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": (
+                        EQUATORIAL_BODY
+                        + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n"
+                        + self.UNSUPPORTED_EXTRA
+                    ),
+                }
+            }
+        )
+        parfile_dicts = _prepared_dicts(pm)
+
+        assert parfile_dicts["EPTA"]["DMMODEL"] == ["1"]
+        assert "GLEP_1" in parfile_dicts["EPTA"]
+        assert parfile_dicts["EPTA"]["CONSTRAIN"] == ["DMMODEL", "IFUNC"]
+
+
+class TestSolarGeometryNormalization:
+    """Section 6.2/6.3: IPM 0 and SWM 1 are value-dependent violations."""
+
+    def test_ipm_zero_is_stripped_and_normalized_on_tempo2_output(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_extra="IPM 0\n")
+        )
+        parfile_dicts = _prepared_dicts(pm)
+        assert "IPM" not in parfile_dicts["EPTA"]
+
+        pm._apply_explicit_conventions(parfile_dicts)
+        assert parfile_dicts["EPTA"]["IPM"] == ["1"]
+        assert "IPM" not in parfile_dicts["NG"]
+
+    def test_absent_ipm_still_becomes_explicit_on_tempo2_output(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        parfile_dicts = _prepared_dicts(pm)
+
+        pm._apply_explicit_conventions(parfile_dicts)
+        assert parfile_dicts["EPTA"]["IPM"] == ["1"]
+        assert "IPM" not in parfile_dicts["NG"]
+
+    def test_ipm_zero_is_a_violation_under_error_policy(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_extra="IPM 0\n"),
+            alignment_policy=AlignmentPolicy(unsupported="error"),
+        )
+        with pytest.raises(ValueError, match="IPM"):
+            pm._prepare_common_surface(pm._parse_parfiles())
+
+    def test_swm_one_is_stripped_and_normalized_to_zero(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(other_extra="SWM 1\nSWP 2.0\n")
+        )
+        parfile_dicts = _prepared_dicts(pm)
+        assert "SWM" not in parfile_dicts["NG"]
+        assert "SWP" not in parfile_dicts["NG"]
+
+        pm._apply_explicit_conventions(parfile_dicts)
+        assert parfile_dicts["NG"]["SWM"] == ["0"]
+        assert parfile_dicts["EPTA"]["SWM"] == ["0"]
+
+    def test_swm_one_is_a_violation_under_error_policy(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(other_extra="SWM 1\n"),
+            alignment_policy=AlignmentPolicy(unsupported="error"),
+        )
+        with pytest.raises(ValueError, match="SWM"):
+            pm._prepare_common_surface(pm._parse_parfiles())
+
+    def test_swm_zero_is_not_a_violation(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(other_extra="SWM 0\n"),
+            alignment_policy=AlignmentPolicy(unsupported="error"),
+        )
+        pm._prepare_common_surface(pm._parse_parfiles())  # must not raise
+
+    def test_policy_ne_sw_overrides_reference_value(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_extra="NE_SW 4\n"),
+            alignment_policy=AlignmentPolicy(ne_sw=7.5),
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._align_ne_sw_convention(parfile_dicts, parfile_dicts["EPTA"])
+
+        assert parfile_dicts["EPTA"]["NE_SW"] == ["7.5 0"]
+        assert parfile_dicts["NG"]["NE_SW"] == ["7.5 0"]
+
+
+class TestUnitNormalization:
+    """Section 7.3: timescale policy is gated by PTA count and engine mix."""
+
+    def test_all_tdb_collection_is_returned_unchanged(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        contents = {pta: data["par_content"] for pta, data in pm.file_data.items()}
+        assert pm._convert_units_if_needed(contents) == contents
+
+    def test_mixed_engine_all_tcb_collection_is_converted(self):
+        tcb_body = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n"
+        pm = ParameterManager(
+            file_data={
+                "A": {"timing_package": "pint", "par_content": tcb_body},
+                "B": {"timing_package": "tempo2", "par_content": tcb_body},
+            }
+        )
+        contents = {pta: data["par_content"] for pta, data in pm.file_data.items()}
+
+        def as_tdb(text):
+            return text.replace("UNITS TCB", "UNITS TDB")
+
+        with (
+            patch.object(pm, "_convert_pint_to_tdb", side_effect=as_tdb),
+            patch.object(pm, "_convert_tempo2_to_tdb", side_effect=as_tdb),
+        ):
+            converted = pm._convert_units_if_needed(contents)
+
+        for pta, text in converted.items():
+            parsed = parse_parfile(StringIO(text))
+            assert parsed["UNITS"] == ["TDB"], f"{pta} not converted to TDB"
+            assert text != contents[pta]
+
+    @pytest.mark.parametrize("package", ["pint", "tempo2"])
+    def test_single_engine_all_tcb_collection_is_preserved(self, package):
+        tcb_body = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n"
+        pm = ParameterManager(
+            file_data={
+                "A": {"timing_package": package, "par_content": tcb_body},
+                "B": {"timing_package": package, "par_content": tcb_body},
+            }
+        )
+        contents = {pta: data["par_content"] for pta, data in pm.file_data.items()}
+
+        assert pm._convert_units_if_needed(contents) == contents
+
+        parfile_dicts = {
+            pta: parse_parfile(StringIO(text)) for pta, text in contents.items()
+        }
+        pm._apply_explicit_conventions(parfile_dicts)
+        assert {par["UNITS"][0] for par in parfile_dicts.values()} == {"TCB"}
+
+    def test_single_pta_tcb_is_preserved(self):
+        text = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n"
+        pm = ParameterManager(
+            file_data={
+                "A": {"timing_package": "tempo2", "par_content": text},
+            }
+        )
+
+        assert pm._convert_units_if_needed({"A": text}) == {"A": text}
+
+    def test_mixed_collection_converts_only_the_tcb_input(self):
+        pm = ParameterManager(
+            file_data={
+                "A": {
+                    "timing_package": "pint",
+                    "par_content": EQUATORIAL_BODY
+                    + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n",
+                },
+                "B": {
+                    "timing_package": "pint",
+                    "par_content": EQUATORIAL_BODY
+                    + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n",
+                },
+            }
+        )
+        contents = {pta: data["par_content"] for pta, data in pm.file_data.items()}
+
+        converted = pm._convert_units_if_needed(contents)
+
+        assert converted["A"] == contents["A"]
+        assert parse_parfile(StringIO(converted["B"]))["UNITS"] == ["TDB"]
+
+    def test_assert_explicit_tdb_rejects_non_tdb_output(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        with pytest.raises(RuntimeError, match="explicit\n?.*UNITS TDB"):
+            pm._assert_explicit_tdb("A", "PSR J1857+0943\nUNITS TCB\n")
+
+
+class TestEclipticTransformation:
+    """Section 7.4: a coordinate rotation, never a label rewrite."""
+
+    ECL_BODY = ECLIPTIC_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n"
+
+    def _icrs(self, par_dict, epoch):
+        from astropy.coordinates import ICRS
+        from metapulsar.pint_helpers import create_pint_model
+
+        return (
+            create_pint_model(par_dict).get_psr_coords(epoch=epoch).transform_to(ICRS)
+        )
+
+    def test_transform_preserves_sky_direction_at_two_epochs(self):
+        import astropy.units as u
+
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=ECLIPTIC_BODY,
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        before = dict(parfile_dicts["EPTA"])
+
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+        after = parfile_dicts["EPTA"]
+
+        assert after["ECL"] == ["IERS2003"]
+        # A relabel would keep the printed ELONG/ELAT; this must not.
+        relabelled = dict(before)
+        relabelled["ECL"] = ["IERS2003"]
+
+        for epoch in (54000.0, 57000.0):
+            reference = self._icrs(before, epoch)
+            transformed = self._icrs(after, epoch)
+            relabel = self._icrs(relabelled, epoch)
+
+            assert reference.separation(transformed).to_value(u.arcsec) < 1e-7
+            # Guard: the test would pass trivially if a relabel were harmless.
+            assert reference.separation(relabel).to_value(u.arcsec) > 1e-5
+
+    def test_transform_replaces_lambda_beta_with_canonical_names(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=ECLIPTIC_BODY,
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+
+        par = parfile_dicts["EPTA"]
+        for alias in ("LAMBDA", "BETA", "PMLAMBDA", "PMBETA"):
+            assert alias not in par
+        for canonical in ("ELONG", "ELAT", "PMELONG", "PMELAT"):
+            assert canonical in par
+
+    def test_iers2003_input_in_mixed_stack_is_still_transformed_to_iers2003(self):
+        import astropy.units as u
+
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2003\n",
+                other_extra="ECL IERS2003\n",
+                body=ECLIPTIC_BODY,
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        before = dict(parfile_dicts["EPTA"])
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+        after = parfile_dicts["EPTA"]
+
+        assert after["ECL"] == ["IERS2003"]
+        assert (
+            self._icrs(before, 55000.0)
+            .separation(self._icrs(after, 55000.0))
+            .to_value(u.arcsec)
+            < 1e-7
+        )
+
+    def test_equatorial_stack_is_left_alone(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        parfile_dicts = pm._parse_parfiles()
+        before = {pta: dict(par) for pta, par in parfile_dicts.items()}
+
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+
+        assert parfile_dicts == before
+
+    def test_single_pta_astrometry_is_untouched(self):
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": self.ECL_BODY + "ECL IERS2010\n",
+                }
+            }
+        )
+        parfile_dicts = pm._parse_parfiles()
+        before = {pta: dict(par) for pta, par in parfile_dicts.items()}
+
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+
+        assert parfile_dicts == before
+
+    def test_ddk_kom_is_converted(self):
+        ddk_body = ECLIPTIC_BODY + (
+            "BINARY DDK\n"
+            "PB 14.348466\n"
+            "A1 8.801653\n"
+            "T0 55000.0\n"
+            "ECC 1.737e-04\n"
+            "OM 181.85\n"
+            "M2 0.33\n"
+            "KIN 68.0\n"
+            "KOM 76.0\n"
+            "PX 0.5\n"
+        )
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=ddk_body,
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+
+        par = parfile_dicts["EPTA"]
+        assert par["ECL"] == ["IERS2003"]
+        assert "KOM" in par
+        kom = float(str(par["KOM"][0]).split()[0])
+        # Same physical orientation, expressed against the new ecliptic pole.
+        assert kom == pytest.approx(76.0, abs=1e-2)
+
+    def test_conversion_failure_is_reported_with_the_pta_name(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        with pytest.raises(ValueError, match="PTA EPTA: ecliptic astrometry"):
+            pm._transform_ecliptic_astrometry(
+                "EPTA", {"ELONG": ["1"], "ELAT": ["2"]}, "IERS2003"
+            )
+
+
+class TestReferenceConventionResolution:
+    """Section 7.5: EPHEM and a dated clock realization."""
+
+    def test_reference_values_are_used_by_default(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        parfile_dicts = pm._parse_parfiles()
+
+        ephem, clock = pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+
+        assert ephem == "DE440"
+        assert clock == "TT(BIPM2019)"
+
+    def test_policy_values_override_the_reference(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(),
+            alignment_policy=AlignmentPolicy(ephem="DE421", clock="TT(BIPM2023)"),
+        )
+        parfile_dicts = pm._parse_parfiles()
+
+        ephem, clock = pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+
+        assert ephem == "DE421"
+        assert clock == "TT(BIPM2023)"
+
+    def test_policy_supplies_missing_reference_values(self):
+        pm = ParameterManager(
+            file_data={
+                "A": {
+                    "timing_package": "pint",
+                    "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
+                },
+                "B": {
+                    "timing_package": "pint",
+                    "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
+                },
+            },
+            alignment_policy=AlignmentPolicy(ephem="DE440", clock="TT(BIPM2021)"),
+        )
+        parfile_dicts = pm._parse_parfiles()
+
+        assert pm._resolve_reference_conventions(parfile_dicts["A"]) == (
+            "DE440",
+            "TT(BIPM2021)",
+        )
+
+    def test_clk_alias_is_accepted_and_spelling_is_retained(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        parfile_dicts = pm._parse_parfiles()
+        reference_dict = parfile_dicts["EPTA"]
+
+        align_conventions(pm, parfile_dicts, reference_dict)
+
+        assert parfile_dicts["EPTA"]["CLK"] == ["TT(BIPM2019)"]
+        assert parfile_dicts["NG"]["CLOCK"] == ["TT(BIPM2019)"]
+        assert "CLOCK" not in parfile_dicts["EPTA"]
+        assert "CLK" not in parfile_dicts["NG"]
+
+    def test_bare_bipm_without_version_raises(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_extra="", body=EQUATORIAL_BODY)
+        )
+        parfile_dicts = pm._parse_parfiles()
+        parfile_dicts["EPTA"]["CLK"] = ["TT(BIPM)"]
+
+        with pytest.raises(ValueError, match="Bare TT\\(BIPM\\) is ambiguous"):
+            pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+
+    def test_bare_bipm_resolves_with_policy_version(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(),
+            alignment_policy=AlignmentPolicy(bipm_version=2021),
+        )
+        parfile_dicts = pm._parse_parfiles()
+        parfile_dicts["EPTA"]["CLK"] = ["TT(BIPM)"]
+
+        _, clock = pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+        assert clock == "TT(BIPM2021)"
+
+    def test_dated_clock_conflicting_with_bipm_version_raises(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(),
+            alignment_policy=AlignmentPolicy(clock="TT(BIPM2019)", bipm_version=2021),
+        )
+        parfile_dicts = pm._parse_parfiles()
+
+        with pytest.raises(ValueError, match="disagrees with"):
+            pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+
+    def test_dated_clock_agreeing_with_bipm_version_is_accepted(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(),
+            alignment_policy=AlignmentPolicy(clock="TT(BIPM2019)", bipm_version=2019),
+        )
+        parfile_dicts = pm._parse_parfiles()
+
+        _, clock = pm._resolve_reference_conventions(parfile_dicts["EPTA"])
+        assert clock == "TT(BIPM2019)"
+
+    def test_non_bipm_clock_is_passed_through(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        assert pm._resolve_bipm_clock("UTC(NIST)") == "UTC(NIST)"
+
+
+class TestExplicitConventionSwitches:
+    """Section 4.1/4.2: forced switches only for mixed PINT+Tempo2 stacks."""
+
+    def _mixed_dicts(self, reference_extra="", other_extra=""):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra=reference_extra, other_extra=other_extra
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._apply_explicit_conventions(parfile_dicts)
+        return parfile_dicts
+
+    def test_mixed_stack_writes_the_full_profile(self):
+        parfile_dicts = self._mixed_dicts()
+
+        for par in parfile_dicts.values():
+            assert par["UNITS"] == ["TDB"]
+            assert par["T2CMETHOD"] == ["IAU2000B"]
+            assert par["TIMEEPH"] == ["FB90"]
+            assert par["DILATEFREQ"] == ["N"]
+            assert par["CORRECT_TROPOSPHERE"] == ["N"]
+            assert par["PLANET_SHAPIRO"] == ["N"]
+            assert par["SWM"] == ["0"]
+            assert "NO_SS_SHAPIRO" not in par
+
+    def test_no_ss_shapiro_is_removed_independently_of_planet_shapiro(self):
+        parfile_dicts = self._mixed_dicts(
+            reference_extra="NO_SS_SHAPIRO\nPLANET_SHAPIRO Y\n"
+        )
+
+        assert "NO_SS_SHAPIRO" not in parfile_dicts["EPTA"]
+        assert parfile_dicts["EPTA"]["PLANET_SHAPIRO"] == ["N"]
+
+    def test_absent_no_ss_shapiro_stays_absent(self):
+        parfile_dicts = self._mixed_dicts()
+        assert "NO_SS_SHAPIRO" not in parfile_dicts["EPTA"]
+
+    def test_pint_only_stack_keeps_tropo_and_planet_settings(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="CORRECT_TROPOSPHERE Y\nPLANET_SHAPIRO Y\n",
+                reference_package="pint",
+                other_package="pint",
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._apply_explicit_conventions(parfile_dicts)
+
+        assert parfile_dicts["EPTA"]["CORRECT_TROPOSPHERE"] == ["Y"]
+        assert parfile_dicts["EPTA"]["PLANET_SHAPIRO"] == ["Y"]
+        assert "TIMEEPH" not in parfile_dicts["EPTA"]
+        assert "T2CMETHOD" not in parfile_dicts["EPTA"]
+        assert parfile_dicts["EPTA"]["UNITS"] == ["TDB"]
+
+    def test_tempo2_only_stack_keeps_tropo_and_planet_settings(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="CORRECT_TROPOSPHERE Y\n",
+                reference_package="tempo2",
+                other_package="tempo2",
+            )
+        )
+        parfile_dicts = pm._parse_parfiles()
+        pm._apply_explicit_conventions(parfile_dicts)
+
+        assert parfile_dicts["EPTA"]["CORRECT_TROPOSPHERE"] == ["Y"]
+        assert "IPM" not in parfile_dicts["EPTA"]
+
+
+class TestEll1hHarmonics:
+    """Section 7.7: dual NHARM (tempo2) + NHARMS (PINT) floor of 7."""
+
+    def _align(self, extra_lines):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        par = parse_parfile(StringIO(extra_lines))
+        pm._align_ell1h_nharms(par)
+        return par
+
+    def test_h3_h4_without_harmonic_count_gets_seven(self):
+        par = self._align("BINARY ELL1H\nH3 1e-7\nH4 5e-8\n")
+        assert par["NHARM"] == ["7"]
+        assert par["NHARMS"] == ["7"]
+
+    def test_nharms_four_is_raised_to_seven(self):
+        par = self._align("BINARY ELL1H\nH3 1e-7\nH4 5e-8\nNHARMS 4\n")
+        assert par["NHARM"] == ["7"]
+        assert par["NHARMS"] == ["7"]
+
+    def test_nharm_four_is_raised_to_seven(self):
+        par = self._align("BINARY T2\nH3 1e-7\nH4 5e-8\nNHARM 4\n")
+        assert par["NHARM"] == ["7"]
+        assert par["NHARMS"] == ["7"]
+
+    def test_nharms_nine_is_preserved(self):
+        par = self._align("BINARY ELL1H\nH3 1e-7\nH4 5e-8\nNHARMS 9\n")
+        assert par["NHARM"] == ["9"]
+        assert par["NHARMS"] == ["9"]
+
+    def test_nharm_nine_is_preserved(self):
+        par = self._align("BINARY T2\nH3 1e-7\nH4 5e-8\nNHARM 9\n")
+        assert par["NHARM"] == ["9"]
+        assert par["NHARMS"] == ["9"]
+
+    def test_h3_stig_gets_no_harmonic_count(self):
+        par = self._align("BINARY ELL1H\nH3 1e-7\nSTIG 0.7\n")
+        assert "NHARM" not in par
+        assert "NHARMS" not in par
+
+    def test_h3_stigma_alias_gets_no_harmonic_count(self):
+        par = self._align("BINARY ELL1H\nH3 1e-7\nSTIGMA 0.7\n")
+        assert "NHARM" not in par
+        assert "NHARMS" not in par
+
+    @pytest.mark.parametrize("stigma_name", ["STIG", "STIGMA", "VARSIGMA"])
+    @pytest.mark.parametrize("unsupported", ["strip", "error"])
+    def test_h4_and_stigma_conflict_always_errors(self, stigma_name, unsupported):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra=(f"BINARY ELL1H\nH3 1e-7\nH4 5e-8\n{stigma_name} 0.7\n")
+            ),
+            alignment_policy=AlignmentPolicy(unsupported=unsupported),
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=rf"PTA EPTA: invalid orthometric.*H4 and {stigma_name}",
+        ):
+            _prepared_dicts(pm)
+
+    def test_single_pta_h4_and_stig_conflict_errors(self):
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": (
+                        EQUATORIAL_BODY + "BINARY ELL1H\nH3 1e-7\nH4 5e-8\nSTIG 0.7\n"
+                    ),
+                }
+            }
+        )
+
+        with pytest.raises(ValueError, match="Tempo2 would ignore STIG"):
+            _prepared_dicts(pm)
+
+    def test_non_orthometric_binary_is_untouched(self):
+        par = self._align("BINARY DD\nPB 12.3\nA1 9.2\n")
+        assert "NHARM" not in par
+        assert "NHARMS" not in par
+
+    def test_both_spellings_survive_pint_serialization(self):
+        from metapulsar.pint_helpers import dict_to_parfile_string
+
+        par = self._align("BINARY ELL1H\nH3 1e-7\nH4 5e-8\n")
+        text = dict_to_parfile_string(par, format="pint")
+
+        assert "NHARM " in text or text.splitlines()[-2].startswith("NHARM")
+        reparsed = parse_parfile(StringIO(text))
+        assert reparsed["NHARM"] == ["7"]
+        assert reparsed["NHARMS"] == ["7"]
+
+
+class TestEll1hShapiroMode:
+    """Section 7.8: 'absorbed' only on mixed-engine consistent stacks."""
+
+    def test_mixed_stack_uses_absorbed(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        assert pm.ell1h_shapiro == "absorbed"
+
+    def test_pint_only_stack_uses_full(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_package="pint", other_package="pint"
+            )
+        )
+        assert pm.ell1h_shapiro == "full"
+
+    def test_tempo2_only_stack_uses_full(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_package="tempo2", other_package="tempo2"
+            )
+        )
+        assert pm.ell1h_shapiro == "full"
+
+    def test_single_pta_uses_full(self):
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
+                }
+            }
+        )
+        assert pm.ell1h_shapiro == "full"
+
+    def test_libstempo_label_counts_as_tempo2(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(reference_package="libstempo")
+        )
+        assert pm.ell1h_shapiro == "absorbed"
+
+    def test_resolve_helper(self):
+        from metapulsar.parameter_manager import resolve_ell1h_shapiro_mode
+
+        assert resolve_ell1h_shapiro_mode(["pint", "tempo2"]) == "absorbed"
+        assert resolve_ell1h_shapiro_mode(["pint", "pint"]) == "full"
+        assert resolve_ell1h_shapiro_mode(["tempo2"]) == "full"
+        assert resolve_ell1h_shapiro_mode([None]) == "full"
+
+    def test_temporary_models_use_the_stack_convention(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        with patch("metapulsar.parameter_manager.create_pint_model") as mock_create:
+            pm._create_model("PSR J0000+0000\n")
+        mock_create.assert_called_once_with(
+            "PSR J0000+0000\n", ell1h_shapiro="absorbed"
+        )

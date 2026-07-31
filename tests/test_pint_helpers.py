@@ -566,7 +566,7 @@ T0 55000.0 1
         # Should call ModelBuilder with dict directly
         mock_model_builder_class.assert_called_once()
         mock_builder.assert_called_once_with(
-            parfile_dict, allow_tcb=True, allow_T2=True
+            parfile_dict, allow_tcb=True, allow_T2=True, ell1h_shapiro="full"
         )
 
         assert result == mock_model

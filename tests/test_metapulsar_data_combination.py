@@ -1,5 +1,8 @@
 """Tests for MetaPulsar data combination functionality."""
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -96,3 +99,32 @@ class TestMetaPulsarDataCombination:
         slices = metapulsar._get_pta_slices()
         assert slices["small_pta"] == slice(0, 30)
         assert slices["large_pta"] == slice(30, 100)
+
+    def test_parameter_mapping_preserves_timing_package_identity(self):
+        metapulsar = object.__new__(MetaPulsar)
+        pint_model = MagicMock()
+        pint_model.as_parfile.return_value = "PSR J1857+0943\n"
+        tempo2_pulsar = MagicMock()
+        metapulsar._unpack_pulsar_data = MagicMock(
+            return_value=(
+                {"pint_pta": pint_model},
+                {},
+                {"tempo2_pta": tempo2_pulsar},
+            )
+        )
+        metapulsar._get_libstempo_parfile_content = MagicMock(
+            return_value="PSR J1857+0943\n"
+        )
+        metapulsar._setup_canonical_parameters = MagicMock()
+        metapulsar.combine_components = []
+        metapulsar.add_dm_derivatives = False
+        metapulsar.exclude_from_consistent = ()
+
+        mapping = SimpleNamespace(fitparameters={}, setparameters={})
+        with patch("metapulsar.metapulsar.ParameterManager") as manager_class:
+            manager_class.return_value.build_parameter_mappings.return_value = mapping
+            metapulsar._setup_parameters()
+
+        file_data = manager_class.call_args.kwargs["file_data"]
+        assert file_data["pint_pta"]["timing_package"] == "pint"
+        assert file_data["tempo2_pta"]["timing_package"] == "tempo2"

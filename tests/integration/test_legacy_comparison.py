@@ -25,9 +25,30 @@ class TestLegacyComparison:
             return maybe_path.read_text(encoding="utf-8")
         return par_content
 
+    #: Explicit mixed-engine profile the current implementation must write
+    #: (feature_full_alignment_plan.md section 4.1).
+    MIXED_ENGINE_PROFILE = {
+        "UNITS": "TDB",
+        "T2CMETHOD": "IAU2000B",
+        "TIMEEPH": "FB90",
+        "DILATEFREQ": "N",
+        "CORRECT_TROPOSPHERE": "N",
+        "PLANET_SHAPIRO": "N",
+        "SWM": "0",
+    }
+
     def _assert_protocol_conventions(
-        self, par_content: str, label: str, engine_mix: bool
+        self,
+        par_content: str,
+        label: str,
+        engine_mix: bool,
+        full_profile: bool = False,
     ):
+        """Check the convention surface of a written par file.
+
+        ``full_profile`` asserts the complete mixed-engine profile; it applies
+        only to the current implementation, since the legacy module predates it.
+        """
         text = self._read_par_content(par_content)
         active_lines = []
         for raw in text.splitlines():
@@ -63,10 +84,27 @@ class TestLegacyComparison:
             assert (
                 keys["ECL"][0].upper() == "IERS2003"
             ), f"{label}: expected ECL IERS2003, found {' '.join(keys['ECL'])}"
+            # The obliquity change must be a coordinate transformation, so the
+            # ecliptic coordinates are re-emitted under PINT's canonical names.
+            assert (
+                "LAMBDA" not in keys and "BETA" not in keys
+            ), f"{label}: LAMBDA/BETA survived the numeric ecliptic transformation"
         elif has_equatorial and engine_mix:
             assert (
                 "ECL" not in keys
             ), f"{label}: equatorial astrometry should not include active ECL"
+
+        if not (engine_mix and full_profile):
+            return
+
+        for key, expected in self.MIXED_ENGINE_PROFILE.items():
+            assert key in keys, f"{label}: missing explicit {key} in mixed-engine par"
+            assert (
+                keys[key][0].upper() == expected.upper()
+            ), f"{label}: expected {key} {expected}, found {' '.join(keys[key])}"
+        assert (
+            "NO_SS_SHAPIRO" not in keys
+        ), f"{label}: NO_SS_SHAPIRO must be removed so whole-SS Shapiro stays on"
 
     def _prepare_legacy_input_files(
         self, pulsar_name, pta_data_releases, available_data_sets
@@ -185,6 +223,7 @@ class TestLegacyComparison:
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
                 use_pulse_numbers="no",
+                exclude_from_consistent=(),
             )
 
             # Compare basic properties
@@ -486,6 +525,7 @@ class TestLegacyComparison:
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
                 use_pulse_numbers="no",
+                exclude_from_consistent=(),
             )
 
             # Get design matrices
@@ -647,6 +687,7 @@ class TestLegacyComparison:
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
                 use_pulse_numbers="no",
+                exclude_from_consistent=(),
             )
 
             # Get flags
@@ -759,6 +800,7 @@ class TestLegacyComparison:
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
                 use_pulse_numbers="no",
+                exclude_from_consistent=(),
             )
 
             # Get intermediate par files (if available)
@@ -770,7 +812,7 @@ class TestLegacyComparison:
                     legacy_par_content, "legacy", engine_mix=engine_mix
                 )
                 self._assert_protocol_conventions(
-                    new_par_content, "new", engine_mix=engine_mix
+                    new_par_content, "new", engine_mix=engine_mix, full_profile=True
                 )
 
                 # Parse par files and compare key parameters
@@ -866,6 +908,7 @@ class TestLegacyComparison:
             new_mp = new_module["MetaPulsarFactory"]().create_metapulsar(
                 file_data=filtered_file_data,
                 use_pulse_numbers="no",
+                exclude_from_consistent=(),
             )
 
             # Get fitpars from both implementations
