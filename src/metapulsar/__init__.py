@@ -35,6 +35,7 @@ from .layout_discovery import (
     combine_layouts,
 )
 from .parameter_manager import (
+    AlignmentPolicy,
     ParameterManager,
     ParameterMapping,
     ParameterInconsistencyError,
@@ -110,6 +111,7 @@ __all__ = [
     "FileDiscovery",
     "PTA_DATA_RELEASES",
     "DataReleaseLayout",
+    "AlignmentPolicy",
     "ParameterManager",
     "ParameterMapping",
     "ParameterInconsistencyError",

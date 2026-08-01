@@ -407,6 +407,7 @@ class TestMetaPulsarFactory:
                 str(file_pairs["epta_dr2"][1]),
                 planets=True,
                 allow_T2=True,
+                ell1h_shapiro="full",
             )
 
     def test_create_pulsar_objects_tempo2(self):
@@ -952,3 +953,123 @@ class TestSinglePtaSharedDmxWarning:
                     combination_strategy="shared",
                     combine_components=["dispersion"],
                 )
+
+
+class TestAlignmentPolicyForwarding:
+    """The factory's only new user-facing argument (section 5 of the plan)."""
+
+    def setup_method(self):
+        self.factory = MetaPulsarFactory()
+
+    @staticmethod
+    def _file_data(timing_packages=("pint",)):
+        body = (
+            "PSR J1857+0943\n"
+            "PEPOCH 55000\n"
+            "F0 186.494081 1\n"
+            "F1 -6.2e-16 1\n"
+            "RAJ 18:57:36.3937 1\n"
+            "DECJ +09:43:17.291 1\n"
+            "POSEPOCH 55000\n"
+            "DM 13.299 1\n"
+            "DMEPOCH 55000\n"
+            "EPHEM DE440\n"
+            "CLK TT(BIPM2019)\n"
+            "UNITS TDB\n"
+        )
+        return {
+            f"pta{index}": [
+                {
+                    "par": Path(f"/data/pta{index}/J1857+0943.par"),
+                    "tim": Path(f"/data/pta{index}/J1857+0943.tim"),
+                    "timing_package": package,
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                    "par_content": body,
+                }
+            ]
+            for index, package in enumerate(timing_packages)
+        }
+
+    def _run(self, mock_param_manager, **kwargs):
+        mock_manager_instance = Mock()
+        mock_manager_instance.make_parfiles_shared.return_value = {}
+        mock_manager_instance.ell1h_shapiro = "full"
+        mock_param_manager.return_value = mock_manager_instance
+
+        with (
+            patch.object(self.factory, "_create_pulsar_objects") as mock_create,
+            patch("metapulsar.metapulsar_factory.MetaPulsar"),
+        ):
+            mock_create.return_value = {"pta0": Mock()}
+            self.factory.create_metapulsar(self._file_data(), **kwargs)
+        return mock_param_manager.call_args, mock_create.call_args
+
+    @patch("metapulsar.metapulsar_factory.ParameterManager")
+    def test_default_policy_is_none_and_manager_supplies_the_default(
+        self, mock_param_manager
+    ):
+        manager_call, _ = self._run(mock_param_manager)
+        assert manager_call[1]["alignment_policy"] is None
+
+    @patch("metapulsar.metapulsar_factory.ParameterManager")
+    def test_policy_is_forwarded_to_parameter_manager(self, mock_param_manager):
+        from metapulsar import AlignmentPolicy
+
+        policy = AlignmentPolicy(unsupported="error", ephem="DE421", ne_sw=4.0)
+        manager_call, _ = self._run(mock_param_manager, alignment_policy=policy)
+        assert manager_call[1]["alignment_policy"] is policy
+
+    def test_policy_with_per_pta_strategy_raises(self):
+        from metapulsar import AlignmentPolicy
+
+        with pytest.raises(ValueError, match="only applies to.*shared"):
+            self.factory.create_metapulsar(
+                self._file_data(),
+                combination_strategy="per_pta",
+                alignment_policy=AlignmentPolicy(),
+            )
+
+    def test_per_pta_strategy_without_policy_is_accepted(self):
+        with (
+            patch.object(self.factory, "_create_pulsar_objects") as mock_create,
+            patch("metapulsar.metapulsar_factory.MetaPulsar"),
+        ):
+            mock_create.return_value = {"pta0": Mock()}
+            self.factory.create_metapulsar(
+                self._file_data(), combination_strategy="per_pta"
+            )
+        assert mock_create.call_args[1]["ell1h_shapiro"] == "full"
+
+    @patch("metapulsar.metapulsar_factory.ParameterManager")
+    def test_mixed_engine_shared_materialization_uses_absorbed(
+        self, mock_param_manager
+    ):
+        mock_manager_instance = Mock()
+        mock_manager_instance.make_parfiles_shared.return_value = {}
+        mock_manager_instance.ell1h_shapiro = "absorbed"
+        mock_param_manager.return_value = mock_manager_instance
+
+        with (
+            patch.object(self.factory, "_create_pulsar_objects") as mock_create,
+            patch("metapulsar.metapulsar_factory.MetaPulsar"),
+        ):
+            mock_create.return_value = {"pta0": Mock()}
+            self.factory.create_metapulsar(self._file_data(("tempo2", "pint")))
+
+        assert mock_create.call_args[1]["ell1h_shapiro"] == "absorbed"
+
+    @patch("metapulsar.metapulsar_factory.ParameterManager")
+    def test_pint_only_shared_materialization_uses_full(self, mock_param_manager):
+        _, create_call = self._run(mock_param_manager)
+        assert create_call[1]["ell1h_shapiro"] == "full"
+
+    def test_module_level_helpers_accept_alignment_policy(self):
+        import inspect
+
+        from metapulsar.metapulsar_factory import (
+            create_all_metapulsars,
+            create_metapulsar,
+        )
+
+        for func in (create_metapulsar, create_all_metapulsars):
+            assert "alignment_policy" in inspect.signature(func).parameters

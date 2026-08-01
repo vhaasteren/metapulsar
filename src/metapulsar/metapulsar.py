@@ -310,6 +310,7 @@ class MetaPulsar:
             file_data[pta_name] = {
                 "par": None,
                 "par_content": model.as_parfile(),
+                "timing_package": "pint",
             }
 
         # Handle libstempo pulsars
@@ -318,6 +319,7 @@ class MetaPulsar:
             file_data[pta_name] = {
                 "par": None,
                 "par_content": parfile_content,
+                "timing_package": "tempo2",
             }
 
         # Create ParameterManager for parameter mapping

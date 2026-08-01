@@ -1,0 +1,40 @@
+# NANOGrav-style shape: SOLARN0 0, T2CMETHOD TEMPO, IERS2010, DMX, FD, JUMP, TZR
+PSR              J1600-3053
+EPHEM            DE436
+CLOCK            TT(BIPM2017)
+UNITS            TDB
+T2CMETHOD        TEMPO
+PLANET_SHAPIRO   Y
+ELONG            244.347677 1
+ELAT             -10.071873 1
+PMELONG          -0.35 1
+PMELAT           -7.0 1
+PX               0.50 1
+ECL              IERS2010
+POSEPOCH         55000
+F0               277.937 1
+F1               -7.3e-16 1
+PEPOCH           55000
+DM               52.3
+DMEPOCH          55000
+DMX              14.0
+DMX_0001         0.0012 1
+DMXR1_0001       54500.0
+DMXR2_0001       54514.0
+DMX_0002         -0.0007 1
+DMXR1_0002       54600.0
+DMXR2_0002       54614.0
+SOLARN0          0.00
+BINARY           ELL1
+PB               14.348466 1
+A1               8.801653 1
+TASC             55000.0 1
+EPS1             1.7e-05 1
+EPS2             -9.1e-06 1
+FD1              1.2e-05 1
+FD2              -3.4e-06 1
+JUMP -fe Rcvr_800 1.5e-06 1
+JUMP -fe Rcvr1_2 -2.5e-06 1
+TZRMJD           55000.0
+TZRSITE          ao
+TZRFRQ           1400.0

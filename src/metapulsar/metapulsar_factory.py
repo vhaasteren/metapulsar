@@ -15,7 +15,7 @@ from loguru import logger
 
 # Import MetaPulsar and ParameterManager
 from .metapulsar import MetaPulsar, normalize_combination_strategy
-from .parameter_manager import ParameterManager
+from .parameter_manager import AlignmentPolicy, ParameterManager
 from .position_helpers import discover_pulsars_by_position
 
 # Import PINT for model creation
@@ -28,6 +28,7 @@ except ImportError:
 from .sandbox_tempo2 import tempopulsar
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 from .pint_helpers import (
+    Ell1hShapiroMode,
     PulseNumberMode,
     ensure_pint_track_minus_2,
     pulse_number_tracking_enabled,
@@ -233,6 +234,7 @@ class MetaPulsarFactory:
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -265,6 +267,10 @@ class MetaPulsarFactory:
                 - ``"overwrite"``: always re-derive ``-pn`` from original ``par`` + ``tim``.
 
                 Booleans are rejected. Map legacy ``True`` → ``"yes"``, ``False`` → ``"no"``.
+            alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
+                controlling the multi-PTA common profile (``unsupported="strip"``
+                by default, plus optional ``ephem``/``clock``/``bipm_version``/
+                ``ne_sw`` pins). Only valid for the ``"shared"`` strategy.
 
         Returns:
             MetaPulsar object
@@ -276,6 +282,12 @@ class MetaPulsarFactory:
         combination_strategy = normalize_combination_strategy(combination_strategy)
         self.logger.info(f"Creating MetaPulsar using {combination_strategy} strategy")
         pulse_mode = validate_pulse_number_mode(use_pulse_numbers)
+        if alignment_policy is not None and combination_strategy != "shared":
+            raise ValueError(
+                "alignment_policy only applies to combination_strategy='shared'; "
+                f"got {combination_strategy!r}. The per_pta strategy preserves "
+                "each PTA's native deterministic model and performs no alignment."
+            )
 
         # 1. Ensure parfile content and TIM metadata are loaded
         validated_data = self._ensure_parfile_content(file_data)
@@ -321,9 +333,16 @@ class MetaPulsarFactory:
             output_dir=parfile_output_dir,
             pulsar_name=pulsar_name,
             exclude_from_shared=exclude_from_shared,
+            alignment_policy=alignment_policy,
         )
 
+        # Process par files based on strategy
+        ell1h_shapiro: Ell1hShapiroMode = "full"
         if combination_strategy == "shared":
+            # Mixed PINT+Tempo2 shared stacks must evaluate the same orthometric
+            # Shapiro expression as tempo2 (see AlignmentPolicy docs).
+            ell1h_shapiro = parameter_manager.ell1h_shapiro
+
             self._warn_single_pta_shared_dmx_strip(single_file_data, combine_components)
             engine_pars = parameter_manager.make_parfiles_shared()
         else:
@@ -348,6 +367,7 @@ class MetaPulsarFactory:
             use_pulse_numbers=pulse_mode,
             pta_file_dir=pta_file_dir,
             return_pta_files=True,
+            ell1h_shapiro=ell1h_shapiro,
         )
         if isinstance(created, tuple) and len(created) == 2:
             pulsars, pta_files = created
@@ -550,6 +570,7 @@ class MetaPulsarFactory:
         parfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all available pulsars using file data.
 
@@ -565,6 +586,8 @@ class MetaPulsarFactory:
                 in selected components.
             parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+            alignment_policy: Alignment policy forwarded to each
+                ``create_metapulsar`` call (``"shared"`` strategy only).
 
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
@@ -603,6 +626,7 @@ class MetaPulsarFactory:
                     parfile_output_dir=parfile_output_dir,
                     use_pulse_numbers=pulse_mode,
                     clock_dir=clock_dir,
+                    alignment_policy=alignment_policy,
                 )
 
                 # Canonical name is automatically calculated from pulsar data
@@ -741,6 +765,7 @@ class MetaPulsarFactory:
         use_pulse_numbers: PulseNumberMode = "yes",
         pta_file_dir: Path | None = None,
         return_pta_files: bool = False,
+        ell1h_shapiro: Ell1hShapiroMode = "full",
     ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
         """Create PINT/Tempo2 objects from file pairs using file data.
 
@@ -749,6 +774,9 @@ class MetaPulsarFactory:
             file_data: Dictionary mapping PTA names to file dictionaries
                       Contains timing_package info from FileDiscovery
             use_pulse_numbers: Pulse-number mode (``no``, ``yes``, ``reuse``, ``overwrite``)
+            ell1h_shapiro: ELL1H orthometric Shapiro convention for PINT loads.
+                ``"absorbed"`` on mixed-engine shared stacks, ``"full"``
+                (PINT's default) otherwise.
 
         Returns:
             Dictionary mapping PTA names to PINT/Tempo2 objects
@@ -788,6 +816,7 @@ class MetaPulsarFactory:
                             tim_path,
                             planets=True,
                             allow_T2=True,
+                            ell1h_shapiro=ell1h_shapiro,
                         )
                         if track_pn:
                             ensure_pint_track_minus_2(model)
@@ -1012,6 +1041,7 @@ def create_metapulsar(
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
+    alignment_policy: AlignmentPolicy | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -1035,6 +1065,10 @@ def create_metapulsar(
             If None, par files are not saved to disk.
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
             or ``"overwrite"``. See ``MetaPulsarFactory.create_metapulsar`` for semantics.
+        alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
+            controlling the multi-PTA common profile. ``None`` means
+            ``AlignmentPolicy()``. Passing a policy with ``"per_pta"`` raises
+            ``ValueError``.
 
     Returns:
         MetaPulsar object
@@ -1054,6 +1088,7 @@ def create_metapulsar(
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
+        alignment_policy=alignment_policy,
     )
 
 
@@ -1067,6 +1102,7 @@ def create_all_metapulsars(
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
+    alignment_policy: AlignmentPolicy | None = None,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all available pulsars using file data.
 
@@ -1084,6 +1120,8 @@ def create_all_metapulsars(
             If None, par files are not saved to disk. Creates subdirectories for each pulsar.
         use_pulse_numbers: Pulse-number mode passed to each ``create_metapulsar`` call
             (``"no"``, ``"yes"``, ``"reuse"``, or ``"overwrite"``; default ``"yes"``).
+        alignment_policy: Alignment policy forwarded to each ``create_metapulsar``
+            call (``"shared"`` strategy only).
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
@@ -1099,6 +1137,7 @@ def create_all_metapulsars(
         parfile_output_dir=parfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
+        alignment_policy=alignment_policy,
     )
 
 

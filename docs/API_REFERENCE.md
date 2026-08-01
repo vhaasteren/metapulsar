@@ -141,7 +141,10 @@ def create_metapulsar(
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    use_pulse_numbers: str = "yes",
+    alignment_policy: AlignmentPolicy | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -154,8 +157,14 @@ def create_metapulsar(
         combine_components: List of components to make consistent (for consistent strategy).
             Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
         add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+        exclude_from_shared: Canonical parameter names kept PTA-specific even
+            when their component is merged. Defaults to ("DM",).
+        parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
+        use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
+        alignment_policy: AlignmentPolicy for the multi-PTA common profile.
+            None means AlignmentPolicy(). Passing a policy together with
+            combination_strategy="per_pta" raises ValueError.
 
     Returns:
         MetaPulsar object
@@ -358,6 +367,63 @@ def combine_layouts(
 
 ## Parameter Management
 
+### AlignmentPolicy
+
+Policy for the multi-PTA `shared` combination strategy. This is the only
+user-facing knob on the cross-engine alignment; everything else in the profile
+is fixed, because only that combination is validated for residual parity.
+
+```python
+from metapulsar import AlignmentPolicy
+
+
+@dataclass(frozen=True)
+class AlignmentPolicy:
+    unsupported: Literal["strip", "error"] = "strip"
+    ephem: str | None = None
+    clock: str | None = None
+    bipm_version: int | None = None
+    ne_sw: float | None = None
+```
+
+| Field | Meaning |
+|-------|---------|
+| `unsupported` | `"strip"` (default) removes deterministic families outside the common PINT/Tempo2 surface, logging a warning that names the PTA and every removed key. `"error"` raises `ValueError` listing every offender instead. |
+| `ephem` | Override the reference PTA's `EPHEM`. Required when no PTA declares one. |
+| `clock` | Override the reference PTA's `CLOCK`/`CLK`. Required when no PTA declares one. |
+| `bipm_version` | Year used to resolve a bare `TT(BIPM)`, which is otherwise ambiguous across environments and raises. A dated clock that disagrees with this year also raises. |
+| `ne_sw` | Override the resolved constant solar-wind density in cm⁻³. Without it: the reference PTA's explicit `NE_SW`/`NE1AU`/`SOLARN0`, else `4` when Tempo2 is in the stack, else no line. |
+
+Constructor validation: `unsupported` must be `"strip"` or `"error"`, and
+`ne_sw` must be non-negative.
+
+The policy applies only to `combination_strategy="shared"`. Passing it with
+`"per_pta"` raises `ValueError` rather than being silently ignored; the
+per-PTA strategy exists precisely to preserve engine-native models.
+
+```python
+# Default: strip unsupported deterministic terms with a warning.
+mp = create_metapulsar(files, combination_strategy="shared")
+
+# Fail instead of stripping.
+mp = create_metapulsar(
+    files,
+    combination_strategy="shared",
+    alignment_policy=AlignmentPolicy(unsupported="error"),
+)
+
+# Pin the reference conventions explicitly.
+mp = create_metapulsar(
+    files,
+    combination_strategy="shared",
+    alignment_policy=AlignmentPolicy(
+        ephem="DE440",
+        clock="TT(BIPM2023)",
+        ne_sw=4.0,
+    ),
+)
+```
+
 ### ParameterManager
 
 Manages parameter consistency across PTAs.
@@ -365,7 +431,7 @@ Manages parameter consistency across PTAs.
 ```python
 class ParameterManager:
     """Manages parameter consistency and mapping across PTAs."""
-    
+
     def __init__(
         self,
         file_data: Dict[str, Dict[str, Any]],
@@ -373,9 +439,17 @@ class ParameterManager:
         add_dm_derivatives: bool = True,
         output_dir: Path = None,
         pulsar_name: str = None,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
+        alignment_policy: AlignmentPolicy | None = None,
     ):
         """Initialize parameter manager with file data and configuration."""
 ```
+
+`ParameterManager.ell1h_shapiro` reports which orthometric Shapiro expression
+PINT should evaluate for this stack: `"absorbed"` (Freire & Wex 2010, Eq. 28)
+for mixed PINT+Tempo2 stacks, `"full"` (PINT's default, Eq. 29) otherwise. The
+factory passes it to `get_model_and_toas` so materialization matches the
+temporary models built during alignment.
 
 ### ParameterMapping
 
