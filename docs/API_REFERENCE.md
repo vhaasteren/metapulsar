@@ -28,15 +28,15 @@ class MetaPulsar:
     Implements the Enterprise/Discovery pulsar surface by duck typing.
     
     Supports two combination strategies:
-    - "consistent": Astrophysical consistency (modifies par files for consistency)
-    - "composite": Multi-PTA composition (preserves original parameters)
+    - "shared": Share selected timing-model parameters across PTAs
+    - "per_pta": Preserve per-PTA timing-model parameters
     """
     
     def __init__(
         self,
         pulsars,
         *,
-        combination_strategy="consistent",
+        combination_strategy="shared",
         combine_components: List[str] = [
             "astrometry",
             "spindown", 
@@ -44,6 +44,9 @@ class MetaPulsar:
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
+        pta_files: dict[str, dict] | None = None,
+        clock_dir: str | Path | None = None,
         sort=False,
     ):
         """Initialize MetaPulsar.
@@ -53,15 +56,15 @@ class MetaPulsar:
                 - PINT: {pta: (pint_model, pint_toas)}
                 - Tempo2: {pta: tempo2_psr}
             combination_strategy: Strategy for combining PTAs:
-                - "consistent": Astrophysical consistency (modifies par files for consistency)
-                - "composite": Multi-PTA composition (preserves original parameters)
-            combine_components: List of components to make consistent (consistent strategy only):
+                - "shared": Share selected timing-model parameters across PTAs
+                - "per_pta": Preserve per-PTA timing-model parameters
+            combine_components: List of components to share (shared strategy only):
                 - "astrometry": Position and proper motion parameters
                 - "spindown": Spin frequency and derivatives
                 - "binary": Binary orbital parameters
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
-            add_dm_derivatives: Whether to ensure DM1, DM2 are present (consistent strategy only)
+            add_dm_derivatives: Whether to ensure DM1, DM2 are present (shared strategy only)
             sort: Whether to sort data by time
         """
 ```
@@ -108,22 +111,30 @@ class MetaPulsarFactory:
     def create_metapulsar(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy."""
     
     def create_all_metapulsars(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all pulsars in file_data."""
 ```
@@ -137,31 +148,33 @@ Create a single MetaPulsar object.
 ```python
 def create_metapulsar(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
     exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
     Args:
-        file_data: File data from FileDiscoveryService (should contain data for single pulsar only)
+        file_data: File data from FileDiscovery (should contain data for single pulsar only)
         combination_strategy: Strategy for combining PTAs:
-            - "consistent": Astrophysical consistency (modifies par files for consistency, the default)
-            - "composite": Multi-PTA composition (preserves original parameters, Borg/FrankenStat methods)
-        reference_pta: PTA to use as reference (for consistent strategy). If None, uses first PTA in file_data.
-        combine_components: List of components to make consistent (for consistent strategy).
+            - "shared": Share selected timing-model parameters across PTAs (default)
+            - "per_pta": Preserve per-PTA timing-model parameters
+        reference_pta: PTA to use as reference (for shared strategy). If None, uses first PTA in file_data.
+        combine_components: List of components to share (for shared strategy).
             Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
-        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
+        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for shared strategy)
         exclude_from_shared: Canonical parameter names kept PTA-specific even
             when their component is merged. Defaults to ("DM",).
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
         use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
+        clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: AlignmentPolicy for the multi-PTA common profile.
             None means AlignmentPolicy(). Passing a policy together with
             combination_strategy="per_pta" raises ValueError.
@@ -182,22 +195,30 @@ Create MetaPulsar objects for multiple pulsars.
 ```python
 def create_all_metapulsars(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
+    alignment_policy: AlignmentPolicy | None = None,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all pulsars in file_data.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
         combination_strategy: Strategy for combining PTAs
         reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
-        combine_components: List of components to make consistent
+        combine_components: List of components to share
         add_dm_derivatives: Whether to ensure DM1, DM2 are present
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+        exclude_from_shared: Canonical parameter names kept PTA-specific.
+        parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+        use_pulse_numbers: Pulse-number tracking mode.
+        clock_dir: Optional directory containing local clock-correction files.
+        alignment_policy: Alignment policy for the shared strategy.
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
@@ -213,7 +234,7 @@ def pta_summary(file_data: Dict[str, List[Dict[str, Any]]]) -> None:
     """Print summary of discovered PTA data.
     
     Args:
-        file_data: File data from FileDiscoveryService
+        file_data: File data from FileDiscovery
     """
 ```
 
@@ -274,7 +295,7 @@ def get_pulsar_names_from_file_data(
     """Extract pulsar names from file data using position-based catalog identity.
     
     Args:
-        file_data: File data from FileDiscoveryService
+        file_data: File data from FileDiscovery
         
     Returns:
         List of catalog names (B-preferred when parfiles use B-names, e.g. 'B1855+09')
@@ -293,7 +314,7 @@ def filter_file_data_by_pulsars(
     """Filter file data to specific pulsars.
     
     Args:
-        file_data: File data from FileDiscoveryService
+        file_data: File data from FileDiscovery
         pulsar_names: Catalog names (PSRJ/PSR/PSRB) or path-derived aliases
         
     Returns:

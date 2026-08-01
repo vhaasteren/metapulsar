@@ -875,7 +875,9 @@ class TestSinglePtaSharedDmxWarning:
     def test_par_content_has_dmx(self):
         assert _par_content_has_dmx("PSR J1640+2224\nDMX_0001 0.01 1\n")
         assert _par_content_has_dmx("DMX 12\n")
+        assert _par_content_has_dmx("DMXR1_0002 55000\n")
         assert not _par_content_has_dmx("PSR J1640+2224\nDM 18.4 1\n")
+        assert not _par_content_has_dmx("DMXTHING 18.4\n")
 
     def test_warns_for_single_pta_shared_with_dmx(self):
         factory = MetaPulsarFactory()
@@ -1028,6 +1030,21 @@ class TestAlignmentPolicyForwarding:
                 combination_strategy="per_pta",
                 alignment_policy=AlignmentPolicy(),
             )
+
+    def test_create_all_rejects_policy_with_per_pta_before_processing(self):
+        from metapulsar import AlignmentPolicy
+
+        with (
+            patch.object(self.factory, "_ensure_parfile_content") as ensure_content,
+            pytest.raises(ValueError, match="only applies to.*shared"),
+        ):
+            self.factory.create_all_metapulsars(
+                self._file_data(),
+                combination_strategy="per_pta",
+                alignment_policy=AlignmentPolicy(),
+            )
+
+        ensure_content.assert_not_called()
 
     def test_per_pta_strategy_without_policy_is_accepted(self):
         with (

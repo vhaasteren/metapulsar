@@ -1,7 +1,7 @@
 # Release-shape fixtures
 
 Compact par files representing the deterministic-model shapes MetaPulsar meets
-in current and development PTA releases. They exist so the consistent
+in current and development PTA releases. They exist so the shared
 combination strategy can be exercised end-to-end without any local data
 release; see `tests/test_release_shape_alignment.py`.
 
@@ -17,6 +17,7 @@ an ecliptic-coordinate binary MSP at `ELONG 244.35 / ELAT -10.07`.
 | `pint_only_a.par`, `pint_only_b.par` | pint | PINT-only multi-PTA stack with troposphere and planetary Shapiro enabled |
 | `binary_ell1h_h3stig.par` | pint | ELL1H orthometric `H3`+`STIG` (absorbed-Shapiro path) |
 | `binary_ddk.par` | tempo2 | DDK with `KIN`/`KOM`, for the ecliptic `KOM` transformation |
+| `minimal.tim` | both | Three synthetic TOAs used to materialize the aligned PINT and Tempo2 models |
 
 The values are synthetic and deliberately unphysical in detail; only the
 *shape* of the deterministic model matters here.

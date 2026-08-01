@@ -25,8 +25,8 @@ Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about
 
 MetaPulsar uses **PINT** and **Tempo2/libstempo** to parse/realize timing models, and MetaPulsar-owned `_PtaTimingData` records to hold per-PTA arrays. The implementation provides two combination modes:
 
-* **consistent** (default): make consistent astrophysical timing‑model components across PTAs while preserving detector‑specific timing‑model terms;
-* **composite**: leave all `.par` files untouched and compose them as‑is (useful for diagnostics; everything remains PTA‑specific).
+* **shared** (default): share selected astrophysical timing‑model components across PTAs while preserving detector‑specific timing‑model terms;
+* **per_pta**: leave all `.par` files untouched and compose them as‑is (useful for diagnostics; everything remains PTA‑specific).
 
 ### Step 0: Aggregate switches and the common deterministic surface
 
@@ -60,31 +60,36 @@ off) and `SWM 1` (PINT's non‑constant solar wind) are violations, and under th
 default policy they are normalized rather than merely dropped — see Step 3.
 
 A **single‑PTA** pulsar has no second engine or reference to align against, so
-its native deterministic model is preserved exactly; none of Step 0 or Step 3
-applies to it.
+Step 0 and the cross‑PTA parts of Step 3 are skipped and its native timescale is
+preserved. The `shared` strategy can still perform its normal component and
+dispersion cleanup (including DMX removal when dispersion is selected) and can
+make Tempo2's implicit `NE_SW` explicit. Use `per_pta` when the release model
+must remain byte-for-byte unchanged.
 
 Users who need engine‑native terms preserved should use
 `combination_strategy="per_pta"`, which performs no alignment at all.
 
 ### Step 1: Unit normalization
 
-For the **shared** strategy MetaPulsar then normalizes every `.par` onto one
-explicit timescale:
+For the **shared** strategy MetaPulsar uses this timescale policy:
 
-1. Every par written by this path carries exactly one active `UNITS TDB` line.
-   PINT otherwise performs the TCB conversion internally, hiding the
-   representation it actually evaluates from the shared par files.
+1. Mixed PINT/Tempo2 stacks are normalized to explicit TDB, including an
+   all‑TCB input collection. PINT otherwise performs the TCB conversion
+   internally, hiding the representation it actually evaluates.
 
    * For PINT models MetaPulsar re‑emits the model in TDB;
    * For Tempo2 models MetaPulsar calls the `transform tdb` plugin (both paths are implemented).
 
-2. A TDB par that already states `UNITS TDB` is left byte-identical; a TDB par
-   with no `UNITS` line is only stamped, not reformatted.
+2. A genuinely mixed TCB/TDB multi‑PTA collection is normalized to TDB even
+   when all PTAs use the same engine.
 
-3. A Tempo2 par with no `UNITS` line counts as TCB, which is what Tempo2
+3. A homogeneous single‑engine collection keeps its common native timescale,
+   as does a single PTA.
+
+4. A Tempo2 par with no `UNITS` line counts as TCB, which is what Tempo2
    assumes, and `UNITS SI` is accepted as the Tempo2 spelling of TCB.
 
-4. Converted text is re‑parsed and required to carry exactly one explicit
+5. Converted text is re‑parsed and required to carry exactly one explicit
    `UNITS TDB`; duplicate active `UNITS` lines are rejected rather than silently
    resolved.
 
@@ -170,8 +175,9 @@ parity floor is emitted.
 
 #### Reference conventions
 
-Every PTA adopts the resolved `EPHEM` and clock realization, written under
-whichever alias that PTA already uses (`CLOCK` or `CLK`).
+Every PTA adopts the resolved `EPHEM` and clock realization. The clock is
+written with the receiving engine's native keyword: `CLOCK` for PINT and `CLK`
+for Tempo2/libstempo.
 
 #### The explicit mixed‑engine profile
 

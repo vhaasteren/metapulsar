@@ -699,6 +699,13 @@ class TestAstrometryStyleHelpers:
         assert has_parameter_alias(parfile_dict, "ELAT")
         assert not has_parameter_alias(parfile_dict, "RAJ")
 
+    def test_parameter_component_category_uses_pint_prefix_metadata(self):
+        from metapulsar.pint_helpers import parameter_belongs_to_component_category
+
+        assert parameter_belongs_to_component_category("DMX_0001", "dispersion_dmx")
+        assert parameter_belongs_to_component_category("DMXR1_0002", "dispersion_dmx")
+        assert not parameter_belongs_to_component_category("DMXTHING", "dispersion_dmx")
+
     def test_detect_astrometry_style_equatorial_aliases(self):
         from metapulsar.pint_helpers import detect_astrometry_style
 

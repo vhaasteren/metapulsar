@@ -18,6 +18,8 @@ from typing import (
 from pint.models import TimingModel
 from pint.models.model_builder import parse_parfile
 from pint.models.parameter import Parameter
+from pint.exceptions import PrefixError
+from pint.utils import split_prefixed_name
 from contextlib import contextmanager
 from pathlib import Path
 import tempfile
@@ -129,6 +131,46 @@ def detect_astrometry_style(parfile_dict: Dict[str, Any]) -> str:
     raise ValueError(
         "Could not detect astrometry style. Expected either RAJ/DECJ or "
         "LAMBDA/BETA (or ELONG/ELAT)."
+    )
+
+
+def parameter_belongs_to_component_category(
+    param_name: str, component_category: str
+) -> bool:
+    """Return whether PINT assigns a parameter to a component category.
+
+    This uses PINT's cached component registry rather than constructing a full
+    timing model. Indexed parameters are matched to the registered prefix
+    template, so arbitrary indices are recognized.
+    """
+    canonical = pint_parameter_name(param_name)
+    if canonical is None:
+        return False
+
+    all_components = _get_all_components()
+    component_names = set(all_components.param_component_map.get(canonical, ()))
+
+    try:
+        canonical_prefix = split_prefixed_name(canonical)[0]
+    except PrefixError:
+        canonical_prefix = None
+
+    if canonical_prefix is not None and not component_names:
+        for (
+            registered,
+            registered_components,
+        ) in all_components.param_component_map.items():
+            try:
+                registered_prefix = split_prefixed_name(registered)[0]
+            except PrefixError:
+                continue
+            if registered_prefix == canonical_prefix:
+                component_names.update(registered_components)
+
+    return any(
+        component.category == component_category
+        for name in component_names
+        if (component := all_components.components.get(name)) is not None
     )
 
 
@@ -352,56 +394,6 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
                 result += param.as_parfile_line(format=format)
 
     return result
-
-
-def create_minimal_parfile_for_component(parfile_dict: Dict, component) -> str:
-    """Create minimal parfile for component discovery using PINT component system.
-
-    Args:
-        parfile_dict: Parsed parfile dictionary
-        component: String or list of strings specifying component(s) to include.
-                  Spindown is always included as PINT requires it.
-    """
-    # Normalize component to list
-    if isinstance(component, str):
-        components = [component]
-    else:
-        components = list(component)
-
-    # Always include spindown - PINT cannot process parfile without it
-    if "spindown" not in components:
-        components.append("spindown")
-
-    # Create PINT model from parfile dictionary
-    model = create_pint_model(parfile_dict)
-
-    # Get category mapping from PINT
-    category_mapping = get_category_mapping_from_pint()
-
-    # Extract parameters from all requested components
-    component_params = set()
-    for comp_name in components:
-        target_category = category_mapping.get(comp_name)
-        if not target_category:
-            continue
-
-        for comp in model.components.values():
-            if hasattr(comp, "category") and comp.category == target_category:
-                if hasattr(comp, "params"):
-                    component_params.update(comp.params)
-
-    # Create minimal parfile content
-    minimal_lines = []
-    for param in component_params:
-        if param in parfile_dict:
-            value = parfile_dict[param]
-            if isinstance(value, list):
-                value_str = " ".join(str(v) for v in value)
-            else:
-                value_str = str(value)
-            minimal_lines.append(f"{param} {value_str}")
-
-    return "\n".join(minimal_lines)
 
 
 def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]:

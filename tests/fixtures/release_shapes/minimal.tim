@@ -1,0 +1,4 @@
+FORMAT 1
+synthetic_01 1400.0 55000.000000000 1.0 g -fe Rcvr_800 -B 20CM
+synthetic_02 1400.0 55010.000000000 1.0 g -fe Rcvr1_2 -B 20CM
+synthetic_03 1400.0 55020.000000000 1.0 g -fe Rcvr_800 -B 20CM

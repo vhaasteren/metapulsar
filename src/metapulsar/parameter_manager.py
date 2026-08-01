@@ -10,6 +10,7 @@ This module consolidates all parameter management functionality:
 from __future__ import annotations
 
 import re
+import math
 import tempfile
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ import logging
 
 from pint.models.model_builder import parse_parfile
 from pint.models.timing_model import TimingModel
+from pint.models.binary_ell1 import BinaryELL1H
 
 from .pint_helpers import (
     Ell1hShapiroMode,
@@ -46,9 +48,9 @@ UnsupportedPolicy = Literal["strip", "error"]
 
 @dataclass(frozen=True)
 class AlignmentPolicy:
-    """Policy for the multi-PTA ``consistent`` combination strategy.
+    """Policy for the multi-PTA ``shared`` combination strategy.
 
-    The consistent strategy rewrites every PTA's par file onto one common
+    The shared strategy rewrites every PTA's par file onto one common
     PINT/Tempo2 deterministic surface. Terms outside that surface are stripped
     by default; ``unsupported="error"`` turns them into a hard failure instead.
     Everything else in the profile (TDB, IERS2003, IAU2000B, FB90, and the
@@ -73,8 +75,21 @@ class AlignmentPolicy:
     def __post_init__(self) -> None:
         if self.unsupported not in {"strip", "error"}:
             raise ValueError("unsupported must be 'strip' or 'error'")
-        if self.ne_sw is not None and self.ne_sw < 0:
-            raise ValueError("ne_sw must be non-negative")
+        if self.bipm_version is not None and (
+            isinstance(self.bipm_version, bool)
+            or not isinstance(self.bipm_version, int)
+            or not 1000 <= self.bipm_version <= 9999
+        ):
+            raise ValueError("bipm_version must be a four-digit integer year")
+        if self.ne_sw is not None:
+            if isinstance(self.ne_sw, bool):
+                raise ValueError("ne_sw must be a finite non-negative number")
+            try:
+                ne_sw = float(self.ne_sw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("ne_sw must be a finite non-negative number") from exc
+            if not math.isfinite(ne_sw) or ne_sw < 0:
+                raise ValueError("ne_sw must be a finite non-negative number")
 
 
 def normalize_timing_package(package: Optional[str]) -> str:
@@ -233,33 +248,6 @@ _PLANET_PERTURBATION_RE = re.compile(r"^(?:DMASSPLANET|DPHASEPLANET)[1-9]$")
 #: Tempo2 controls that stay in the written par but must not reach PINT's
 #: ModelBuilder when a temporary model is built during alignment.
 _TEMPO2_LOCAL_CONTROLS = {"IPM", "FDDC", "FDDI"}
-
-#: Canonical fields copied back after a numeric ecliptic transformation.
-#: Ordered so the rewritten par keeps a deterministic layout.
-_ECL_COPY_KEYS = (
-    "ELONG",
-    "ELAT",
-    "PMELONG",
-    "PMELAT",
-    "POSEPOCH",
-    "ECL",
-    "KOM",  # present for orientation-dependent DDK cases
-)
-
-#: Every input spelling replaced by the transformed astrometry (upper case).
-_ECL_INPUT_ALIASES = frozenset(
-    {
-        "ELONG",
-        "LAMBDA",
-        "ELAT",
-        "BETA",
-        "PMELONG",
-        "PMLAMBDA",
-        "PMELAT",
-        "PMBETA",
-        "ECL",
-    }
-)
 
 _BIPM_CLOCK_RE = re.compile(r"^TT\(BIPM(?P<year>\d{4})?\)$", re.IGNORECASE)
 
@@ -654,7 +642,7 @@ class ParameterManager:
     ) -> None:
         """Reject mutually exclusive H4 and STIG orthometric parameterizations."""
         present = {key.upper() for key in par}
-        stigma_names = present & {"STIG", "STIGMA", "VARSIGMA"}
+        stigma_names = present & set(get_aliases_for_parameter("STIGMA"))
         if "H4" not in present or not stigma_names:
             return
 
@@ -862,12 +850,34 @@ class ParameterManager:
     def _convert_units_if_needed(
         self, parfile_contents: Dict[str, str]
     ) -> Dict[str, str]:
-        """Normalize every supplied par to explicit UNITS TDB.
+        """Normalize to TDB only when the stack requires a common timescale.
 
         Operates on the text it is given. It previously discarded its argument
         and re-read ``self.file_data``, which would undo chart alignment
         (feature doc invariant 1).
+
+        Mixed PINT/Tempo2 stacks always use explicit TDB. Homogeneous
+        single-engine stacks preserve a common native timescale, while
+        genuinely mixed TCB/TDB inputs are normalized to TDB. A single PTA
+        likewise preserves its native timescale.
         """
+        file_units = {
+            pta_name: self._effective_units_for_content(pta_name, content)
+            for pta_name, content in parfile_contents.items()
+        }
+        if len(parfile_contents) <= 1:
+            self.logger.info("Unit normalization skipped (reason=single_pta)")
+            return parfile_contents
+
+        unique_units = set(file_units.values())
+        mixed_engines = self._is_cross_engine_mix(self._normalized_timing_packages())
+        if len(unique_units) == 1 and not mixed_engines:
+            self.logger.info(
+                "Unit normalization skipped "
+                "(reason=homogeneous_single_engine_timescale)"
+            )
+            return parfile_contents
+
         self.logger.info("Normalizing all par files to explicit UNITS TDB")
         return {
             pta_name: self._normalize_parfile_to_tdb(pta_name, content)
@@ -1137,15 +1147,14 @@ class ParameterManager:
                 "AlignmentPolicy.ephem is not set"
             )
 
-        clock = (
-            policy.clock
-            or _first_token(reference_dict.get("CLOCK"))
-            or _first_token(reference_dict.get("CLK"))
+        clock_aliases = get_aliases_for_parameter("CLOCK")
+        clock = policy.clock or _first_token(
+            self._first_alias_value(reference_dict, "CLOCK")
         )
         if clock is None:
             raise ValueError(
                 "Consistent alignment requires a clock realization: no alias "
-                "from ['CLOCK', 'CLK'] found in reference PTA "
+                f"from {clock_aliases} found in reference PTA "
                 f"{self.reference_pta} and AlignmentPolicy.clock is not set"
             )
 
@@ -1204,7 +1213,7 @@ class ParameterManager:
         """Write the resolved clock with the target engine's native keyword."""
         package = self._normalize_timing_package(self._get_timing_package(pta_name))
         target_key = "CLK" if package == "tempo2" else "CLOCK"
-        for alias in ("CLOCK", "CLK"):
+        for alias in get_aliases_for_parameter("CLOCK"):
             parfile_dict.pop(alias, None)
         parfile_dict[target_key] = [value]
 
@@ -1257,20 +1266,21 @@ class ParameterManager:
         """Align heterogeneous T2CMETHOD conventions for tempo2-only stacks."""
         t2_values = {state["t2cmethod"] for state in convention_states.values()}
         if len(t2_values) > 1:
-            if "T2CMETHOD" not in reference_dict:
-                self.logger.info(
-                    "T2CMETHOD alignment skipped (reason=reference_missing_t2cmethod)"
-                )
-            else:
-                for pta_name, parfile_dict in parfile_dicts.items():
+            reference_t2cmethod = (
+                self._parse_t2cmethod_value(reference_dict) or "IAU2000B"
+            )
+            for pta_name, parfile_dict in parfile_dicts.items():
+                if reference_t2cmethod == "IAU2000B":
+                    parfile_dict["T2CMETHOD"] = ["IAU2000B"]
+                else:
                     self._align_parameter(
                         parfile_dict, reference_dict, "T2CMETHOD", required=False
                     )
-                    self.logger.info(
-                        f"PTA {pta_name}: consistent convention rules applied "
-                        "(reason=tempo2_only_t2cmethod_heterogeneous); "
-                        f"set T2CMETHOD={parfile_dict['T2CMETHOD'][0]}"
-                    )
+                self.logger.info(
+                    f"PTA {pta_name}: shared convention rules applied "
+                    "(reason=tempo2_only_t2cmethod_heterogeneous); "
+                    f"set T2CMETHOD={parfile_dict['T2CMETHOD'][0]}"
+                )
         else:
             self.logger.info(
                 "T2CMETHOD alignment skipped "
@@ -1282,13 +1292,15 @@ class ParameterManager:
         parfile_dicts: Dict[str, Dict[str, List[str]]],
         reference_dict: Dict[str, List[str]],
     ) -> None:
-        """Apply gated convention rules across consistent parfile dictionaries."""
-        ephem, clock = self._resolve_reference_conventions(reference_dict)
+        """Apply gated convention rules across shared parfile dictionaries."""
+        # Astrometry validation is local to each model and must still run for a
+        # single PTA, even though cross-PTA convention alignment is skipped.
         convention_states = self._collect_convention_states(parfile_dicts)
-
         if len(parfile_dicts) == 1:
-            self.logger.info("Consistent convention rules skipped (reason=single_pta)")
+            self.logger.info("Shared convention rules skipped (reason=single_pta)")
             return
+
+        ephem, clock = self._resolve_reference_conventions(reference_dict)
 
         # Multi-PTA combinations share the reference ephemeris and clock.
         self._align_reference_conventions(parfile_dicts, ephem, clock)
@@ -1387,6 +1399,22 @@ class ParameterManager:
             model = self._create_model_from_dict(par)
             epoch = model.POSEPOCH.quantity if "POSEPOCH" in model.params else None
             converted = model.as_ICRS(epoch=epoch).as_ECL(epoch=epoch, ecl=target_ecl)
+            astrometry = next(
+                component
+                for component in converted.components.values()
+                if component.category == "astrometry"
+            )
+            # ECL is an explicit MetaPulsar frame-policy field, and KOM is
+            # retained for orientation-dependent DDK models. Current PINT also
+            # includes ECL in AstrometryEcliptic.params.
+            canonical_copy_names = list(
+                dict.fromkeys([*astrometry.params, "ECL", "KOM"])
+            )
+            input_names = {
+                alias
+                for canonical in canonical_copy_names
+                for alias in get_aliases_for_parameter(canonical)
+            }
             written = StringIO()
             converted.write_parfile(written)
             transformed = parse_parfile(StringIO(written.getvalue()))
@@ -1397,9 +1425,9 @@ class ParameterManager:
             ) from e
 
         for key in list(par):
-            if key.upper() in _ECL_INPUT_ALIASES:
+            if key.upper() in input_names:
                 par.pop(key)
-        for key in _ECL_COPY_KEYS:
+        for key in canonical_copy_names:
             value = self._first_alias_value(transformed, key)
             if value is None:
                 par.pop(key, None)
@@ -1470,36 +1498,74 @@ class ParameterManager:
     def _declared_nharms(par: Dict[str, List[str]]) -> Optional[int]:
         """Return the harmonic count declared under either spelling, if any."""
         present = {key.upper(): key for key in par}
+        declared = []
         for name in ("NHARMS", "NHARM"):
             key = present.get(name)
             if key and par.get(key):
                 try:
-                    return int(str(par[key][0]).split()[0])
+                    declared.append(int(str(par[key][0]).split()[0]))
                 except (TypeError, ValueError, IndexError):
                     continue
-        return None
+        return max(declared) if declared else None
+
+    @staticmethod
+    def _ell1h_state(model: TimingModel) -> Tuple[Optional[str], Optional[int]]:
+        """Return PINT's selected ELL1H branch and effective harmonic count."""
+        ell1h = next(
+            (
+                component
+                for component in model.components.values()
+                if isinstance(component, BinaryELL1H)
+            ),
+            None,
+        )
+        if ell1h is None:
+            return None, None
+        if model.STIGMA.quantity is not None:
+            return "stigma", None
+        if model.H3.quantity is not None and model.H4.quantity is not None:
+            return "h4", int(model.NHARMS.value)
+        return None, None
 
     def _align_ell1h_nharms_for_all(
-        self, parfile_dicts: Dict[str, Dict[str, List[str]]]
+        self,
+        parfile_dicts: Dict[str, Dict[str, List[str]]],
+        pint_models: Dict[str, TimingModel],
     ) -> None:
-        """Give every PTA the same ELL1H harmonic count.
+        """Give mixed-engine ELL1H models the same effective harmonic count.
 
         ``NHARM`` is unknown to PINT and therefore never copied by the binary
         component merge, so the count has to be resolved once for the stack:
         the largest value any input declared, floored at 7. A finer truncation
         is always safe for both engines.
         """
+        if not self._is_cross_engine_mix(self._normalized_timing_packages()):
+            return
+
+        binary_is_shared = "binary" in self.combine_components
+        states = {}
+        effective_nharms = []
+        for pta_name in parfile_dicts:
+            model_name = self.reference_pta if binary_is_shared else pta_name
+            state, effective = self._ell1h_state(pint_models[model_name])
+            states[pta_name] = state
+            if effective is not None:
+                effective_nharms.append(effective)
+
         declared = [
             value
             for value in (self._declared_nharms(par) for par in parfile_dicts.values())
             if value is not None
         ]
-        nharms = max([*declared, 7])
-        for par in parfile_dicts.values():
-            self._align_ell1h_nharms(par, nharms)
+        nharms = max([*declared, *effective_nharms, 7])
+        for pta_name, par in parfile_dicts.items():
+            self._align_ell1h_nharms(par, states[pta_name], nharms)
 
     def _align_ell1h_nharms(
-        self, par: Dict[str, List[str]], nharms: Optional[int] = None
+        self,
+        par: Dict[str, List[str]],
+        state: Optional[str],
+        nharms: Optional[int] = None,
     ) -> None:
         """Ensure NHARM (tempo2) and NHARMS (PINT) >= 7 for H3+H4 ELL1H/T2 pars.
 
@@ -1516,15 +1582,12 @@ class ParameterManager:
         binary model of each written par.
         """
         present = {key.upper(): key for key in par}
-        has_stig = "STIG" in present or "STIGMA" in present
-        if has_stig:
+        if state == "stigma":
             for name in ("NHARM", "NHARMS"):
                 if name in present:
                     par.pop(present[name])
             return
-        if "H4" not in present:
-            return
-        if "H3" not in present:
+        if state != "h4":
             return
 
         if nharms is None:
@@ -1643,7 +1706,7 @@ class ParameterManager:
 
         # The binary component merge decides each par's final orthometric model,
         # so the harmonic count is normalized last.
-        self._align_ell1h_nharms_for_all(parfile_dicts)
+        self._align_ell1h_nharms_for_all(parfile_dicts, pint_models)
 
         # Convert back to par file strings
         shared_parfiles = {}

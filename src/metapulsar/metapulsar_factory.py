@@ -35,19 +35,19 @@ from .pint_helpers import (
     resolved_tim_for_pulse_numbers,
     temporary_par_with_track_minus_2,
     validate_pulse_number_mode,
+    parameter_belongs_to_component_category,
 )
 
 
 def _par_content_has_dmx(par_content: str) -> bool:
     """Return True if a tempo2/PINT par string declares a DMX model."""
-    for line in par_content.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or s.upper().startswith("C "):
-            continue
-        key = s.split()[0].upper()
-        if key == "DMX" or key.startswith("DMX"):
-            return True
-    return False
+    from io import StringIO
+    from pint.models.model_builder import parse_parfile
+
+    return any(
+        parameter_belongs_to_component_category(key, "dispersion_dmx")
+        for key in parse_parfile(StringIO(par_content))
+    )
 
 
 _SINGLE_PTA_SHARED_DMX_WARNING = (
@@ -593,6 +593,12 @@ class MetaPulsarFactory:
             Dictionary mapping pulsar names to MetaPulsar objects
         """
         combination_strategy = normalize_combination_strategy(combination_strategy)
+        if alignment_policy is not None and combination_strategy != "shared":
+            raise ValueError(
+                "alignment_policy only applies to combination_strategy='shared'; "
+                f"got {combination_strategy!r}. The per_pta strategy preserves "
+                "each PTA's native deterministic model and performs no alignment."
+            )
         # 1. Ensure parfile content and TIM metadata are loaded
         validated_data = self._ensure_parfile_content(file_data)
         validated_data = self._ensure_tim_metadata(validated_data)

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from pint.models.model_builder import parse_parfile
 
+from metapulsar.metapulsar_factory import MetaPulsarFactory
 from metapulsar.parameter_manager import AlignmentPolicy, ParameterManager
 from metapulsar.pint_helpers import create_pint_model
 
@@ -37,7 +38,7 @@ def build_file_data(*shapes: tuple[str, str, str]) -> dict:
     return {
         pta_name: {
             "par": FIXTURE_DIR / f"{fixture}.par",
-            "tim": FIXTURE_DIR / f"{fixture}.tim",
+            "tim": FIXTURE_DIR / "minimal.tim",
             "timing_package": engine,
             "par_content": read_shape(fixture),
         }
@@ -184,6 +185,24 @@ class TestMixedEngineReleaseShapes:
         _, written = aligned
         roundtrip = tempo2_roundtrip(written["epta"], tmp_path / "roundtrip.par")
         assert "J1600-3053" in roundtrip
+
+    @needs_tempo2
+    def test_factory_materializes_both_declared_engines(self):
+        manager_data = build_file_data(
+            ("nanograv", "nanograv_style", "pint"),
+            ("epta", "epta_style", "tempo2"),
+        )
+        factory_data = {
+            pta_name: [dict(data)] for pta_name, data in manager_data.items()
+        }
+
+        metapulsar = MetaPulsarFactory().create_metapulsar(
+            factory_data,
+            use_pulse_numbers="no",
+        )
+
+        assert set(metapulsar._pta_data) == {"nanograv", "epta"}
+        assert all(len(record._toas) == 3 for record in metapulsar._pta_data.values())
 
 
 class TestAggregateAndUnsupportedShapes:
