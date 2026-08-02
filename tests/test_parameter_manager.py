@@ -30,6 +30,30 @@ from tests.helpers import make_tim_metadata
 pytestmark = pytest.mark.slow
 
 
+def _assert_total_coherent_fitparameters(fitparameters):
+    """Every emitted fitpar satisfies exactly one merged-or-local mapping state."""
+    for fitpar, owners in fitparameters.items():
+        assert isinstance(owners, dict) and owners, fitpar
+        assert all(
+            isinstance(pta, str) and pta and isinstance(native, str) and native
+            for pta, native in owners.items()
+        ), (fitpar, owners)
+        canonical = resolve_parameter_alias(fitpar)
+        if all(
+            resolve_parameter_alias(native) == canonical for native in owners.values()
+        ):
+            continue
+        assert len(owners) == 1, (fitpar, owners)
+        pta, native = next(iter(owners.items()))
+        suffix = f"_{pta}"
+        assert fitpar.endswith(suffix), (fitpar, owners)
+        stem = fitpar[: -len(suffix)]
+        assert resolve_parameter_alias(stem) == resolve_parameter_alias(native), (
+            fitpar,
+            owners,
+        )
+
+
 def align_conventions(parameter_manager, parfile_dicts, reference_dict):
     """Run the two shared-alignment steps in pipeline order.
 
@@ -462,6 +486,36 @@ UNITS TDB
         result = pm.build_parameter_mappings()
         assert "A1DOT" in result.fitparameters
         assert result.fitparameters["A1DOT"]["epta"] == "XDOT"
+        _assert_total_coherent_fitparameters(result.fitparameters)
+
+    def test_build_parameter_mappings_native_e_under_canonical_ecc(self):
+        """Tempo2 ``E`` is recorded under canonical ``ECC`` (BUG 001 producer shape)."""
+        file_data = {
+            "ng9": {
+                "timing_package": "tempo2",
+                "par_content": (
+                    "PSRJ J2302+4442\n"
+                    "F0 186.49408106798174691 1 0\n"
+                    "PEPOCH 55000\n"
+                    "DM 18.417 1 0\n"
+                    "BINARY T2\n"
+                    "PB 175.46066459623014253 1 0\n"
+                    "T0 51626.179967495799449 1 0\n"
+                    "A1 55.329722354525327725 1 0\n"
+                    "OM 50.733505043065199373 1 0\n"
+                    "E 0.0007972975541058369088 1 0\n"
+                    "EPHEM DE421\n"
+                    "CLK TT(BIPM2011)\n"
+                ),
+            }
+        }
+        pm = ParameterManager(
+            file_data=file_data,
+            combine_components=["binary"],
+        )
+        result = pm.build_parameter_mappings()
+        assert result.fitparameters["ECC"] == {"ng9": "E"}
+        _assert_total_coherent_fitparameters(result.fitparameters)
 
     # ===== ERROR HANDLING TESTS =====
 

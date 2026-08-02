@@ -252,6 +252,86 @@ def test_metapulsar_timing_opens_nltiming_evaluator():
     }
 
 
+def test_public_mapping_ecc_e_enables_unsuffixed_kepler_chart():
+    """MetaPulsar ECC←E mapping feeds nltiming chart candidacy as one "" group."""
+    from types import SimpleNamespace
+
+    from metapulsar.parameter_manager import ParameterManager
+    from nltiming.physical_charts import (
+        KeplerLaplacePolicy,
+        _group_fitpars,
+        resolve_chart_candidates,
+    )
+    from nltiming.selection import fitpar_suffix
+
+    file_data = {
+        "ng9": {
+            "timing_package": "tempo2",
+            "par_content": (
+                "PSRJ J2302+4442\n"
+                "F0 186.49408106798174691 1 0\n"
+                "PEPOCH 55000\n"
+                "DM 18.417 1 0\n"
+                "BINARY T2\n"
+                "PB 175.46066459623014253 1 0\n"
+                "T0 51626.179967495799449 1 0\n"
+                "A1 55.329722354525327725 1 0\n"
+                "OM 50.733505043065199373 1 0\n"
+                "E 0.0007972975541058369088 1 0\n"
+                "EPHEM DE421\n"
+                "CLK TT(BIPM2011)\n"
+            ),
+        }
+    }
+    result = ParameterManager(
+        file_data=file_data,
+        combine_components=["binary"],
+    ).build_parameter_mappings()
+
+    mapping_host = SimpleNamespace(
+        fitpars=list(result.fitparameters),
+        _fitparameters=result.fitparameters,
+    )
+    mapping = MetaPulsar.timing_parameter_mapping(mapping_host)
+    assert mapping["ECC"] == {"ng9": "E"}
+
+    chart_fitpars = tuple(
+        name for name in ("ECC", "OM", "T0", "PB", "A1") if name in mapping
+    )
+
+    class _ChartHost:
+        fitpars = chart_fitpars
+
+        def timing_parameter_mapping(self):
+            return {name: dict(mapping[name]) for name in self.fitpars}
+
+        def pint_model(self):
+            return None
+
+    class _Engine:
+        def reference_theta_exact(self):
+            return {
+                "ECC": "8e-4",
+                "OM": "50.733505043065199373",
+                "T0": "51626.179967495799449",
+                "PB": "175.46066459623014253",
+                "A1": "55.329722354525327725",
+            }
+
+    pulsar = _ChartHost()
+    assert fitpar_suffix(pulsar, "ECC") == ""
+    groups = _group_fitpars(pulsar)
+    assert set(groups) == {""}
+    assert set(groups[""]) >= {"ECC", "OM", "T0"}
+    (cand,) = resolve_chart_candidates(
+        pulsar, _Engine(), KeplerLaplacePolicy(mode="auto")
+    )
+    assert cand.suffix == ""
+    assert cand.skip_reason is None
+    assert cand.chart is not None
+    assert cand.engine_names == ("ECC", "OM", "T0")
+
+
 def test_filtered_pulsar_rejects_unaligned_live_timing_contributions():
     pulsar = _build_real_pulsar()
     pulsar.filter_data(mask=np.arange(len(pulsar.toas)) % 2 == 0)
