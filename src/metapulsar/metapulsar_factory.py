@@ -345,8 +345,10 @@ class MetaPulsarFactory:
 
             self._warn_single_pta_shared_dmx_strip(single_file_data, combine_components)
             engine_pars = parameter_manager.make_parfiles_shared()
+            binary_conversion_report = parameter_manager.last_binary_conversion_report
         else:
             engine_pars = parameter_manager.engine_parfiles()
+            binary_conversion_report = None
             if parfile_output_dir:
                 # Writes file_dict["par_content"], which is never mutated, so an
                 # "original" dump remains the data release's own bytes.
@@ -374,7 +376,7 @@ class MetaPulsarFactory:
         else:
             pulsars, pta_files = created, {}
 
-        return MetaPulsar(
+        mp = MetaPulsar(
             pulsars=pulsars,
             combination_strategy=combination_strategy,
             combine_components=combine_components,
@@ -383,6 +385,8 @@ class MetaPulsarFactory:
             pta_files=pta_files,
             clock_dir=clock_dir,
         )
+        mp.binary_conversion_report = binary_conversion_report
+        return mp
 
     def _validate_single_pulsar_data(
         self, file_data: Dict[str, List[Dict[str, Any]]]

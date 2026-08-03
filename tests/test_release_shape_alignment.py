@@ -47,12 +47,21 @@ def build_file_data(*shapes: tuple[str, str, str]) -> dict:
 
 
 def align(file_data: dict, tmp_path: Path, policy: AlignmentPolicy | None = None):
-    """Run the shared strategy and return {pta: parsed par dict}."""
+    """Run the shared strategy and return {pta: parsed par dict}.
+
+    Defaults to ``binary_conversion="off"``. This module tests the *alignment*
+    layer — engine-native family pass-through, dual NHARM/NHARMS spellings,
+    H3/H4 merge shapes — which stays fully live for every stack the gate does
+    not convert (skip, ``keep``, ``per_pta``, single-engine). Leaving conversion
+    on would rewrite these mixed-engine ELL1-family fixtures to DD/DDH and
+    assert the conversion layer instead. ``TestBinaryFamilyConversionShapes``
+    below covers the converted shapes on the same fixtures.
+    """
     manager = ParameterManager(
         file_data=file_data,
         output_dir=tmp_path,
         pulsar_name="J1600-3053",
-        alignment_policy=policy,
+        alignment_policy=policy or AlignmentPolicy(binary_conversion="off"),
     )
     written = manager.make_parfiles_shared()
     # parse_parfile returns a defaultdict(list); make it a plain dict so a
@@ -266,7 +275,11 @@ class TestAggregateAndUnsupportedShapes:
             ("epta_pint", "pint_only_a", "tempo2"),
         )
         with pytest.raises(ValueError, match="unsupported timing parameters"):
-            align(file_data, tmp_path, AlignmentPolicy(unsupported="error"))
+            align(
+                file_data,
+                tmp_path,
+                AlignmentPolicy(unsupported="error", binary_conversion="off"),
+            )
 
 
 class TestPintOnlyReleaseShape:
@@ -381,3 +394,78 @@ class TestBinaryShapes:
         assert first(ddk["ECL"]) == "IERS2003"
         assert "KOM" in ddk
         assert float(first(ddk["KOM"])) == pytest.approx(76.0, abs=1e-2)
+
+
+class TestBinaryFamilyConversionShapes:
+    """The same fixtures under the DEFAULT policy, where the gate fires.
+
+    ``align()`` pins ``binary_conversion="off"`` so the alignment-layer classes
+    above keep asserting engine-native shapes. These tests cover what the
+    default policy actually delivers for those fixtures, so neither layer is
+    left untested.
+    """
+
+    @needs_tempo2
+    def test_ell1h_h3_stig_converts_to_ddh_with_native_spellings(self, tmp_path):
+        file_data = build_file_data(
+            ("pint_pta", "binary_ell1h_h3stig", "pint"),
+            ("t2_pta", "epta_style", "tempo2"),
+        )
+        parsed, _ = align(file_data, tmp_path, AlignmentPolicy())
+
+        for pta_name, par in parsed.items():
+            assert first(par["BINARY"]) == "DDH", pta_name
+            assert "H3" in par, pta_name
+            for gone in ("EPS1", "EPS2", "TASC", "NHARM", "NHARMS", "H4"):
+                assert gone not in par, f"{pta_name}: {gone}"
+        # Tempo2 reads the orthometric ratio as STIG only; PINT keeps STIGMA.
+        assert "STIG" in parsed["t2_pta"] and "STIGMA" not in parsed["t2_pta"]
+        assert "STIGMA" in parsed["pint_pta"] and "STIG" not in parsed["pint_pta"]
+
+    @needs_tempo2
+    def test_plain_ell1_reference_converts_to_dd(self, tmp_path):
+        file_data = build_file_data(
+            ("nanograv", "nanograv_style", "pint"),
+            ("epta", "epta_style", "tempo2"),
+        )
+        parsed, _ = align(file_data, tmp_path, AlignmentPolicy())
+
+        # The reference (NANOGrav) is a plain ELL1, so the merged block is
+        # plain and converts to DD — not DDH.
+        for pta_name, par in parsed.items():
+            assert first(par["BINARY"]) == "DD", pta_name
+            assert {"ECC", "OM", "T0"} <= set(par), pta_name
+            for gone in ("EPS1", "EPS2", "TASC", "H3", "H4", "NHARM", "NHARMS"):
+                assert gone not in par, f"{pta_name}: {gone}"
+
+    @needs_tempo2
+    def test_h3_h4_reference_refuses_on_the_series_tail(self, tmp_path):
+        """H3+H4 converts only when the dropped NHARMS tail is under the gate.
+
+        Here the tail is 3.75 ns against a 1 ns visibility knob, so converting
+        would silently change the delivered delay: refuse with the reason and
+        the measured bound, or keep the aligned ELL1H under ``"keep"``.
+        """
+        from metapulsar.binary_family_convert import BinaryConversionError
+
+        file_data = build_file_data(
+            ("epta", "epta_style", "tempo2"),
+            ("nanograv", "nanograv_style", "pint"),
+        )
+        with pytest.raises(
+            BinaryConversionError, match="ell1h_h4_tail_exceeds_tolerance"
+        ) as excinfo:
+            align(file_data, tmp_path, AlignmentPolicy())
+        assert "tail_bound_s=" in str(excinfo.value)
+
+        # "keep" downgrades it to a warning and leaves the aligned orthometric
+        # block intact — engine-native family (the EPTA reference is T2-EPS
+        # carrying H-terms), harmonic spellings and all.
+        parsed, _ = align(
+            file_data, tmp_path, AlignmentPolicy(unsupported_binary="keep")
+        )
+        for pta_name, par in parsed.items():
+            assert first(par["BINARY"]) == "T2", pta_name
+            assert "H4" in par, pta_name
+            assert int(first(par["NHARM"])) == 7, pta_name
+            assert int(first(par["NHARMS"])) == 7, pta_name

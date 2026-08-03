@@ -258,6 +258,27 @@ and single‑PTA paths keep PINT's published defaults.
 `tests/test_cross_engine_parity.py` measures both mechanisms by idealizing TOAs
 with PINT and re‑timing them with Tempo2.
 
+#### Gated ELL1-family → DD/DDH conversion (mixed engines)
+
+When `"binary"` is shared on a mixed PINT+Tempo2 stack, MetaPulsar applies a
+**scale gate** (not a residual floor)
+`scale_s = a1_max·e_max² + ½·n_b·a1_max²·e_max` (§6.3). Above the default 1 ns
+threshold it **losslessly rewrites** supported plain ELL1/T2-EPS binaries to
+`BINARY DD` (via `pint.binaryconvert` plus the §7.6 δT0 and TASC→T0
+re-referencing corrections) and supported ELL1H blocks with a complete
+orthometric pair to `BINARY DDH` (gauge-correct first-party map). A mandatory
+mean-removed delay-fidelity check (derived tolerances) guards the rewrite.
+Unsupported families (ELL1k, FB series, H3-only under the default
+`h3_only="error"`, H4 series tails above threshold, …) raise
+`BinaryConversionError` with a remediation list, or proceed unconverted under
+`unsupported_binary="keep"`. H3-only sources may convert under
+`h3_only="sample_stigma"` with `stigma_central`/`stigma_provenance`; the
+emitted STIGMA is a prior center (`required_sampling=("STIGMA",)` on the
+conversion report / `MetaPulsar.conversion_metadata()`), never a measurement.
+nltiming may then recondition fully delta-flat Kepler triples via
+`MarginalBasisFrame` and enforce the STIGMA sampling contract. See
+`feature_ell1h_truncation_fixw_nltiming.md`.
+
 For cross-engine parity motivation and validation context, see Luo et al. 2021,
 *ApJ* 911, 45, [doi:10.3847/1538-4357/abe62f](https://doi.org/10.3847/1538-4357/abe62f).
 This method description intentionally does not reproduce the full paper
@@ -345,12 +366,14 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 * It **does not** change TOAs, TOA uncertainties, or backend flags.
 * It **does not** decide noise hyperparameters; EFAC/EQUAD/ECORR and the red/DM noise models are inferred in the usual way in Enterprise/Discovery after the metapulsar is constructed.
-* It **does not** convert `DMMODEL` grids to DMX or to a Taylor expansion, and
-  it does not convert between binary families: `BINARY` lines are left alone and
-  a `T2` model is resolved by PINT's own `allow_T2` guessing.
-* It **does not** rewrite `(A1, EPS1, …)` between the Freire & Wex Eq. 28 and
-  Eq. 29 gauges. Selecting which expression PINT evaluates is in scope;
-  converting the printed parameters is not.
+* It **does not** convert `DMMODEL` grids to DMX or to a Taylor expansion.
+  Binary-family conversion is gated and limited to the supported ELL1/ELL1H
+  sets above; unsupported families are refused (or kept under policy), never
+  silently degraded. A `T2` model without EPS remains resolved by PINT's
+  `allow_T2` guessing only.
+* Outside the gated conversion path it **does not** rewrite `(A1, EPS1, …)`
+  between the Freire & Wex Eq. 28 and Eq. 29 gauges — selecting which
+  expression PINT evaluates (`ell1h_shapiro`) is separate from conversion.
 * It **does not** refit after stripping unsupported terms, nor reconcile the
   external realizations (clock files, IERS tables, downloaded ephemerides) that
   each package resolves independently from the same `EPHEM`/`CLK` strings.
@@ -363,7 +386,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 2. **Normalize units**: every par is written with an explicit `UNITS TDB`; TCB inputs are converted by their own timing package.
 3. **Transform ecliptic astrometry** numerically onto one obliquity convention (never a relabel).
 4. **Apply shared convention rules**: for single‑PTA pulsars, skip multi‑PTA alignment; for multi‑PTA pulsars, align `NE_SW`, the resolved `EPHEM` and dated clock, then the engine‑gated rules — the full explicit profile when both PINT and tempo2 are present, otherwise only heterogeneous single‑engine conventions.
-5. **Make shared** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, preserve each PTA's local DM value and mark it free, set DMEPOCH (frozen), add DM1/DM2 (free, 0). Then normalize the ELL1H harmonic count for the merged binary model.
+5. **Make shared** selected components by copying reference PTA values; **leave detector‑specific timing‑model parameters as PTA‑local**; for dispersion: remove DMX, preserve each PTA's local DM value and mark it free, set DMEPOCH (frozen), add DM1/DM2 (free, 0). Then normalize the ELL1H harmonic count for the merged binary model, and — on mixed-engine stacks — apply the gated ELL1→DD / ELL1H→DDH conversion when the scale gate fires.
 6. **Materialize** PTA timing records (PINT or Tempo2 path). Validate same pulsar by coordinates.
 7. **Map parameters** into merged and PTA‑specific meta‑parameters (deterministic mapping).
 8. **Concatenate** per‑PTA arrays (TOAs, flags, etc.) without modification.

@@ -312,6 +312,12 @@ def create_pint_model(
         # Handle both string and dict inputs
         if isinstance(parfile_data, str):
             parfile_data = StringIO(parfile_data)
+        elif isinstance(parfile_data, dict) and "C" in parfile_data:
+            # PINT's *text* parser treats a leading "C " as a comment
+            # (``parse_parfile``'s ``comments=("#", "C ")``), but the dict path
+            # bypasses that and warns "Unrecognized parfile line". Drop comment
+            # entries so a dict round-trips like its serialized form.
+            parfile_data = {k: v for k, v in parfile_data.items() if k != "C"}
         model = builder(
             parfile_data,
             allow_tcb=True,

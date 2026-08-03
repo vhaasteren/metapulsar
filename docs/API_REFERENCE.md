@@ -405,6 +405,15 @@ class AlignmentPolicy:
     clock: str | None = None
     bipm_version: int | None = None
     ne_sw: float | None = None
+
+    # Gated ELL1-family -> DD/DDH conversion (mixed PINT+Tempo2 only)
+    binary_conversion: Literal["auto", "off", "always"] = "auto"
+    binary_conversion_threshold_s: float = 1e-9
+    unsupported_binary: Literal["error", "keep"] = "error"
+    binary_fidelity_floor_s: float = 1e-10
+    h3_only: Literal["error", "sample_stigma"] = "error"
+    stigma_central: float | None = None
+    stigma_provenance: str | None = None
 ```
 
 | Field | Meaning |
@@ -414,9 +423,25 @@ class AlignmentPolicy:
 | `clock` | Override the reference PTA's `CLOCK`/`CLK`. Required when no PTA declares one. |
 | `bipm_version` | Year used to resolve a bare `TT(BIPM)`, which is otherwise ambiguous across environments and raises. A dated clock that disagrees with this year also raises. |
 | `ne_sw` | Override the resolved constant solar-wind density in cm⁻³. Without it: the reference PTA's explicit `NE_SW`/`NE1AU`/`SOLARN0`, else `4` when Tempo2 is in the stack, else no line. |
+| `binary_conversion` | `"auto"` (default) rewrites a shared ELL1-family binary to `DD`/`DDH` only when the scale gate fires; `"off"` never classifies or converts; `"always"` bypasses the threshold but **never** widens the supported family set. |
+| `binary_conversion_threshold_s` | Scale gate on `a1_max·e_max² + ½·n_b·a1_max²·e_max`, in seconds. Must be finite and > 0. This is a *scale gate*, not a predicted residual. |
+| `unsupported_binary` | What to do when the gate fires on a family outside the supported sets (ELL1k, `FB` series, ELL1H domain violation, H4 tail above threshold, H3-only under the default `h3_only`, unknown span, unsupported fit pattern). `"error"` (default) raises `BinaryConversionError` with the reason and a remediation list; `"keep"` warns, records the decision, and proceeds unconverted. |
+| `binary_fidelity_floor_s` | Absolute floor of the mandatory delay-fidelity tolerance. Must be finite and > 0. |
+| `h3_only` | ELL1H sources carrying `H3` but neither `STIGMA` nor `H4`. `"error"` (default) refuses: no fixed ς is determined by such a par. `"sample_stigma"` converts at `stigma_central` and marks `required_sampling=("STIGMA",)` — the emitted ς is a **prior center, never a measurement**, and the analysis must sample it (or use a proper z-prior). |
+| `stigma_central` | Prior-central ς in (0, 1] for `h3_only="sample_stigma"`. Required by, and only valid with, that mode. |
+| `stigma_provenance` | Free-text provenance for `stigma_central` (e.g. `"mass-function closure, m_p=1.4"`), copied into the conversion record and the emitted par comment. Required by, and only valid with, `"sample_stigma"`. |
 
-Constructor validation: `unsupported` must be `"strip"` or `"error"`, and
-`ne_sw` must be non-negative.
+Constructor validation: `unsupported` must be `"strip"` or `"error"`; `ne_sw`
+must be non-negative; `binary_conversion_threshold_s` and
+`binary_fidelity_floor_s` must be finite and > 0; and
+`stigma_central`/`stigma_provenance` may be set only when
+`h3_only="sample_stigma"` (which in turn requires both).
+
+Conversion applies only to `shared` stacks that carry **both** PINT and Tempo2
+and share `"binary"`; single-engine, non-shared-binary, and `per_pta` stacks are
+never converted. The result is reachable as
+`MetaPulsar.binary_conversion_report` (and `MetaPulsar.conversion_metadata()`
+for the nltiming STIGMA contract), reset on every materialization.
 
 The policy applies only to `combination_strategy="shared"`. Passing it with
 `"per_pta"` raises `ValueError` rather than being silently ignored; the

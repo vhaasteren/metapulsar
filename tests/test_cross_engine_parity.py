@@ -27,6 +27,7 @@ against a matched non-Shapiro control. The absolute ~1 ns figures quoted in
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -127,7 +128,10 @@ def align_mixed(tmp_path: Path, par_text: str) -> tuple[Path, str]:
         },
         output_dir=tmp_path / "aligned",
         pulsar_name="J1600-3053",
-        alignment_policy=AlignmentPolicy(ne_sw=0.0),
+        # binary_conversion="off": these tests assert the ELL1H absorbed
+        # evaluator and dual NHARM/NHARMS alignment, which conversion to DDH
+        # would short-circuit. P1–P4 below exercise the conversion path.
+        alignment_policy=AlignmentPolicy(ne_sw=0.0, binary_conversion="off"),
     )
     written = manager.make_parfiles_shared()
     return Path(written["t2"]), manager.ell1h_shapiro
@@ -197,5 +201,202 @@ class TestOrthometricHarmonicCount:
     def test_mixed_engine_alignment_restores_parity(self, tmp_path, control_rms):
         aligned, mode = align_mixed(tmp_path, H3_H4_PAR)
         assert "NHARM " in aligned.read_text(encoding="utf-8")
+        rms = tempo2_rms_ns(aligned, tmp_path, mode)
+        assert rms == pytest.approx(control_rms, abs=1.0)
+
+
+# ---------------------------------------------------------------------------
+# P1–P4: gated ELL1-family → DD/DDH conversion (§12.2)
+# ---------------------------------------------------------------------------
+
+J2145_PLAIN = """PSR J2145-0750
+EPHEM DE440
+CLOCK TT(BIPM2021)
+UNITS TDB
+RAJ 21:45:50.4
+DECJ -07:50:18
+F0 62.295 1
+PEPOCH 55000
+DM 0.0
+DMEPOCH 55000
+BINARY ELL1
+PB 6.83890261 1 1e-10
+A1 10.1641056 1 1e-8
+TASC 55000.0 1 1e-6
+EPS1 7.0e-6 1 1e-9
+EPS2 -1.8e-5 1 1e-9
+A1DOT 1e-14 0 1e-16
+"""
+
+J0610_SMALL = """PSR J0610-2100
+EPHEM DE440
+CLOCK TT(BIPM2021)
+UNITS TDB
+RAJ 06:10:00
+DECJ -21:00:00
+F0 200.0 1
+PEPOCH 55000
+DM 0.0
+DMEPOCH 55000
+BINARY ELL1
+PB 0.3 1
+A1 0.074 1
+TASC 55000.0 1
+EPS1 1.5e-5 1
+EPS2 0.0 1
+"""
+
+J2145_H3_ONLY = """PSR J2145-0750
+EPHEM DE440
+CLOCK TT(BIPM2021)
+UNITS TDB
+RAJ 21:45:50.4
+DECJ -07:50:18
+F0 62.295 1
+PEPOCH 55000
+DM 0.0
+DMEPOCH 55000
+BINARY ELL1H
+PB 6.83890261 1
+A1 10.1641056 1
+TASC 55000.0 1
+EPS1 7.0e-6 1
+EPS2 -1.8e-5 1
+H3 1.8e-7 1
+"""
+
+
+def _mixed_manager(tmp_path, par_text, policy: AlignmentPolicy, name="psr"):
+    return ParameterManager(
+        file_data={
+            "t2": {"timing_package": "tempo2", "par_content": par_text},
+            "pint": {"timing_package": "pint", "par_content": par_text},
+        },
+        output_dir=tmp_path / f"aligned_{name}",
+        pulsar_name=name,
+        combine_components=["binary"],
+        add_dm_derivatives=False,
+        alignment_policy=policy,
+    )
+
+
+class TestBinaryFamilyConversionParity:
+    """§12.2 P1–P4: conversion path under mixed engines."""
+
+    def test_p1_plain_ell1_converts_and_parity(self, tmp_path):
+        policy = AlignmentPolicy(ne_sw=0.0)
+        pm = _mixed_manager(tmp_path, J2145_PLAIN, policy, name="j2145_plain")
+        written = pm.make_parfiles_shared()
+        report = pm.last_binary_conversion_report
+        assert report is not None
+        assert report.decision.outcome == "convert"
+        assert report.decision.target_family == "DD"
+        text_t2 = Path(written["t2"]).read_text(encoding="utf-8")
+        text_pint = Path(written["pint"]).read_text(encoding="utf-8")
+        assert re.search(r"^BINARY\s+DD\b", text_t2, re.M)
+        assert re.search(r"^BINARY\s+DD\b", text_pint, re.M)
+        assert not re.search(r"^EPS1\b", text_t2, re.M)
+        rms = tempo2_rms_ns(Path(written["t2"]), tmp_path, "full")
+        assert rms <= 2.0
+
+    def test_p2_small_scale_no_conversion(self, tmp_path, control_rms):
+        policy = AlignmentPolicy(ne_sw=0.0)
+        pm = _mixed_manager(tmp_path, J0610_SMALL, policy, name="j0610")
+        written = pm.make_parfiles_shared()
+        report = pm.last_binary_conversion_report
+        assert report is not None
+        assert report.decision.outcome == "skip"
+        assert report.decision.reason == "below_threshold"
+        text = Path(written["t2"]).read_text(encoding="utf-8")
+        assert "ELL1" in text
+        rms = tempo2_rms_ns(Path(written["t2"]), tmp_path, "absorbed")
+        assert rms <= 2.0 or rms == pytest.approx(control_rms, abs=2.0)
+
+    def test_p3_h3_only_default_errors_sample_stigma_builds(self, tmp_path):
+        from metapulsar.binary_family_convert import BinaryConversionError
+
+        policy_err = AlignmentPolicy(ne_sw=0.0)
+        pm_err = _mixed_manager(tmp_path, J2145_H3_ONLY, policy_err, name="h3err")
+        with pytest.raises(
+            BinaryConversionError, match="ell1h_h3_only_underdetermined"
+        ):
+            pm_err.make_parfiles_shared()
+
+        policy_ok = AlignmentPolicy(
+            ne_sw=0.0,
+            h3_only="sample_stigma",
+            stigma_central=0.37,
+            stigma_provenance="mass-function closure, m_p=1.4",
+        )
+        pm_ok = _mixed_manager(tmp_path, J2145_H3_ONLY, policy_ok, name="h3ok")
+        written = pm_ok.make_parfiles_shared()
+        report = pm_ok.last_binary_conversion_report
+        assert report is not None and report.record is not None
+        assert report.record.required_sampling == ("STIGMA",)
+        text = Path(written["t2"]).read_text(encoding="utf-8")
+        assert re.search(r"^BINARY\s+DDH\b", text, re.M)
+
+        # Tempo2 reads the orthometric ratio as STIG only; DDHmodel.C *exits*
+        # the process when it is unset, so the tempo2 par must carry the
+        # engine-native spelling while PINT's keeps the canonical one.
+        assert re.search(r"^STIG\s", text, re.M)
+        assert not re.search(r"^(STIGMA|VARSIGMA)\s", text, re.M)
+        text_pint = Path(written["pint"]).read_text(encoding="utf-8")
+        assert re.search(r"^STIGMA\s", text_pint, re.M)
+
+        # The converted DDH par must actually load and evaluate in tempo2 —
+        # a text-only assertion is what let the STIGMA/STIG defect through.
+        rms = tempo2_rms_ns(Path(written["t2"]), tmp_path, "full")
+        assert rms <= 2.0
+
+        # Exclude binary from combine_components → no error
+        pm_excl = ParameterManager(
+            file_data={
+                "t2": {"timing_package": "tempo2", "par_content": J2145_H3_ONLY},
+                "pint": {"timing_package": "pint", "par_content": J2145_H3_ONLY},
+            },
+            output_dir=tmp_path / "aligned_excl",
+            pulsar_name="h3excl",
+            combine_components=["astrometry"],
+            add_dm_derivatives=False,
+            alignment_policy=AlignmentPolicy(ne_sw=0.0),
+        )
+        pm_excl.make_parfiles_shared()
+        assert (
+            pm_excl.last_binary_conversion_report.decision.reason == "binary_not_shared"
+        )
+
+    def test_p5_h3_stig_fixture_converts_to_ddh_under_default_policy(self, tmp_path):
+        """The fixture the other ELL1H tests pin `binary_conversion="off"` for.
+
+        Its two-term gate value is ~7 ns, so under the *default* policy it
+        converts — this is the case those tests stop exercising, so it gets its
+        own end-to-end tempo2 check here.
+        """
+        pm = _mixed_manager(
+            tmp_path, H3_STIG_PAR, AlignmentPolicy(ne_sw=0.0), name="h3stig_conv"
+        )
+        written = pm.make_parfiles_shared()
+        report = pm.last_binary_conversion_report
+        assert report is not None and report.record is not None
+        assert report.decision.outcome == "convert"
+        assert report.decision.target_family == "DDH"
+        assert report.record.gauge == "absorbed"
+        assert report.record.required_sampling == ()  # STIGMA was measured
+        assert report.decision.scale is not None
+        assert report.decision.scale.scale_s > 1e-9
+
+        text = Path(written["t2"]).read_text(encoding="utf-8")
+        assert re.search(r"^BINARY\s+DDH\b", text, re.M)
+        assert re.search(r"^STIG\s", text, re.M)
+        for gone in ("EPS1", "EPS2", "TASC", "NHARM", "NHARMS", "H4"):
+            assert not re.search(rf"^{gone}\s", text, re.M)
+        rms = tempo2_rms_ns(Path(written["t2"]), tmp_path, "full")
+        assert rms <= 2.0
+
+    def test_p4_existing_orthometric_tests_still_green(self, tmp_path, control_rms):
+        """P4: absorbed evaluator + NHARM path remain intact with conversion off."""
+        aligned, mode = align_mixed(tmp_path, H3_STIG_PAR)
+        assert mode == "absorbed"
         rms = tempo2_rms_ns(aligned, tmp_path, mode)
         assert rms == pytest.approx(control_rms, abs=1.0)

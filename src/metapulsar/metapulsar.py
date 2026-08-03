@@ -140,6 +140,7 @@ class MetaPulsar:
         self._pint_model_cache = None
         self._shared_theta_exact_cache: dict[str, str] = {}
         self._retained_pint_model_cache: dict = {}
+        self.binary_conversion_report = None
 
         # Elegant initialization flow
         self._materialize_pta_data()
@@ -155,6 +156,16 @@ class MetaPulsar:
 
         # Calculate canonical name from pulsar data using B-name preference logic
         self.name = self._get_pulsar_name(pulsars)
+
+    def conversion_metadata(self):
+        """Derived from binary_conversion_report; None when no conversion ran.
+
+        TimingPulsar-protocol extension point for nltiming Case-D STIGMA
+        required-sampling (§8.5a).
+        """
+        from .binary_family_convert import metadata_from_report
+
+        return metadata_from_report(self.binary_conversion_report)
 
     @staticmethod
     def _normalize_pta_files(

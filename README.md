@@ -92,9 +92,14 @@ mp = create_metapulsar(
 ```
 
 `AlignmentPolicy` also pins the reference conventions (`ephem`, `clock`,
-`bipm_version`, `ne_sw`). To keep a release's native deterministic model
-untouched, use `combination_strategy="per_pta"` instead — the policy applies
-only to `shared` and raises otherwise. See
+`bipm_version`, `ne_sw`). On mixed PINT+Tempo2 `shared` stacks it can also
+**convert** a shared plain ELL1/T2-EPS binary to `DD`, or a complete ELL1H
+block to `DDH`, when the two-term scale gate exceeds 1 ns — so both engines
+evaluate the same delay. H3-only ELL1H sources refuse by default; set
+`h3_only="sample_stigma"` with a prior center, or exclude `"binary"` from
+`combine_components` / use `per_pta`. To keep a release's native deterministic
+model untouched, use `combination_strategy="per_pta"` instead — the policy
+applies only to `shared` and raises otherwise. See
 [docs/API_REFERENCE.md](docs/API_REFERENCE.md#alignmentpolicy) and
 [docs/METHOD_DESCRIPTION.md](docs/METHOD_DESCRIPTION.md).
 

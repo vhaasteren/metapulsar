@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 # ===== ALIGNMENT POLICY =====
 
 UnsupportedPolicy = Literal["strip", "error"]
+BinaryConversionMode = Literal["auto", "off", "always"]
+UnsupportedBinaryPolicy = Literal["error", "keep"]
+H3OnlyPolicy = Literal["error", "sample_stigma"]
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,14 @@ class AlignmentPolicy:
         clock: Override the reference PTA's ``CLOCK``/``CLK``.
         bipm_version: Year used to resolve a bare ``TT(BIPM)`` realization.
         ne_sw: Override the resolved constant solar-wind density in cm^-3.
+        binary_conversion: Gated ELL1-family → DD/DDH conversion mode.
+        binary_conversion_threshold_s: Scale-gate threshold in seconds.
+        unsupported_binary: ``error``/``keep`` when the gate fires on an
+            unsupported family.
+        binary_fidelity_floor_s: Absolute floor of the delay-fidelity tolerance.
+        h3_only: ELL1H H3-only handling (``error`` or ``sample_stigma``).
+        stigma_central: Prior-central ς for ``h3_only='sample_stigma'``.
+        stigma_provenance: Provenance string for ``stigma_central``.
     """
 
     unsupported: UnsupportedPolicy = "strip"
@@ -71,6 +82,15 @@ class AlignmentPolicy:
     clock: Optional[str] = None
     bipm_version: Optional[int] = None
     ne_sw: Optional[float] = None
+
+    # --- gated binary-family conversion ---
+    binary_conversion: BinaryConversionMode = "auto"
+    binary_conversion_threshold_s: float = 1e-9
+    unsupported_binary: UnsupportedBinaryPolicy = "error"
+    binary_fidelity_floor_s: float = 1e-10
+    h3_only: H3OnlyPolicy = "error"
+    stigma_central: Optional[float] = None
+    stigma_provenance: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.unsupported not in {"strip", "error"}:
@@ -90,6 +110,38 @@ class AlignmentPolicy:
                 raise ValueError("ne_sw must be a finite non-negative number") from exc
             if not math.isfinite(ne_sw) or ne_sw < 0:
                 raise ValueError("ne_sw must be a finite non-negative number")
+        if self.binary_conversion not in {"auto", "off", "always"}:
+            raise ValueError("binary_conversion must be 'auto', 'off', or 'always'")
+        for name in ("binary_conversion_threshold_s", "binary_fidelity_floor_s"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not float(value) > 0
+            ):
+                raise ValueError(f"{name} must be a finite number > 0")
+        if self.unsupported_binary not in {"error", "keep"}:
+            raise ValueError("unsupported_binary must be 'error' or 'keep'")
+        if self.h3_only not in {"error", "sample_stigma"}:
+            raise ValueError("h3_only must be 'error' or 'sample_stigma'")
+        if self.h3_only == "sample_stigma":
+            sc = self.stigma_central
+            if (
+                sc is None
+                or isinstance(sc, bool)
+                or not isinstance(sc, (int, float))
+                or not 0.0 < float(sc) <= 1.0
+            ):
+                raise ValueError(
+                    "h3_only='sample_stigma' requires stigma_central in (0, 1]"
+                )
+            if not self.stigma_provenance:
+                raise ValueError("h3_only='sample_stigma' requires stigma_provenance")
+        elif self.stigma_central is not None or self.stigma_provenance is not None:
+            raise ValueError(
+                "stigma_central/stigma_provenance require h3_only='sample_stigma'"
+            )
 
 
 def normalize_timing_package(package: Optional[str]) -> str:
@@ -388,6 +440,7 @@ class ParameterManager:
 
         # Cache for PINT models
         self._pint_models_cache: Optional[Dict[str, TimingModel]] = None
+        self.last_binary_conversion_report = None
 
     @property
     def ell1h_shapiro(self) -> Ell1hShapiroMode:
@@ -493,6 +546,8 @@ class ParameterManager:
         # file_data is never mutated (invariant 1), so a rebuild still yields
         # *release* models -- do not "clear because alignment rewrote content".
         self._clear_pint_models_cache()
+        # A1: never let a stale conversion report survive manager reuse.
+        self.last_binary_conversion_report = None
 
         # 1. Align the orbital chart, then parse into dictionaries
         parfile_dicts = {
@@ -1708,6 +1763,9 @@ class ParameterManager:
         # so the harmonic count is normalized last.
         self._align_ell1h_nharms_for_all(parfile_dicts, pint_models)
 
+        # Gated ELL1-family → DD/DDH conversion (mixed-engine shared path).
+        self._maybe_convert_shared_binary(parfile_dicts)
+
         # Convert back to par file strings
         shared_parfiles = {}
         for pta_name, parfile_dict in parfile_dicts.items():
@@ -1722,6 +1780,99 @@ class ParameterManager:
                 ) from e
 
         return shared_parfiles
+
+    def _maybe_convert_shared_binary(
+        self, parfile_dicts: Dict[str, Dict[str, List[str]]]
+    ) -> None:
+        """Orchestrate Contract 1–2 binary conversion (§8.2)."""
+        from .binary_family_convert import (
+            BinaryConversionError,
+            BinaryConversionReport,
+            apply_binary_patch,
+            assert_postconditions,
+            convert_shared_binary,
+            decide_binary_conversion,
+            remediation_message,
+            _nonbinary_snapshot,
+            _unsupported_message,
+        )
+
+        timing_packages = {pta: self._get_timing_package(pta) for pta in parfile_dicts}
+        decision = decide_binary_conversion(
+            parfile_dicts,
+            reference_pta=self.reference_pta,
+            timing_packages=timing_packages,
+            combine_components=self.combine_components,
+            policy=self.alignment_policy,
+        )
+
+        if decision.outcome == "skip":
+            self.last_binary_conversion_report = BinaryConversionReport(
+                decision=decision, record=None
+            )
+            self.logger.info("Binary conversion skipped: reason=%s", decision.reason)
+            return
+
+        if decision.outcome == "unsupported":
+            detail = decision.warnings[0] if decision.warnings else ""
+            message = _unsupported_message(
+                decision.reason,
+                decision.scale,
+                detail=detail,
+                par=parfile_dicts[self.reference_pta],
+                policy=self.alignment_policy,
+            )
+            if self.alignment_policy.unsupported_binary == "error":
+                raise BinaryConversionError(message)
+            self.logger.warning(message)
+            self.last_binary_conversion_report = BinaryConversionReport(
+                decision=decision, record=None
+            )
+            return
+
+        # outcome == "convert"
+        pre_nonbinary = {
+            pta: _nonbinary_snapshot(par) for pta, par in parfile_dicts.items()
+        }
+        try:
+            patch, record = convert_shared_binary(
+                parfile_dicts[self.reference_pta],
+                decision,
+                pta_names=tuple(parfile_dicts),
+                policy=self.alignment_policy,
+                ell1h_shapiro=self.ell1h_shapiro,
+            )
+        except BinaryConversionError:
+            raise
+        except Exception as exc:
+            raise BinaryConversionError(
+                f"conversion_failed: {exc}\n{remediation_message()}"
+            ) from exc
+
+        for pta_name, par in parfile_dicts.items():
+            # Engine-native spellings (STIGMA vs tempo2's STIG), same rule as
+            # the CLOCK/CLK emission; postcondition 2 is alias-resolved.
+            apply_binary_patch(par, patch, timing_package=timing_packages[pta_name])
+        self._set_pint_models_from_dicts(parfile_dicts)
+        assert_postconditions(
+            parfile_dicts,
+            target_family=decision.target_family or patch.binary_value,
+            pre_nonbinary=pre_nonbinary,
+        )
+        self.last_binary_conversion_report = BinaryConversionReport(
+            decision=decision, record=record
+        )
+        scale = decision.scale
+        fid = record.fidelity
+        self.logger.info(
+            "Binary conversion applied: %s → %s reason=%s "
+            "scale_s=%s total_max_abs_s=%s",
+            decision.source_family,
+            decision.target_family,
+            decision.reason,
+            None if scale is None else f"{scale.scale_s:.6e}",
+            f"{fid.total_max_abs_s:.6e}",
+        )
 
     def _make_component_parameters_shared(
         self,
