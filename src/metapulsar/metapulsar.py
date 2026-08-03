@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
-from typing import List, Mapping
+from typing import Any, List, Mapping
 import numpy as np
 from loguru import logger
 
@@ -140,6 +141,9 @@ class MetaPulsar:
         self._pint_model_cache = None
         self._shared_theta_exact_cache: dict[str, str] = {}
         self._retained_pint_model_cache: dict = {}
+        self._dispersion_metadata_ready = False
+        self._dm: float | None = None
+        self._dmx: dict | None = None
         self.binary_conversion_report = None
 
         # Elegant initialization flow
@@ -766,6 +770,9 @@ class MetaPulsar:
         self._pint_model_cache = None
         self._shared_theta_exact_cache.clear()
         self._retained_pint_model_cache.clear()
+        self._dispersion_metadata_ready = False
+        self._dm = None
+        self._dmx = None
 
     def _reference_pta_name(self) -> str:
         """Return deterministic reference PTA key for pulsar-level metadata."""
@@ -951,6 +958,66 @@ class MetaPulsar:
             self._parfile_content_for_pta(ref_pta)
         )
         return self._pint_model_cache
+
+    def _ensure_dispersion_metadata(self) -> None:
+        """Memoize ``_dm``/``_dmx`` from ``pint_model()`` (Enterprise shape).
+
+        Best effort by design: these are optional feather-snapshot metadata, so
+        any failure degrades to ``None`` with a warning instead of propagating
+        out of the ``dm``/``dmx`` properties. The feather writer probes them
+        with ``hasattr``, which re-raises anything that is not an
+        ``AttributeError`` — an unparseable reference par file would otherwise
+        lose the whole snapshot. Whatever was extracted before a failure is
+        kept.
+        """
+        if getattr(self, "_dispersion_metadata_ready", False):
+            return
+
+        try:
+            model = self.pint_model()  # cached; uses _reference_pta_name()
+
+            # Enterprise leaves _dm unset when DM is absent; we store None so the
+            # @property always exists and the feather writer emits "dm": null.
+            self._dm = float(model.DM.value) if hasattr(model, "DM") else None
+
+            # Enterprise quirk (keep): only unfrozen DMX_* appear, so "fit" is
+            # always True for written bins; frozen bins are omitted. The
+            # DMXR1/DMXR2 keying via par[:3]+"R1"+par[3:] raises KeyError if a
+            # range parameter is missing — enterprise.pulsar.PintPulsar._set_dm
+            # propagates that at construction; here it is caught below.
+            free = {par for par in model.params if not getattr(model, par).frozen}
+            self._dmx = {
+                par: {
+                    "DMX": float(model[par].value),
+                    "DMXerr": (
+                        None
+                        if model[par].uncertainty_value is None
+                        else float(model[par].uncertainty_value)
+                    ),
+                    "DMXR1": float(model[par[:3] + "R1" + par[3:]].value),
+                    "DMXR2": float(model[par[:3] + "R2" + par[3:]].value),
+                    "fit": True,  # always True by construction (par in free)
+                }
+                for par in free
+                if "DMX_" in par
+            } or None
+        except Exception as exc:
+            logger.warning(
+                f"Dispersion metadata unavailable for {getattr(self, 'name', '?')}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        self._dispersion_metadata_ready = True
+
+    def to_feather(
+        self,
+        filename: str | os.PathLike[str],
+        noisedict: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Write an Enterprise/Discovery-compatible feather snapshot of this pulsar."""
+        from .feather_io import save_pulsar_feather
+
+        save_pulsar_feather(self, filename, noisedict=noisedict)
 
     def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
         """Return canonical fitpars mapped to their per-PTA parameter names.
@@ -1469,6 +1536,18 @@ class MetaPulsar:
     def pdist(self):
         """Return tuple of pulsar distance and uncertainty in kpc."""
         return self._pdist
+
+    @property
+    def dm(self) -> float | None:
+        """Return reference-PTA DM (pc cm^-3), or None if absent."""
+        self._ensure_dispersion_metadata()
+        return self._dm
+
+    @property
+    def dmx(self) -> dict | None:
+        """Return reference-PTA DMX metadata dict, or None if none are free."""
+        self._ensure_dispersion_metadata()
+        return self._dmx
 
     @property
     def flags(self):

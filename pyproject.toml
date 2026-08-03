@@ -36,6 +36,7 @@ dependencies = [
     "ephem>=4.1",
     "loguru>=0.7.3",
     "nltiming",
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]
