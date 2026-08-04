@@ -86,46 +86,53 @@ def test_native_pint_and_tempo2_wrappers_use_linear_model_metadata():
         )
 
 
-def test_factory_retains_exact_session_file_bytes(tmp_path):
+def test_factory_retains_par_beside_canonical_tim(tmp_path):
+    """Retention copies the engine par and points at the one canonical tim."""
+    session = tmp_path / "retained"
+    session.mkdir()
+    canonical = session / "ng_5.tim"
+    canonical.write_text(
+        "FORMAT 1\n obs 1400.0 55000.0 1.0 site -pta ng_5\n", encoding="utf-8"
+    )
     par = tmp_path / "loaded.par"
-    tim = tmp_path / "loaded.tim"
     par.write_text("F0 123\n", encoding="utf-8")
-    tim.write_text("FORMAT 1\n", encoding="utf-8")
 
     retained = MetaPulsarFactory()._retain_pta_files(
         pta_name="ng 5",
         timing_package="pint",
         par_path=par,
-        tim_path=tim,
-        pta_file_dir=tmp_path / "retained",
+        tim_path=canonical,
+        pta_file_dir=session,
     )
 
     assert retained["par_path"].read_text(encoding="utf-8") == "F0 123\n"
-    assert retained["tim_path"].read_text(encoding="utf-8") == "FORMAT 1\n"
+    # The engine-consumed file itself, not a copy that could drift from it.
+    assert retained["tim_path"] == canonical
     assert retained["timing_package"] == "pint"
 
 
-def test_factory_retains_included_tim_files(tmp_path):
+def test_canonical_tim_flattens_included_files(tmp_path):
+    """INCLUDE trees become one standalone stamped file, leaving inputs untouched."""
+    from metapulsar.tim_canonical import write_canonical_tim
+
     chunk = tmp_path / "tims" / "chunk.tim"
     chunk.parent.mkdir(parents=True)
     chunk.write_text("FORMAT 1\n obs 1400.0 55000.0 1.0 site\n", encoding="utf-8")
     main = tmp_path / "main.tim"
     main.write_text("FORMAT 1\nINCLUDE tims/chunk.tim\n", encoding="utf-8")
-    par = tmp_path / "main.par"
-    par.write_text("F0 1\n", encoding="utf-8")
 
-    retained = MetaPulsarFactory()._retain_pta_files(
+    out = write_canonical_tim(
+        main,
         pta_name="epta",
         timing_package="tempo2",
-        par_path=par,
-        tim_path=main,
-        pta_file_dir=tmp_path / "retained",
+        out_path=tmp_path / "retained" / "epta.tim",
     )
 
-    included = tmp_path / "retained" / "tims" / "chunk.tim"
-    assert included.is_file()
-    assert included.read_text(encoding="utf-8") == chunk.read_text(encoding="utf-8")
-    assert "INCLUDE tims/chunk.tim" in retained["tim_path"].read_text(encoding="utf-8")
+    text = out.read_text(encoding="utf-8")
+    assert "INCLUDE" not in text
+    assert " obs 1400.0 55000.0 1.0 site -pta epta" in text
+    assert "-timing_package tempo2" in text
+    assert main.read_text(encoding="utf-8") == "FORMAT 1\nINCLUDE tims/chunk.tim\n"
 
 
 def test_jug_capability_requires_readable_pta_files(monkeypatch, tmp_path):

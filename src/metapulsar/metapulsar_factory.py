@@ -7,10 +7,12 @@ building per-PTA timing objects, and wrapping them with metadata.
 from __future__ import annotations
 
 from typing import Dict, List, Tuple, Any
+from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import tempfile
 import warnings
+from urllib.parse import quote
 from loguru import logger
 
 # Import MetaPulsar and ParameterManager
@@ -27,6 +29,7 @@ except ImportError:
 # Import sandbox for robust libstempo usage
 from .sandbox_tempo2 import tempopulsar
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
+from .tim_canonical import write_canonical_tim
 from .pint_helpers import (
     Ell1hShapiroMode,
     PulseNumberMode,
@@ -57,44 +60,9 @@ _SINGLE_PTA_SHARED_DMX_WARNING = (
 )
 
 
-def _collect_included_tim_rel_paths(tim_path: Path) -> frozenset[Path]:
-    """Return INCLUDE'd .tim paths relative to the root tim's parent directory."""
-    root = Path(tim_path).resolve()
-    root_dir = root.parent
-    seen: set[Path] = set()
-    included: set[Path] = set()
-
-    def walk(current: Path) -> None:
-        current = current.resolve()
-        if current in seen:
-            return
-        seen.add(current)
-        try:
-            lines = current.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return
-        for line in lines:
-            stripped = line.strip()
-            if (
-                not stripped
-                or stripped.startswith("#")
-                or stripped.upper().startswith("C ")
-            ):
-                continue
-            tokens = stripped.split()
-            if len(tokens) < 2 or tokens[0].upper() != "INCLUDE":
-                continue
-            inc_abs = (current.parent / tokens[1]).resolve()
-            if not inc_abs.is_file():
-                continue
-            try:
-                included.add(inc_abs.relative_to(root_dir))
-            except ValueError:
-                included.add(Path(tokens[1]))
-            walk(inc_abs)
-
-    walk(root)
-    return frozenset(included)
+def _safe_pta_filename(pta_name: str) -> str:
+    """Return an injective filesystem-safe stem for a PTA key."""
+    return quote(pta_name, safe="._-")
 
 
 # Default components for the shared combination strategy
@@ -232,6 +200,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
@@ -257,9 +226,18 @@ class MetaPulsarFactory:
                 merge all parameters in selected components.
             parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk.
-            use_pulse_numbers: Pulse-number mode (string only; default ``"yes"``):
+            timfile_output_dir: Directory to save the canonical ``.tim`` files the
+                engines actually consumed, as ``{pulsar}_{pta}.tim``. These are
+                standalone Tempo2 FORMAT 1 files (INCLUDEs flattened) carrying
+                ``-pta``, ``-pta_dataset`` and ``-timing_package`` flags, plus
+                ``-pn`` when ``use_pulse_numbers`` asks for it, so they can be
+                reused directly. If None, they are not saved to disk.
+            use_pulse_numbers: Pulse-number mode (string only; default ``"yes"``).
+                Every mode rewrites the ``.tim`` MetaPulsar hands its engines; this
+                setting only controls pulse numbers:
 
                 - ``"no"``: ignore pulse numbers; no ``TRACK -2`` override (Tempo2).
+                  Existing ``-pn`` flags are preserved but none are derived.
                 - ``"yes"``: reuse complete ``-pn`` on all TOAs, else re-derive from
                   original coherent ``par`` + ``tim``; warn on mixed partial ``-pn``.
                 - ``"reuse"``: same as ``"yes"`` when complete; warn and re-derive when
@@ -321,7 +299,14 @@ class MetaPulsarFactory:
         if parfile_output_dir:
             parfile_output_dir = Path(parfile_output_dir).resolve()
             parfile_output_dir.mkdir(parents=True, exist_ok=True)
-        pta_file_dir = Path(tempfile.mkdtemp(prefix="metapulsar_pta_files_")).resolve()
+        if timfile_output_dir:
+            timfile_output_dir = Path(timfile_output_dir).resolve()
+            timfile_output_dir.mkdir(parents=True, exist_ok=True)
+        # The files back native timing engines and therefore must live as long
+        # as the MetaPulsar. TemporaryDirectory cleans exception paths
+        # immediately; ownership is transferred to the completed object below.
+        pta_file_owner = tempfile.TemporaryDirectory(prefix="metapulsar_pta_files_")
+        pta_file_dir = Path(pta_file_owner.name).resolve()
 
         # ParameterManager produces the par files the engines consume under both
         # strategies. Orbital-chart alignment is its first step either way; only
@@ -376,6 +361,9 @@ class MetaPulsarFactory:
         else:
             pulsars, pta_files = created, {}
 
+        if timfile_output_dir:
+            self._write_canonical_timfiles(pta_files, timfile_output_dir, pulsar_name)
+
         mp = MetaPulsar(
             pulsars=pulsars,
             combination_strategy=combination_strategy,
@@ -386,6 +374,7 @@ class MetaPulsarFactory:
             clock_dir=clock_dir,
         )
         mp.binary_conversion_report = binary_conversion_report
+        mp._pta_file_owner = pta_file_owner
         return mp
 
     def _validate_single_pulsar_data(
@@ -572,6 +561,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
@@ -589,7 +579,10 @@ class MetaPulsarFactory:
                 Defaults to ``("DM",)``. Pass an empty list to merge all parameters
                 in selected components.
             parfile_output_dir: Directory to save shared par files (for the shared strategy only).
-                If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+                If None, par files are not saved to disk. Files are named per pulsar.
+            timfile_output_dir: Directory to save the canonical ``.tim`` files the
+                engines consumed, named ``{pulsar}_{pta}.tim``. If None, they are
+                not saved to disk.
             alignment_policy: Alignment policy forwarded to each
                 ``create_metapulsar`` call (``"shared"`` strategy only).
 
@@ -634,6 +627,7 @@ class MetaPulsarFactory:
                     add_dm_derivatives=add_dm_derivatives,
                     exclude_from_shared=exclude_from_shared,
                     parfile_output_dir=parfile_output_dir,
+                    timfile_output_dir=timfile_output_dir,
                     use_pulse_numbers=pulse_mode,
                     clock_dir=clock_dir,
                     alignment_policy=alignment_policy,
@@ -807,79 +801,74 @@ class MetaPulsarFactory:
             tim_metadata = file_data[pta_name].get("tim_metadata")
             parfile = Path(parfile)
             timfile = Path(timfile)
+            derive_backend = "pint" if timing_package == "pint" else "tempo2"
 
             try:
+                # Pulse-number derivation runs first, against the release's own
+                # coherent par + tim, then the canonical stamp is applied last so
+                # the engine, retained and exported files are the same bytes.
+                with resolved_tim_for_pulse_numbers(
+                    use_pulse_numbers,
+                    original_par_text,
+                    timfile,
+                    derive_backend=derive_backend,
+                    tim_metadata=tim_metadata,
+                ) as resolved_tim:
+                    canonical_tim = write_canonical_tim(
+                        Path(resolved_tim),
+                        pta_name=pta_name,
+                        timing_package=timing_package,
+                        out_path=pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim",
+                        par_text=original_par_text,
+                    )
+
                 if timing_package == "pint":
-                    # Create PINT objects
                     if get_model_and_toas is None:
                         raise RuntimeError("PINT not available for PINT creation")
 
-                    with resolved_tim_for_pulse_numbers(
-                        use_pulse_numbers,
-                        original_par_text,
-                        timfile,
-                        derive_backend="pint",
-                        tim_metadata=tim_metadata,
-                    ) as tim_path:
-                        model, toas = get_model_and_toas(
-                            str(parfile),
-                            tim_path,
-                            planets=True,
-                            allow_T2=True,
-                            ell1h_shapiro=ell1h_shapiro,
+                    model, toas = get_model_and_toas(
+                        str(parfile),
+                        str(canonical_tim),
+                        planets=True,
+                        allow_T2=True,
+                        ell1h_shapiro=ell1h_shapiro,
+                    )
+                    if track_pn:
+                        ensure_pint_track_minus_2(model)
+                    pulsar_objects[pta_name] = (model, toas)
+                    if return_pta_files:
+                        pta_files[pta_name] = self._retain_pta_files(
+                            pta_name=pta_name,
+                            timing_package=timing_package,
+                            par_path=parfile,
+                            tim_path=canonical_tim,
+                            pta_file_dir=pta_file_dir,
                         )
-                        if track_pn:
-                            ensure_pint_track_minus_2(model)
+
+                else:  # tempo2
+                    par_context = (
+                        temporary_par_with_track_minus_2(
+                            parfile.read_text(encoding="utf-8")
+                        )
+                        if track_pn
+                        else nullcontext(parfile)
+                    )
+                    # The TRACK -2 par is temporary, so retain it before the
+                    # context closes.
+                    with par_context as par_for_tempo2:
+                        t2_psr = tempopulsar(
+                            parfile=str(par_for_tempo2),
+                            timfile=str(canonical_tim),
+                            dofit=False,
+                        )
                         if return_pta_files:
                             pta_files[pta_name] = self._retain_pta_files(
                                 pta_name=pta_name,
                                 timing_package=timing_package,
-                                par_path=parfile,
-                                tim_path=Path(tim_path),
+                                par_path=Path(par_for_tempo2),
+                                tim_path=canonical_tim,
                                 pta_file_dir=pta_file_dir,
                             )
-                    pulsar_objects[pta_name] = (model, toas)
-
-                else:  # tempo2
-                    # Create Tempo2 object using sandbox
-                    with resolved_tim_for_pulse_numbers(
-                        use_pulse_numbers,
-                        original_par_text,
-                        timfile,
-                        derive_backend="tempo2",
-                        tim_metadata=tim_metadata,
-                    ) as tim_path:
-                        if track_pn:
-                            with temporary_par_with_track_minus_2(
-                                Path(parfile).read_text(encoding="utf-8")
-                            ) as par_for_tempo2:
-                                t2_psr = tempopulsar(
-                                    parfile=str(par_for_tempo2),
-                                    timfile=tim_path,
-                                    dofit=False,
-                                )
-                                if return_pta_files:
-                                    pta_files[pta_name] = self._retain_pta_files(
-                                        pta_name=pta_name,
-                                        timing_package=timing_package,
-                                        par_path=Path(par_for_tempo2),
-                                        tim_path=Path(tim_path),
-                                        pta_file_dir=pta_file_dir,
-                                    )
-                        else:
-                            t2_psr = tempopulsar(
-                                parfile=str(parfile),
-                                timfile=tim_path,
-                                dofit=False,
-                            )
-                            if return_pta_files:
-                                pta_files[pta_name] = self._retain_pta_files(
-                                    pta_name=pta_name,
-                                    timing_package=timing_package,
-                                    par_path=parfile,
-                                    tim_path=Path(tim_path),
-                                    pta_file_dir=pta_file_dir,
-                                )
                     pulsar_objects[pta_name] = t2_psr
 
                 self.logger.debug(f"Created {timing_package} object for {pta_name}")
@@ -901,31 +890,41 @@ class MetaPulsarFactory:
         tim_path: Path,
         pta_file_dir: Path,
     ) -> Dict[str, Any]:
-        """Copy exact timing-package input files into durable pulsar-owned paths."""
-        pta_safe = "".join(
-            ch if ch.isalnum() or ch in "._-" else "_" for ch in pta_name
-        )
+        """Retain the engine's par next to its already-canonical standalone tim.
+
+        The tim is written straight into ``pta_file_dir`` by
+        :func:`~metapulsar.tim_canonical.write_canonical_tim`, so there is a
+        single canonical file rather than a copy that could drift from it.
+        """
         par_src = Path(par_path).resolve()
         tim_src = Path(tim_path).resolve()
         if not par_src.is_file():
             raise FileNotFoundError(f"Session par file does not exist: {par_src}")
         if not tim_src.is_file():
-            raise FileNotFoundError(f"Session tim file does not exist: {tim_src}")
+            raise FileNotFoundError(f"Canonical tim file does not exist: {tim_src}")
         pta_file_dir.mkdir(parents=True, exist_ok=True)
-        par_dst = pta_file_dir / f"{pta_safe}.par"
-        tim_dst = pta_file_dir / f"{pta_safe}.tim"
+        par_dst = pta_file_dir / f"{_safe_pta_filename(pta_name)}.par"
         shutil.copy2(par_src, par_dst)
-        shutil.copy2(tim_src, tim_dst)
-        for rel in _collect_included_tim_rel_paths(tim_src):
-            inc_src = (tim_src.parent / rel).resolve()
-            inc_dst = pta_file_dir / rel
-            inc_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(inc_src, inc_dst)
         return {
             "par_path": par_dst,
-            "tim_path": tim_dst,
+            "tim_path": tim_src,
             "timing_package": timing_package,
         }
+
+    def _write_canonical_timfiles(
+        self,
+        pta_files: Dict[str, Dict[str, Any]],
+        timfile_output_dir: Path,
+        pulsar_name: str,
+    ) -> None:
+        """Export the exact engine-consumed canonical tim files for reuse."""
+        for pta_name, files in pta_files.items():
+            src = Path(files["tim_path"])
+            dst = (
+                timfile_output_dir / f"{pulsar_name}_{_safe_pta_filename(pta_name)}.tim"
+            )
+            shutil.copy2(src, dst)
+            self.logger.debug(f"Written canonical tim file: {dst}")
 
     def _create_parfile_dicts_from_files(
         self, parfile_files: Dict[str, Path]
@@ -1049,6 +1048,7 @@ def create_metapulsar(
     add_dm_derivatives: bool = True,
     exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
@@ -1073,6 +1073,8 @@ def create_metapulsar(
             in selected components.
         parfile_output_dir: Directory to save shared par files (for the shared strategy only).
             If None, par files are not saved to disk.
+        timfile_output_dir: Directory to save the canonical ``.tim`` files the engines
+            consumed, as ``{pulsar}_{pta}.tim``. If None, they are not saved to disk.
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
             or ``"overwrite"``. See ``MetaPulsarFactory.create_metapulsar`` for semantics.
         alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
@@ -1096,6 +1098,7 @@ def create_metapulsar(
         add_dm_derivatives=add_dm_derivatives,
         exclude_from_shared=exclude_from_shared,
         parfile_output_dir=parfile_output_dir,
+        timfile_output_dir=timfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
         alignment_policy=alignment_policy,
@@ -1110,6 +1113,7 @@ def create_all_metapulsars(
     add_dm_derivatives: bool = True,
     exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
@@ -1127,7 +1131,9 @@ def create_all_metapulsars(
             Defaults to ``("DM",)``. Pass an empty list to merge all parameters
             in selected components.
         parfile_output_dir: Directory to save shared par files (for the shared strategy only).
-            If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+            If None, par files are not saved to disk. Files are named per pulsar.
+        timfile_output_dir: Directory to save the canonical ``.tim`` files the engines
+            consumed, as ``{pulsar}_{pta}.tim``. If None, they are not saved to disk.
         use_pulse_numbers: Pulse-number mode passed to each ``create_metapulsar`` call
             (``"no"``, ``"yes"``, ``"reuse"``, or ``"overwrite"``; default ``"yes"``).
         alignment_policy: Alignment policy forwarded to each ``create_metapulsar``
@@ -1145,6 +1151,7 @@ def create_all_metapulsars(
         add_dm_derivatives=add_dm_derivatives,
         exclude_from_shared=exclude_from_shared,
         parfile_output_dir=parfile_output_dir,
+        timfile_output_dir=timfile_output_dir,
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
         alignment_policy=alignment_policy,

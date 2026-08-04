@@ -58,6 +58,17 @@ class TestMetaPulsarDataCombination:
         assert np.all(metapulsar._flags["pta_dataset"][:50] == "test_pta1")
         assert np.all(metapulsar._flags["pta_dataset"][50:] == "test_pta2")
 
+    def test_flag_fallback_fills_only_missing_rows(self, mock_pulsars):
+        mock_pulsars["test_pta1"]._flag_dict["pta"] = np.array(
+            ["release_pta", "", "release_pta"] + [""] * 47
+        )
+
+        metapulsar = MetaPulsar(mock_pulsars, combination_strategy="per_pta")
+
+        assert metapulsar._flags["pta"][0] == "release_pta"
+        assert metapulsar._flags["pta"][1] == "test_pta1"
+        assert metapulsar._flags["pta"][2] == "release_pta"
+
     def test_pta_slice_calculation(self, mock_pulsars):
         metapulsar = MetaPulsar(mock_pulsars, combination_strategy="per_pta")
         slices = metapulsar._get_pta_slices()

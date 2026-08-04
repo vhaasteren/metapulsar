@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from metapulsar.metapulsar_factory import (
     MetaPulsarFactory,
     _par_content_has_dmx,
+    _safe_pta_filename,
     _SINGLE_PTA_SHARED_DMX_WARNING,
 )
 from metapulsar.file_discovery import FileDiscovery
@@ -116,6 +117,14 @@ class TestMetaPulsarFactory:
         factory = MetaPulsarFactory()
         assert factory.logger is not None
         assert not hasattr(factory, "parfile_manager")
+
+    def test_safe_pta_filename_is_injective_for_punctuation(self):
+        slash = _safe_pta_filename("pta/a")
+        question = _safe_pta_filename("pta?a")
+        underscore = _safe_pta_filename("pta_a")
+
+        assert len({slash, question, underscore}) == 3
+        assert "/" not in slash
 
     def test_create_metapulsar_success(self):
         """Test successful MetaPulsar creation using MockLibstempo directly."""
@@ -371,23 +380,32 @@ class TestMetaPulsarFactory:
                 # Verify the result
                 assert result == mock_metapulsar
 
-    def test_create_pulsar_objects_pint(self):
-        """Test _create_pulsar_objects with PINT timing package."""
-        file_pairs = {
-            "epta_dr2": (
-                Path("/data/epta/J1857+0943.par"),
-                Path("/data/epta/J1857+0943.tim"),
-            )
-        }
+    @staticmethod
+    def _write_session_inputs(tmp_path, timing_package):
+        par_path = tmp_path / "J1857+0943.par"
+        tim_path = tmp_path / "J1857+0943.tim"
+        par_path.write_text("PSR J1857+0943\nF0 123.456\n", encoding="utf-8")
+        tim_path.write_text(
+            "FORMAT 1\n obs1 1400.0 58000.0 1.0 g -sys foo\n", encoding="utf-8"
+        )
+        file_pairs = {"epta_dr2": (par_path, tim_path)}
         file_data = {
             "epta_dr2": {
-                "par": Path("/data/epta/J1857+0943.par"),
-                "tim": Path("/data/epta/J1857+0943.tim"),
-                "timing_package": "pint",
+                "par": par_path,
+                "tim": tim_path,
+                "timing_package": timing_package,
                 "tim_metadata": make_tim_metadata(timespan_days=1000.0),
-                "par_content": "PSR J1857+0943\nF0 123.456\n",
+                "par_content": par_path.read_text(encoding="utf-8"),
             }
         }
+        return par_path, tim_path, file_pairs, file_data
+
+    def test_create_pulsar_objects_pint_loads_canonical_tim(self, tmp_path):
+        """PINT loads the canonical stamped tim, not the release tim."""
+        par_path, tim_path, file_pairs, file_data = self._write_session_inputs(
+            tmp_path, "pint"
+        )
+        session_dir = tmp_path / "session"
 
         with patch(
             "metapulsar.metapulsar_factory.get_model_and_toas"
@@ -397,59 +415,91 @@ class TestMetaPulsarFactory:
             mock_get_model.return_value = (mock_model, mock_toas)
 
             result = self.factory._create_pulsar_objects(
-                file_pairs, file_data, use_pulse_numbers="no"
+                file_pairs,
+                file_data,
+                use_pulse_numbers="no",
+                pta_file_dir=session_dir,
             )
 
-            assert "epta_dr2" in result
-            assert result["epta_dr2"] == (mock_model, mock_toas)
-            mock_get_model.assert_called_once_with(
-                str(file_pairs["epta_dr2"][0]),
-                str(file_pairs["epta_dr2"][1]),
-                planets=True,
-                allow_T2=True,
-                ell1h_shapiro="full",
-            )
+        canonical = session_dir / "epta_dr2.tim"
+        assert result["epta_dr2"] == (mock_model, mock_toas)
+        mock_get_model.assert_called_once_with(
+            str(par_path),
+            str(canonical),
+            planets=True,
+            allow_T2=True,
+            ell1h_shapiro="full",
+        )
+        text = canonical.read_text(encoding="utf-8")
+        assert "-pta epta_dr2" in text
+        assert "-pta_dataset epta_dr2" in text
+        assert "-timing_package pint" in text
+        assert tim_path.read_text(encoding="utf-8") == (
+            "FORMAT 1\n obs1 1400.0 58000.0 1.0 g -sys foo\n"
+        )
 
-    def test_create_pulsar_objects_tempo2(self):
-        """Test _create_pulsar_objects with Tempo2 timing package."""
-        file_pairs = {
-            "epta_dr2": (
-                Path("/data/epta/J1857+0943.par"),
-                Path("/data/epta/J1857+0943.tim"),
-            )
-        }
-        file_data = {
-            "epta_dr2": {
-                "par": Path("/data/epta/J1857+0943.par"),
-                "tim": Path("/data/epta/J1857+0943.tim"),
-                "timing_package": "tempo2",
-                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
-                "par_content": "PSR J1857+0943\nF0 123.456\n",
-            }
-        }
+    def test_create_pulsar_objects_tempo2_loads_canonical_tim(self, tmp_path):
+        """Tempo2 loads the canonical stamped tim, not the release tim."""
+        par_path, _, file_pairs, file_data = self._write_session_inputs(
+            tmp_path, "tempo2"
+        )
+        session_dir = tmp_path / "session"
 
         with patch("metapulsar.metapulsar_factory.tempopulsar") as mock_tempopulsar:
             mock_psr = Mock()
             mock_tempopulsar.return_value = mock_psr
 
             result = self.factory._create_pulsar_objects(
-                file_pairs, file_data, use_pulse_numbers="no"
+                file_pairs,
+                file_data,
+                use_pulse_numbers="no",
+                pta_file_dir=session_dir,
             )
 
-            assert "epta_dr2" in result
-            assert result["epta_dr2"] == mock_psr
-            mock_tempopulsar.assert_called_once_with(
-                parfile=str(file_pairs["epta_dr2"][0]),
-                timfile=str(file_pairs["epta_dr2"][1]),
-                dofit=False,
+        canonical = session_dir / "epta_dr2.tim"
+        assert result["epta_dr2"] == mock_psr
+        mock_tempopulsar.assert_called_once_with(
+            parfile=str(par_path),
+            timfile=str(canonical),
+            dofit=False,
+        )
+        assert "-timing_package tempo2" in canonical.read_text(encoding="utf-8")
+
+    def test_create_pulsar_objects_exports_canonical_tim(self, tmp_path):
+        """timfile_output_dir receives the exact file the engine consumed."""
+        _, _, file_pairs, file_data = self._write_session_inputs(tmp_path, "pint")
+        session_dir = tmp_path / "session"
+        export_dir = tmp_path / "export"
+        export_dir.mkdir()
+
+        with patch(
+            "metapulsar.metapulsar_factory.get_model_and_toas"
+        ) as mock_get_model:
+            mock_get_model.return_value = (Mock(), Mock())
+            _, pta_files = self.factory._create_pulsar_objects(
+                file_pairs,
+                file_data,
+                use_pulse_numbers="no",
+                pta_file_dir=session_dir,
+                return_pta_files=True,
             )
+
+        self.factory._write_canonical_timfiles(pta_files, export_dir, "J1857+0943")
+        exported = export_dir / "J1857+0943_epta_dr2.tim"
+        canonical = session_dir / "epta_dr2.tim"
+        assert pta_files["epta_dr2"]["tim_path"] == canonical
+        assert exported.read_text(encoding="utf-8") == canonical.read_text(
+            encoding="utf-8"
+        )
 
     def test_create_pulsar_objects_tempo2_yes_uses_track_minus_2(self, tmp_path):
         """Tempo2 yes mode wraps par with TRACK -2."""
         par_path = tmp_path / "test.par"
         tim_path = tmp_path / "test.tim"
         par_path.write_text("PSR J1857+0943\nF0 123.456\n", encoding="utf-8")
-        tim_path.write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+        tim_path.write_text(
+            "FORMAT 1\nMODE 1\n obs1 1400.0 58000.0 1.0 g\n", encoding="utf-8"
+        )
 
         file_pairs = {"epta_dr2": (par_path, tim_path)}
         file_data = {
@@ -474,14 +524,18 @@ class TestMetaPulsarFactory:
             mock_track_par.return_value.__enter__.return_value = "/tmp/track.par"
             mock_tempopulsar.return_value = Mock()
 
+            session_dir = tmp_path / "session"
             self.factory._create_pulsar_objects(
-                file_pairs, file_data, use_pulse_numbers="yes"
+                file_pairs,
+                file_data,
+                use_pulse_numbers="yes",
+                pta_file_dir=session_dir,
             )
 
             mock_track_par.assert_called_once()
             mock_tempopulsar.assert_called_once_with(
                 parfile="/tmp/track.par",
-                timfile=str(tim_path),
+                timfile=str(session_dir / "epta_dr2.tim"),
                 dofit=False,
             )
 

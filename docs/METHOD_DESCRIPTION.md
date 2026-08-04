@@ -314,9 +314,20 @@ This mapping is produced by `ParameterManager.build_parameter_mappings()` and re
 MetaPulsar concatenates the per‑PTA arrays into combined vectors:
 
 * TOAs, residuals, TOA errors, SSB frequencies, telescope codes, etc.
-* Flags include `pta`, `pta_dataset`, and `timing_package` tags for each TOA.
+* Flags include `pta`, `pta_dataset`, and `timing_package` tags for each TOA. These are read back from the `.tim` files, not synthesized here: MetaPulsar always hands its timing engines a canonical `.tim` in which those flags are stamped on every TOA (see “Canonical `.tim` artifacts” below).
 
 Again, **no TOA value is altered**; this is a pure concatenation with bookkeeping.
+
+### Canonical `.tim` artifacts
+
+Every PTA leg is loaded from a rewritten `.tim` rather than the release file, so the PTA identity of a TOA travels with the data instead of living only in memory. The rewrite is text surgery on `FORMAT 1` lines and changes no TOA value, uncertainty, or pre-existing flag:
+
+* `INCLUDE` directives are inlined in place, producing one standalone file. Comments and other directives (`MODE`, `T2EFAC`, …) are preserved verbatim.
+* `-pta`, `-pta_dataset`, and `-timing_package` are appended to every TOA. `-pta` and `-pta_dataset` carry the PTA key MetaPulsar knows the dataset by; `-timing_package` records which engine loaded it.
+* A release that already uses one of those flag names (PPTA DR1/DR2 ships `-pta`) has its own value preserved as `-pta_orig`, `-pta_dataset_orig`, or `-timing_package_orig`.
+* `-pn` pulse numbers are present when `use_pulse_numbers` asks for them; the rewrite itself is unconditional.
+
+Because `TIME`/`EFAC`-style directives are scoped per included file by Tempo2 but leak across `INCLUDE` boundaries in PINT, flattening is refused (with an error, never a silent shift) if such state is live at an `INCLUDE` boundary. Passing `timfile_output_dir` exports the exact files the engines consumed, so a combination can be reproduced or handed to other tooling directly.
 
 ### Step 7: Construct the combined design matrix
 
@@ -352,19 +363,19 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 * **DM modeling.** Removing DMX in favor of {DM, DMEPOCH, DM1, DM2} makes the deterministic DM part uniform. Stochastic DM variations are handled entirely in the noise model (e.g., a DM GP) during inference.
 * **Challenging timing models.** If a pulsar resides in a regime where ( **M** ) varies rapidly with ( β₀ ) (high‑order binary models, poorly constrained orbital evolution), manual inspection is recommended. For Pulsar Timing Array purposes this is typically not an important regime to take into account. Note that the factory allows a **composite** strategy (no merging model components) for such cases (aka: FrankenStat) that is slightly more forgiving in this regard.
 * **Name handling.** Pulsar identity uses **10″ J2000 position matching** plus parfile catalog names. B‑ vs J‑name strings that refer to the same source are aliases of one group; truncated `JHHMM±DDMM` strings are not used for identity or lookup.
-* **Determinism and provenance.** Given the set of `.par`/`.tim` inputs, the chosen reference PTA, and the list of consistent components, the output is deterministic. The code can optionally write the **shared** `.par` files it constructs for full auditability.
-* **Single‑PTA behavior.** A single‑PTA pulsar may still have its `.par`/`.tim` artifacts rewritten for DM model cleanup and pulse‑number handling. What is skipped is only the multi‑PTA consistency/alignment step, because there is no cross‑PTA reference relationship to enforce.
+* **Determinism and provenance.** Given the set of `.par`/`.tim` inputs, the chosen reference PTA, and the list of consistent components, the output is deterministic. The code can optionally write the **shared** `.par` files it constructs (`parfile_output_dir`) and the canonical `.tim` files it feeds the engines (`timfile_output_dir`) for full auditability.
+* **Single‑PTA behavior.** A single‑PTA pulsar still gets its `.par`/`.tim` artifacts rewritten (DM model cleanup, pulse numbers, canonical PTA flags). What is skipped is only the multi‑PTA consistency/alignment step, because there is no cross‑PTA reference relationship to enforce.
 
 ### Implementation details (reproducibility pointers)
 
 * **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **shared** strategy) calls `ParameterManager.make_parfiles_shared()` to emit shared `.par` files (optionally to disk). That method runs: parse → unit convert → `_make_parameters_shared` (component merge, then shared convention rules) → write.
 * **Parameter discovery and aliasing.** `ParameterManager` uses PINT’s model metadata plus a lightweight alias resolver to collect the parameter sets by *component type* and to resolve name differences between PINT and Tempo2.
 * **Design‑matrix assembly.** `MetaPulsar` implements the Enterprise/Discovery pulsar surface by duck typing. It builds `fitparameters`/`setparameters` from the mapping, concatenates the per‑PTA arrays, and assembles the combined `designmatrix` column‑by‑column—applying explicit unit corrections for astrometric columns where PINT and Tempo2 differ. A zero‑information column cull prevents singularities.
-* **Flags and metadata.** The combined flags include `pta`, `pta_dataset`, and `timing_package`. Planetary and positional arrays are copied row‑wise from the materialized PTA timing records.
+* **Flags and metadata.** `metapulsar.tim_canonical.write_canonical_tim(...)` stamps `pta`, `pta_dataset`, and `timing_package` into the `.tim` each engine loads, so the combined flags are read back from the data; `MetaPulsar._combine_flags()` fills them in only for legs that lack them (a MetaPulsar built directly from pulsar objects rather than from files). Planetary and positional arrays are copied row‑wise from the materialized PTA timing records.
 
 ### What this method does **not** do
 
-* It **does not** change TOAs, TOA uncertainties, or backend flags.
+* It **does not** change TOAs, TOA uncertainties, or backend flags. The canonical `.tim` rewrite adds `-pta`/`-pta_dataset`/`-timing_package` (and `-pn` when requested) and renames a colliding release flag to `-<name>_orig`; every other flag and value is copied verbatim.
 * It **does not** decide noise hyperparameters; EFAC/EQUAD/ECORR and the red/DM noise models are inferred in the usual way in Enterprise/Discovery after the metapulsar is constructed.
 * It **does not** convert `DMMODEL` grids to DMX or to a Taylor expansion.
   Binary-family conversion is gated and limited to the supported ELL1/ELL1H

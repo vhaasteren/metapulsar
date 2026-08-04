@@ -117,6 +117,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
@@ -132,6 +133,7 @@ class MetaPulsarFactory:
         add_dm_derivatives: bool = True,
         exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
@@ -154,6 +156,7 @@ def create_metapulsar(
     add_dm_derivatives: bool = True,
     exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
@@ -173,7 +176,13 @@ def create_metapulsar(
             when their component is merged. Defaults to ("DM",).
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
+        timfile_output_dir: Directory to save the canonical .tim files the engines
+            consumed, as {pulsar}_{pta}.tim. These are standalone Tempo2 FORMAT 1
+            files (INCLUDEs flattened) carrying -pta, -pta_dataset and
+            -timing_package flags, so they can be reused directly. If None, they
+            are not saved to disk.
         use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
+            The .tim is always rewritten; this only controls pulse numbers.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: AlignmentPolicy for the multi-PTA common profile.
             None means AlignmentPolicy(). Passing a policy together with
@@ -201,6 +210,7 @@ def create_all_metapulsars(
     add_dm_derivatives: bool = True,
     exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
@@ -215,7 +225,9 @@ def create_all_metapulsars(
         add_dm_derivatives: Whether to ensure DM1, DM2 are present
         exclude_from_shared: Canonical parameter names kept PTA-specific.
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
-            If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+            If None, par files are not saved to disk. Files are named per pulsar.
+        timfile_output_dir: Directory to save the canonical .tim files the engines
+            consumed, as {pulsar}_{pta}.tim. If None, they are not saved to disk.
         use_pulse_numbers: Pulse-number tracking mode.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: Alignment policy for the shared strategy.

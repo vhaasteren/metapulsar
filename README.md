@@ -121,6 +121,28 @@ longer accepted.
 
 Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`.
 
+### Canonical `.tim` files (`timfile_output_dir`)
+
+MetaPulsar never loads a release `.tim` directly. Every PTA leg is rewritten into
+a standalone Tempo2 `FORMAT 1` file: `INCLUDE`s are flattened into one file, and
+`-pta`, `-pta_dataset`, and `-timing_package` are stamped on every TOA so a TOA's
+PTA identity lives in the data instead of only in memory. TOA values,
+uncertainties, and existing flags are copied verbatim; if a release already uses
+one of those flag names (PPTA DR1/DR2 ships `-pta`), its value is preserved as
+`-pta_orig`. Pulse numbers are included when `use_pulse_numbers` asks for them,
+but the rewrite itself always happens.
+
+Pass `timfile_output_dir` to save the exact files the timing packages consumed,
+named `{pulsar}_{pta}.tim`, for auditing or reuse:
+
+```python
+mp = create_metapulsar(
+    file_data,
+    parfile_output_dir="out/par",
+    timfile_output_dir="out/tim",
+)
+```
+
 ### Nonlinear timing (`NonLinearTimingModel`)
 
 Par files are aligned to PINT's orbital chart in `ParameterManager` before

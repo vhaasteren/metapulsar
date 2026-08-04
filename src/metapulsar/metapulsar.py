@@ -427,29 +427,40 @@ class MetaPulsar:
         self._combine_flags()
 
     def _combine_flags(self):
-        """Combine flags from all PTAs."""
+        """Combine flags from all PTAs.
+
+        ``pta``, ``pta_dataset`` and ``timing_package`` normally arrive from the
+        canonical ``.tim`` the factory writes (see
+        :mod:`metapulsar.tim_canonical`). They are filled here only for legs that
+        lack them, which happens when a MetaPulsar is built directly from pulsar
+        objects instead of from files.
+        """
         from collections import defaultdict
 
         pta_slice = self._get_pta_slices()
         flags = defaultdict(lambda: np.zeros(len(self._toas), dtype="U128"))
 
+        fallback_flags = ("pta", "pta_dataset", "timing_package")
+
         for pta, record in self._pta_data.items():
-            flag_pta = False
+            pta_rows = pta_slice[pta]
             for flag, flag_values in record._flags.items():
-                flags[flag][pta_slice[pta]] = flag_values
+                if flag in fallback_flags:
+                    # EPTA tim files carry '\t' around some values.
+                    flag_values = np.char.strip(np.asarray(flag_values, dtype="U128"))
+                flags[flag][pta_rows] = flag_values
 
-                if flag == "pta" and not np.any(flag_values == ""):
-                    flags[flag][pta_slice[pta]] = [
-                        pta_flag.strip() for pta_flag in flag_values
-                    ]
-                    flag_pta = True
-
-            timing_package = self._get_timing_package(record)
-            flags["pta_dataset"][pta_slice[pta]] = pta
-            flags["timing_package"][pta_slice[pta]] = timing_package
-
-            if not flag_pta:
-                flags["pta"][pta_slice[pta]] = pta
+            fallbacks = {
+                "pta": pta,
+                "pta_dataset": pta,
+                "timing_package": self._get_timing_package(record),
+            }
+            for flag in fallback_flags:
+                values = flags[flag][pta_rows]
+                missing = values == ""
+                if np.any(missing):
+                    values[missing] = fallbacks[flag]
+                    flags[flag][pta_rows] = values
 
         # Store as numpy record array
         self._flags = np.zeros(
