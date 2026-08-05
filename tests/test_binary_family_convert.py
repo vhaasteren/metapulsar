@@ -1132,7 +1132,7 @@ def test_c5_audit_catches_a_patch_that_drops_a_correction():
     converted_dict = parse_parfile(StringIO(corrected.as_parfile()))
 
     # The real patch audits clean.
-    _audit_converter_output(par, converted_dict, patch, corrected)
+    _audit_converter_output(par, converted_dict, patch, corrected, source)
 
     # A patch that re-emits A1 with the UNCORRECTED (source) value is caught.
     stale = BinaryPatch(
@@ -1144,7 +1144,7 @@ def test_c5_audit_catches_a_patch_that_drops_a_correction():
         ),
     )
     with pytest.raises(BinaryConversionError, match="correction_not_applied"):
-        _audit_converter_output(par, converted_dict, stale, corrected)
+        _audit_converter_output(par, converted_dict, stale, corrected, source)
 
     # A patch that drops the re-emission entirely is caught too -- here by the
     # key-universe half of C5, which fires first: A1 is still in removed_keys,
@@ -1157,10 +1157,75 @@ def test_c5_audit_catches_a_patch_that_drops_a_correction():
         added_lines=tuple((k, v) for k, v in patch.added_lines if k.upper() != "A1"),
     )
     with pytest.raises(BinaryConversionError, match="A1") as excinfo:
-        _audit_converter_output(par, converted_dict, dropped, corrected)
+        _audit_converter_output(par, converted_dict, dropped, corrected, source)
     assert "unexpected_converter_output" in str(
         excinfo.value
     ) or "correction_not_applied" in str(excinfo.value)
+
+
+@slow
+def test_c5_passthrough_accepts_xdot_spelling_physical():
+    """C5 must accept Tempo2 XDOT spelling when the token is already physical."""
+    par = _ell1_dict(a1=J2145["A1"], eps1=J2145["EPS1"], eps2=J2145["EPS2"])
+    par["XDOT"] = ["8.410070170088968e-15 1 8.75e-16"]
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = _decide(par, policy=policy)
+    assert decision.outcome == "convert"
+    patch, _ = convert_shared_binary(
+        par, decision, pta_names=("PINT", "T2"), policy=policy, ell1h_shapiro="full"
+    )
+    assert patch.binary_value == "DD"
+    serialized = dict(par)
+    apply_binary_patch(serialized, patch)
+    assert "XDOT" in serialized or any(k.upper() == "XDOT" for k in serialized)
+
+
+@slow
+def test_c5_passthrough_accepts_xdot_unit_scaled_token():
+    """C5 must compare physical A1DOT when XDOT uses Tempo unit_scale tokens."""
+    par = _ell1_dict(
+        a1=11.003316789,
+        pb=16.33534782659533,
+        eps1=-4.0581e-6,
+        eps2=-9.1166e-6,
+        tasc=55819.254684930,
+    )
+    par["XDOT"] = ["-0.009436 1 0.001891"]  # → physical -9.436e-15 after unit_scale
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = _decide(par, policy=policy)
+    assert decision.outcome == "convert"
+    patch, _ = convert_shared_binary(
+        par, decision, pta_names=("PINT", "T2"), policy=policy, ell1h_shapiro="full"
+    )
+    assert patch.binary_value == "DD"
+
+
+@slow
+def test_c5_still_catches_true_a1dot_drift():
+    """C5 must still refuse when the converted model's A1DOT physically drifts."""
+    from io import StringIO
+
+    from metapulsar.binary_family_convert import _audit_converter_output
+    from pint.binaryconvert import convert_binary
+    from pint.models.model_builder import parse_parfile
+
+    par = _ell1_dict()
+    par["A1DOT"] = ["1e-14 0"]
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = _decide(par, policy=policy)
+    patch, _ = convert_shared_binary(
+        par, decision, pta_names=("PINT", "T2"), policy=policy, ell1h_shapiro="full"
+    )
+    source = create_pint_model(par, ell1h_shapiro="full")
+    corrected = convert_binary(create_pint_model(par), "DD")
+    apply_conversion_corrections(corrected, source)
+    # Drift before serializing so model and converted_dict stay synchronized.
+    corrected.A1DOT.value = float(corrected.A1DOT.value) * 2.0
+    converted_dict = parse_parfile(StringIO(corrected.as_parfile()))
+    with pytest.raises(
+        BinaryConversionError, match="converter_modified_passthrough_key"
+    ):
+        _audit_converter_output(par, converted_dict, patch, corrected, source)
 
 
 @slow

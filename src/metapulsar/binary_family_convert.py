@@ -22,6 +22,7 @@ from metapulsar.pint_helpers import (
     Ell1hShapiroMode,
     create_pint_model,
     dict_to_parfile_string,
+    get_aliases_for_parameter,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -1527,8 +1528,14 @@ def _audit_converter_output(
     converted_dict: Mapping[str, Any],
     patch: BinaryPatch,
     corrected_model: Any,
+    source_model: Any,
 ) -> None:
     """C5 audit of binary-owned keys after conversion.
+
+    Pass-through equality is alias-symmetric (PINT aliases via
+    ``get_aliases_for_parameter``) and, for numeric axes present on
+    ``source_model``, compares physical ``_model_value``s so Tempo-style
+    ``unit_scale`` (e.g. XDOT −0.009436 → A1DOT −9.436e−15) does not false-fail.
 
     Frozen-zero converter defaults (EDOT/OMDOT/PBDOT/A1DOT/GAMMA/…) that are
     absent from both the source and the patch are ignorable extras — convert_binary
@@ -1586,15 +1593,61 @@ def _audit_converter_output(
             continue
         if canon.startswith("FB"):
             continue
-        src_val = _param_float(source_dict, canon, default=None)
-        # resolve aliases for converted
-        aliases = _CANONICAL_ALIASES.get(canon, (canon,))
+
+        aliases = tuple(get_aliases_for_parameter(canon))
+        if not aliases:
+            aliases = (canon,)
+
+        # Prefer physical model values when the source TimingModel owns the axis.
+        # source_model was loaded with create_pint_model (PINT unit_scale applied);
+        # corrected_model is the post-§7.6 converted TimingModel. Canonical PINT
+        # names (A1DOT, not XDOT) are the model attribute names.
+        source_has_param = (
+            hasattr(source_model, canon)
+            and getattr(getattr(source_model, canon), "value", None) is not None
+        )
+        if source_has_param:
+            src_phys = _model_value(source_model, canon)
+            conv_phys = _model_value(corrected_model, canon)
+            if canon in {"TASC", "T0", "PEPOCH", "POSEPOCH", "DMEPOCH"}:
+                if not np.isclose(
+                    np.longdouble(src_phys),
+                    np.longdouble(conv_phys),
+                    rtol=0.0,
+                    atol=1e-12,
+                ):
+                    raise BinaryConversionError(
+                        f"converter_modified_passthrough_key: {canon} "
+                        f"src_model={src_phys} conv_model={conv_phys}"
+                    )
+            else:
+                if not np.isclose(
+                    float(src_phys), float(conv_phys), rtol=1e-12, atol=0.0
+                ):
+                    if float(src_phys) == float(int(src_phys)) and float(
+                        src_phys
+                    ) != float(conv_phys):
+                        raise BinaryConversionError(
+                            f"converter_modified_passthrough_key: {canon} "
+                            f"src_model={src_phys} conv_model={conv_phys}"
+                        )
+                    if abs(float(src_phys)) > 0 and (
+                        abs(float(src_phys) - float(conv_phys)) / abs(float(src_phys))
+                        > 1e-12
+                    ):
+                        raise BinaryConversionError(
+                            f"converter_modified_passthrough_key: {canon} "
+                            f"src_model={src_phys} conv_model={conv_phys}"
+                        )
+            continue
+
+        # Fallback: alias-aware dict-token compare (string / non-model keys).
+        src_val = _param_float(source_dict, *aliases, default=None)
         conv_val = _param_float(converted_dict, *aliases, default=None)
         if src_val is None and conv_val is None:
             continue
         if src_val is None or conv_val is None:
-            # integer-like / string fields
-            src_s = _param_str(source_dict, canon)
+            src_s = _param_str(source_dict, *aliases)
             conv_s = _param_str(converted_dict, *aliases)
             if src_s != conv_s:
                 raise BinaryConversionError(
@@ -1611,7 +1664,6 @@ def _audit_converter_output(
                 )
         else:
             if not np.isclose(float(src_val), float(conv_val), rtol=1e-12, atol=0.0):
-                # integer-like exact
                 if float(src_val) == float(int(src_val)) and float(src_val) != float(
                     conv_val
                 ):
@@ -2272,7 +2324,9 @@ def convert_shared_binary(
         )
 
     # C5
-    _audit_converter_output(reference_dict, converted_dict, patch, converted)
+    _audit_converter_output(
+        reference_dict, converted_dict, patch, converted, source_model
+    )
 
     # C6 fidelity
     nharms = int(_param_float(reference_dict, "NHARMS", "NHARM", default=7.0) or 7.0)
