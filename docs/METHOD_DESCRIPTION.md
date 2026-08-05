@@ -283,6 +283,16 @@ nltiming may then recondition fully delta-flat Kepler triples via
 `MarginalBasisFrame` and enforce the STIGMA sampling contract. See
 `feature_ell1h_truncation_fixw_nltiming.md`.
 
+Family classification resolves `BINARY T2` through PINT's model builder
+(`guess_binary_model`), the same machinery every MetaPulsar model load uses via
+`allow_T2=True`, rather than through a local keyword heuristic. Tempo2's T2 is a
+wrapper, so the gate only fires when PINT would build a Laplace-Lagrange
+component (`ELL1` or `ELL1H`); a T2 par that PINT resolves to `DD`, `DDK`, `DDH`,
+`DDS`, `DDGR` or `BT` is not ELL1-family and is skipped. The resolved component
+is recorded on the conversion report as
+`BinaryConversionDecision.resolved_binary_model`, which is what identifies, for
+example, an equatorial Kopeikin (`DDK`) stack behind a `BINARY T2` line.
+
 For cross-engine parity motivation and validation context, see Luo et al. 2021,
 *ApJ* 911, 45, [doi:10.3847/1538-4357/abe62f](https://doi.org/10.3847/1538-4357/abe62f).
 This method description intentionally does not reproduce the full paper

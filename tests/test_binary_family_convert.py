@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import math
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +35,11 @@ from metapulsar.binary_family_convert import (
     run_fidelity_check,
 )
 from metapulsar.parameter_manager import AlignmentPolicy, ParameterManager
-from metapulsar.pint_helpers import create_pint_model, dict_to_parfile_string
+from metapulsar.pint_helpers import (
+    create_pint_model,
+    dict_to_parfile_string,
+    mjd_from_model,
+)
 from tests.helpers import make_tim_metadata
 
 # ---------------------------------------------------------------------------
@@ -137,8 +142,11 @@ def _raw_difference_series(source, converted, *, grid=256, case="B"):
     import astropy.units as u
     from pint.simulation import make_fake_toas_fromMJDs
 
-    tasc = _model_value(source, "TASC", default=_model_value(source, "T0"))
-    pb = _model_value(source, "PB")
+    tasc_ld = mjd_from_model(source, "TASC")
+    if tasc_ld is None:
+        tasc_ld = mjd_from_model(source, "T0")
+    tasc = float(tasc_ld) if tasc_ld is not None else 0.0
+    pb = _model_value(source, "PB") / 86400.0  # canonical PB is seconds
     mjds = np.asarray(tasc + (np.arange(grid) / float(grid)) * pb, dtype=float)
     toas = make_fake_toas_fromMJDs(
         MJDs=mjds * u.d, model=source, obs="@", freq=np.inf * u.MHz
@@ -337,6 +345,94 @@ def test_t12_ell1_plus_h3_classified_ell1h():
     assert d.reason == "ell1h_h3_only_underdetermined"
 
 
+def test_t2_wrapper_resolved_through_pint_model_builder():
+    """``BINARY T2`` is classified by the component PINT actually builds.
+
+    MetaPulsar loads every model with ``allow_T2=True``, so the family has to
+    follow ``guess_binary_model``, not a local key heuristic.
+    """
+    kepler = {"ECC": ["1e-5 1"], "OM": ["10 1"], "T0": ["55000 1"]}
+
+    def _t2(extra, *, keplerian=False):
+        par = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0, binary="T2")
+        if keplerian:
+            for key in ("EPS1", "EPS2", "TASC"):
+                par.pop(key, None)
+            par.update(kepler)
+        par.update(extra)
+        return par
+
+    # Laplace-Lagrange T2: ELL1, and convertible.
+    plain = _decide(_t2({}))
+    assert plain.resolved_binary_model == "ELL1"
+    assert plain.source_family == "T2-EPS"
+    assert plain.outcome == "convert"
+
+    # T2 carrying the orthometric pair is ELL1H, so it targets DDH.
+    orthometric = _decide(
+        _t2({"H3": [f"{J2145['H3']} 1 1e-10"], "STIGMA": ["0.5 1 0.01"]})
+    )
+    assert orthometric.resolved_binary_model == "ELL1H"
+    assert orthometric.source_family == "ELL1H"
+    assert orthometric.target_family == "DDH"
+
+    # Keplerian T2 variants are DD-family: never ELL1-family, gate never fires,
+    # but the resolved component is recorded so the skip can be explained.
+    for extra, expected in (
+        ({}, "DD"),
+        ({"KIN": ["80 1"], "KOM": ["60 1"]}, "DDK"),
+        ({"H3": ["1e-8 1"], "STIGMA": ["0.9 1"]}, "DDH"),
+    ):
+        decision = _decide(_t2(extra, keplerian=True))
+        assert decision.resolved_binary_model == expected
+        assert decision.outcome == "skip"
+        assert decision.reason == "not_ell1_family"
+        assert decision.source_family is None
+
+
+def test_declared_binary_model_is_never_overridden_by_the_guess():
+    """PINT only reinterprets ``BINARY T2``; a declared model stands as written.
+
+    ``guess_binary_model`` is parameter-driven, so it answers ``ELL1`` for an
+    ``ELL1K`` par (``ELL1`` accepts ``OMDOT``). Trusting it there would silently
+    downgrade a periastron-advance model to the plain family.
+    """
+    par = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0, binary="ELL1K")
+    par["OMDOT"] = ["0.001 1"]
+    decision = _decide(par)
+    assert decision.resolved_binary_model == "ELL1K"
+    assert decision.source_family == "ELL1k"
+    assert decision.outcome == "unsupported"
+    assert decision.reason == "ell1k_secular_terms_unvalidated"
+
+
+def test_t2_without_laplace_coordinates_is_not_ell1_family():
+    """A circular T2 par resolves to ELL1 but has no EPS for the gate to use."""
+    par = _ell1_dict(a1=10.0, binary="T2")
+    for key in ("EPS1", "EPS2"):
+        par.pop(key, None)
+    decision = _decide(par)
+    assert decision.resolved_binary_model == "ELL1"
+    assert decision.outcome == "skip"
+    assert decision.reason == "not_ell1_family"
+
+
+def test_t2_uncoverable_parameter_set_is_not_ell1_family():
+    """No single PINT component covers EPS *and* Keplerian coordinates.
+
+    ``guess_binary_model`` returns an empty list, which is the case PINT itself
+    refuses to build, so the gate must not fire on it either.
+    """
+    par = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0, binary="T2")
+    par["ECC"] = ["1e-5 1"]
+    par["OM"] = ["10 1"]
+    par["T0"] = ["55000 1"]
+    decision = _decide(par)
+    assert decision.resolved_binary_model is None
+    assert decision.outcome == "skip"
+    assert decision.reason == "not_ell1_family"
+
+
 def test_t13_fb_unsupported():
     par = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0)
     par["FB0"] = ["1e-6 1"]
@@ -406,7 +502,9 @@ def test_t16_numeric_gate_and_span():
     assert d_skip.outcome == "skip"
     assert d_skip.reason == "below_threshold"
 
-    # EPS-dots: e(START) pushes over threshold
+    # EPS-dots: e(START) pushes over threshold. Token is the Tempo scaled
+    # spelling: "1.2" means 1.2e-12 /s (PINT's 1e-12/s unit, applied by the
+    # SI boundary), i.e. ~1e-4 of eccentricity drift over the ±1000 d span.
     e_ref = e_skip
     par = _ell1_dict(
         a1=a1,
@@ -415,7 +513,7 @@ def test_t16_numeric_gate_and_span():
         eps2=0.0,
         start=54000.0,
         finish=56000.0,
-        extra={"EPS1DOT": ["1e-12 0"], "EPS2DOT": ["0 0"]},
+        extra={"EPS1DOT": ["1.2 0"], "EPS2DOT": ["0 0"]},
     )
     d_dots = _decide(par)
     assert d_dots.outcome == "convert"
@@ -1735,3 +1833,199 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
     assert _probe_conversion_metadata(mp) is meta or (
         _probe_conversion_metadata(mp).required_sampling == ("STIGMA",)
     )
+
+
+# ---------------------------------------------------------------------------
+# Par-unit boundary regressions (`feature_par_units.md` §8, tests 9-15)
+# ---------------------------------------------------------------------------
+
+_J2317_PAR = Path("data/aei-dr2/nanograv_9y/par/J2317+1439.par")
+
+
+@pytest.mark.real_data
+@pytest.mark.skipif(not _J2317_PAR.exists(), reason="AEI-DR2 NG 9y data not present")
+def test_j2317_gate_reads_si_and_skips():
+    """NG J2317+1439: SI gate reads end the 5.9e27-fold false conversion.
+
+    The raw-token gate read `EPS1DOT 0.005038` as 5.038e-3 /s and produced
+    scale_s = 3.9e17 s, forcing a conversion PINT then refused
+    (`Eccentricity should be in the range of [0,1)`). Read in SI the scale is
+    0.066 ns, below the 1 ns threshold.
+    """
+    from pint.models.model_builder import parse_parfile
+
+    par = parse_parfile(StringIO(_J2317_PAR.read_text(encoding="utf-8")))
+    decision = _decide(par)
+    assert decision.outcome == "skip"
+    assert decision.reason == "below_threshold"
+    assert decision.scale is not None
+    assert decision.scale.scale_s == pytest.approx(6.569e-11, rel=1e-3)
+    assert decision.scale.e_max < 1e-6
+    assert decision.scale.a1_max_lt_s == pytest.approx(2.313949, rel=1e-6)
+
+
+def test_gate_unit_sanity_fires_on_prescaled_dots():
+    """EPS dots big enough to imply e > 1 are a unit error, not a pulsar."""
+    par = _ell1_dict(
+        a1=10.0,
+        eps1=1.4e-5,
+        eps2=0.0,
+        start=54000.0,
+        finish=56000.0,
+        extra={"EPS1DOT": ["70000 1"], "EPS2DOT": ["0 0"]},
+    )
+    with pytest.raises(BinaryConversionError, match="gate_unit_sanity"):
+        _decide(par)
+
+
+def test_gate_unit_sanity_bounds_a1():
+    par = _ell1_dict(
+        a1=10.0,
+        eps1=1.4e-5,
+        eps2=0.0,
+        start=54000.0,
+        finish=56000.0,
+        extra={"XDOT": ["2e8 1"]},
+    )
+    with pytest.raises(BinaryConversionError, match="gate_unit_sanity"):
+        _decide(par)
+
+
+@slow
+def test_audit_dispatch_passes_non_canonical_keys():
+    """C5 dispatch: SI compare for declared axes, token compare elsewhere.
+
+    A par carrying non-binary passthrough keys (DM1, PX) and canonical-unit
+    Shapiro terms (M2/SINI) must survive C5 unchanged — proving
+    ``has_canonical_unit`` routes each key to the right comparison instead of
+    raising ParUnitError on keys outside ``CANONICAL_SI``.
+    """
+    par = _ell1_dict(a1=10.0, eps1=7e-6, eps2=-1.8e-5)
+    par["M2"] = ["0.25 0"]
+    par["SINI"] = ["0.9 0"]
+    par["PX"] = ["1.2 0"]
+    par["DM1"] = ["1e-3 0"]
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = _decide(par, policy=policy)
+    assert decision.outcome == "convert"
+    patch, _ = convert_shared_binary(
+        par, decision, pta_names=("PINT", "T2"), policy=policy, ell1h_shapiro="full"
+    )
+    serialized = copy.deepcopy(par)
+    apply_binary_patch(serialized, patch)
+    assert serialized["M2"] == ["0.25 0"]
+    assert serialized["PX"] == ["1.2 0"]
+    assert serialized["DM1"] == ["1e-3 0"]
+
+
+@slow
+def test_ddh_edot_map_analytic_reference():
+    """DDH conversion with EPS1DOT reproduces the analytic EDOT/OMDOT.
+
+    Case A (full gauge), xdot = 0: the intrinsic dots equal the printed dots,
+    so edot = eps1*eps1dot/ecc and omdot = eps1dot*eps2/ecc^2 exactly. This is
+    the test the row-A/row-B mix in the `_ddh_map` inputs lacked: with the
+    EPS dot read as a raw token the converted EDOT would be off by 1e12.
+    """
+    from metapulsar.pint_helpers import si_from_model as _si
+
+    par = _ell1_dict(
+        a1=J2145["A1"],
+        eps1=J2145["EPS1"],
+        eps2=J2145["EPS2"],
+        binary="ELL1H",
+    )
+    par["H3"] = [f"{J2145['H3']} 1 1e-10"]
+    par["STIGMA"] = ["0.5 1 0.01"]
+    par["EPS1DOT"] = ["0.005038 0"]  # scaled spelling -> 5.038e-15 /s
+    source = create_pint_model(par, ell1h_shapiro="full")
+    converted, _unc = _convert_ell1h_block(
+        source, "full", AlignmentPolicy(binary_conversion="always")
+    )
+
+    e1, e2, e1dot = J2145["EPS1"], J2145["EPS2"], 5.038e-15
+    ecc = math.hypot(e1, e2)
+    expected_edot = e1 * e1dot / ecc
+    expected_omdot = e1dot * e2 / ecc**2  # rad/s
+
+    assert _si(converted, "EDOT") == pytest.approx(expected_edot, rel=1e-9)
+    assert _si(converted, "OMDOT") == pytest.approx(expected_omdot, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Cross-package emission portability (§8 tests 14-15)
+# ---------------------------------------------------------------------------
+
+_T2_HEAD = """PSRJ J2145-0750
+RAJ 21:45:50.4
+DECJ -07:50:18
+F0 62.295
+PEPOCH 55000
+POSEPOCH 55000
+DMEPOCH 55000
+DM 9.0
+EPHEM DE421
+CLK TT(TAI)
+UNITS TDB
+BINARY ELL1
+PB 6.83890261
+A1 10.1641056
+TASC 55000.0
+EPS1 7e-6
+EPS2 -1.8e-5
+"""
+
+_T2_TIM = """FORMAT 1
+fake 1440.0 54990.0 1.0 pks
+fake 1440.0 55000.0 1.0 pks
+fake 1440.0 55010.0 1.0 pks
+"""
+
+
+def _load_both_engines(tmp_path, par_text):
+    from metapulsar.sandbox_tempo2 import tempopulsar
+
+    par = tmp_path / "cross.par"
+    tim = tmp_path / "cross.tim"
+    par.write_text(par_text, encoding="utf-8")
+    tim.write_text(_T2_TIM, encoding="utf-8")
+    pint_model = create_pint_model(par_text)
+    t2_psr = tempopulsar(parfile=str(par), timfile=str(tim), dofit=False)
+    return pint_model, t2_psr
+
+
+@pytest.mark.requires_libstempo
+def test_eps_dot_emission_portable_across_engines(tmp_path):
+    """A `token_from_si` EPS dot reads back identically in PINT and tempo2."""
+    from metapulsar.pint_helpers import si_from_model as _si
+    from metapulsar.pint_helpers import token_from_si as _tok
+
+    value_si = 5.038e-15  # 1/s
+    par_text = _T2_HEAD + f"EPS1DOT {_tok('EPS1DOT', value_si)} 0\n"
+    pint_model, t2_psr = _load_both_engines(tmp_path, par_text)
+
+    pint_si = _si(pint_model, "EPS1DOT")
+    t2_si = float(t2_psr["EPS1DOT"].val)  # tempo2 stores 1/s after rescale
+    assert pint_si == pytest.approx(value_si, rel=1e-12)
+    assert t2_si == pytest.approx(value_si, rel=1e-9)
+    assert pint_si == pytest.approx(t2_si, rel=1e-9)
+
+
+@pytest.mark.requires_libstempo
+@pytest.mark.xfail(
+    strict=False,
+    reason="tempo2 rescales val[0] but never err[0] (readParfile.C), so a "
+    "scaled-spelling sigma diverges between engines; upstream bug, see "
+    "feature_par_units.md §6",
+)
+def test_row_b_uncertainty_spelling_across_engines(tmp_path):
+    """Scaled-spelling XDOT sigma: PINT rescales it, tempo2 appears not to."""
+    par_text = _T2_HEAD + "XDOT 0.005485 1 0.001182\n"
+    pint_model, t2_psr = _load_both_engines(tmp_path, par_text)
+
+    pint_sigma = float(pint_model.A1DOT.uncertainty.to_value(pint_model.A1DOT.units))
+    # PINT applies the magnitude heuristic to the error token too.
+    assert pint_sigma == pytest.approx(1.182e-15, rel=1e-9)
+    key = "A1DOT" if "A1DOT" in t2_psr.pars(which="set") else "XDOT"
+    t2_sigma = float(t2_psr[key].err)
+    assert t2_sigma == pytest.approx(pint_sigma, rel=1e-6)

@@ -21,6 +21,7 @@ from pint.models.parameter import Parameter
 from pint.exceptions import PrefixError
 from pint.utils import split_prefixed_name
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 import tempfile
 import subprocess
@@ -31,14 +32,23 @@ import numpy as np
 # Parameter-name utilities live in the timing package (self-contained for the
 # future ``nltiming`` split); re-exported here for the rest of MetaPulsar.
 from nltiming.pint_compat import (
+    CANONICAL_SI as CANONICAL_SI,
     KeyReturningDict as KeyReturningDict,
+    ParUnitError as ParUnitError,
     _get_all_components as _get_all_components,
     get_aliases_for_parameter as get_aliases_for_parameter,
     get_category_mapping_from_pint as get_category_mapping_from_pint,
     get_extra_top_level_params_for_category as get_extra_top_level_params_for_category,
     get_parameters_by_type_from_models as get_parameters_by_type_from_models,
+    has_canonical_unit as has_canonical_unit,
+    mjd_from_model as mjd_from_model,
+    mjd_from_par as mjd_from_par,
     pint_parameter_name as pint_parameter_name,
     resolve_parameter_alias as resolve_parameter_alias,
+    si_from_model as si_from_model,
+    si_from_par as si_from_par,
+    si_quantity_from_token as si_quantity_from_token,
+    token_from_si as token_from_si,
 )
 
 if TYPE_CHECKING:
@@ -276,6 +286,55 @@ def get_parameters_by_type_from_parfiles(
     return get_parameters_by_type_from_models(param_type, pint_models)
 
 
+@lru_cache(maxsize=256)
+def _guess_binary_model(par_keys: frozenset) -> tuple[str, ...]:
+    """Cached ``guess_binary_model`` keyed on the par's parameter names.
+
+    PINT's guess depends only on which parameters are present, so the values are
+    irrelevant. Caching matters because each call constructs an ``AllComponents``
+    registry.
+    """
+    from pint.models.model_builder import guess_binary_model
+
+    return tuple(guess_binary_model({key: [] for key in par_keys}))
+
+
+def resolve_binary_model(parfile_dict: Mapping[str, Any]) -> Optional[str]:
+    """Return the binary component PINT will build for this par.
+
+    Tempo2's ``BINARY T2`` is a wrapper, not a model: PINT resolves it to a
+    concrete component from the parameters present
+    (``ModelBuilder.choose_binary_model`` with ``allow_T2=True``, which is how
+    MetaPulsar builds every model). So ``T2`` may mean ``ELL1``, ``ELL1H``,
+    ``DD``, ``DDK``, ``DDH`` and so on, and only PINT's own
+    ``guess_binary_model`` knows which. Any explicitly declared model is
+    returned as written, because PINT overrides ``BINARY`` for ``T2`` only.
+
+    Returns None when the par has no ``BINARY`` line, or when no single PINT
+    component covers every binary parameter present, which is the case PINT
+    itself refuses to build.
+    """
+    key = _find_parfile_key(parfile_dict, "BINARY")
+    if key is None:
+        return None
+    entries = parfile_dict[key]
+    raw = entries[0] if isinstance(entries, (list, tuple)) else entries
+    tokens = str(raw).split()
+    if not tokens:
+        return None
+    declared = tokens[0].upper()
+    if declared != "T2":
+        return declared
+    guesses = _guess_binary_model(frozenset(k.upper() for k in parfile_dict))
+    return guesses[0] if guesses else None
+
+
+def _find_parfile_key(parfile_dict: Mapping[str, Any], name: str) -> Optional[str]:
+    """Return the actual dict key matching ``name`` case-insensitively."""
+    wanted = name.upper()
+    return next((key for key in parfile_dict if key.upper() == wanted), None)
+
+
 def create_pint_model(
     parfile_data: Any, ell1h_shapiro: Ell1hShapiroMode = "full"
 ) -> TimingModel:
@@ -402,13 +461,17 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     return result
 
 
-def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]:
-    """Parse parameter value using PINT's parsing approach.
+def parse_par_token(param_name: str, param_value) -> Tuple[Any, bool]:
+    """Split a par line into (value-as-written, is_frozen).
 
-    This function elegantly handles parfile parameter parsing by extracting
-    the parsing logic from PINT's Parameter.from_parfile_line() method.
-    It handles the common parfile format of "value fit_status uncertainty" where:
-    - value: the parameter value (float for numeric params, string for text params)
+    The value is the raw token, NOT resolved through any unit convention: for
+    Tempo-convention parameters (EPS dots, A1DOT/XDOT, PBDOT, EDOT) the token
+    is not the physical value. Use ``si_from_par`` / ``si_quantity_from_token``
+    for physics, and this function only for row-C reads, strings and fit
+    flags (see `feature_par_units.md` §2).
+
+    Handles the common parfile format of "value fit_status uncertainty":
+    - value: the token as written (float when numeric, string otherwise)
     - fit_status: 0=frozen, 1=free (int)
     - uncertainty: optional uncertainty value
 
@@ -417,17 +480,17 @@ def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]
         param_value: Parameter value from parfile dict (string or list)
 
     Returns:
-        Tuple of (parsed_value, is_frozen)
+        Tuple of (value_as_written, is_frozen)
 
     Raises:
         ValueError: If parameter cannot be parsed
 
     Examples:
-        >>> parse_parameter_using_pint("DM", ["123.45 1 0.01"])
+        >>> parse_par_token("DM", ["123.45 1 0.01"])
         (123.45, False)
-        >>> parse_parameter_using_pint("DMEPOCH", ["55000 0"])
+        >>> parse_par_token("DMEPOCH", ["55000 0"])
         (55000.0, True)
-        >>> parse_parameter_using_pint("UNITS", ["TCB 0"])
+        >>> parse_par_token("UNITS", ["TCB 0"])
         ("TCB", True)
     """
     # Handle list format from parse_parfile
@@ -955,8 +1018,13 @@ def _require_wide_longdouble() -> None:
         )
 
 
-def _par_float(token: str) -> np.longdouble:
-    """Parse a par-file numeric token, accepting Fortran ``D`` exponents."""
+def _par_token_longdouble(token: str) -> np.longdouble:
+    """Parse a par token as written, accepting Fortran ``D`` exponents.
+
+    Token reader only (row C: PB/FB0 chart alignment, where token and value
+    coincide); no unit convention is resolved. Physics reads go through
+    ``si_from_par`` / ``si_quantity_from_token`` instead.
+    """
     try:
         return np.longdouble(token.replace("D", "E").replace("d", "e"))
     except (ValueError, TypeError) as exc:
@@ -1085,7 +1153,7 @@ def align_orbital_chart(
     # Token layout: VALUE [FITFLAG] [UNCERTAINTY]. The fit flag is copied
     # verbatim -- tempo2 accepts 0/1 and Y/N, and re-encoding would corrupt it.
     pb_tokens = pb_entry.split()
-    pb_days = _par_float(pb_tokens[0])
+    pb_days = _par_token_longdouble(pb_tokens[0])
     if not np.isfinite(pb_days) or pb_days <= 0:
         raise OrbitalChartError(
             f"PTA {pta_name!r}: PB must be finite and positive, got {pb_days!r}"
@@ -1098,7 +1166,7 @@ def align_orbital_chart(
         new_tokens.append(pb_tokens[1])
     if len(pb_tokens) >= 3:
         # sigma_FB0 = |d(FB0)/d(PB)| * sigma_PB = sigma_PB / (86400 * PB**2)
-        sigma_fb0 = abs(_par_float(pb_tokens[2])) / (
+        sigma_fb0 = abs(_par_token_longdouble(pb_tokens[2])) / (
             SECONDS_PER_DAY_LD * pb_days * pb_days
         )
         new_tokens.append(format_longdouble_par_value(sigma_fb0))

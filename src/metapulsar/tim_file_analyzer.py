@@ -30,6 +30,21 @@ _DIRECTIVE_PREFIXES = frozenset(
 )
 
 
+def is_tim_comment_line(line: str) -> bool:
+    """True when a .tim line is a comment to both PINT and tempo2.
+
+    Tempo2 comments out any FORMAT 1 line whose first character is ``C``; PINT
+    honors ``C ``, ``c ``, ``CC `` and ``#``. The two-character ``CC`` marker
+    matters: EPTA Effelsberg files reject TOAs with it, and a walker that only
+    knows ``C `` reads those lines as data and shifts every field left by one.
+    """
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        return True
+    upper = stripped.upper()
+    return upper in ("C", "CC") or upper.startswith(("C ", "CC "))
+
+
 @dataclass(frozen=True)
 class TimMetadata:
     """Structured metadata extracted from a .tim file (including INCLUDEs)."""
@@ -211,9 +226,7 @@ class TimFileAnalyzer:
         active: Set[Path],
     ) -> bool:
         """Process one line; return updated format_tokenized state."""
-        if line.startswith("#"):
-            return format_tokenized
-        if line.upper().startswith("C "):
+        if is_tim_comment_line(line):
             return format_tokenized
 
         tokens = line.split()

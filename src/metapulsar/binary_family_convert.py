@@ -23,6 +23,14 @@ from metapulsar.pint_helpers import (
     create_pint_model,
     dict_to_parfile_string,
     get_aliases_for_parameter,
+    has_canonical_unit,
+    mjd_from_model,
+    mjd_from_par,
+    resolve_binary_model,
+    si_from_model,
+    si_from_par,
+    si_quantity_from_token,
+    token_from_si,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -61,6 +69,14 @@ class BinaryConversionDecision:
     target_family: Optional[str]
     scale: Optional[BinaryScaleGate]
     warnings: tuple[str, ...] = ()
+    resolved_binary_model: Optional[str] = None
+    """The PINT component the reference par resolves to (§6.2 D4).
+
+    For ``BINARY T2`` this is what PINT's model builder makes of the wrapper
+    (``ELL1``, ``ELL1H``, ``DDK``, ...), which is what the engines actually
+    build; for any other declared model it is that model. ``None`` when the par
+    has no binary, or when no single PINT component covers its parameters.
+    """
 
 
 @dataclass(frozen=True)
@@ -128,8 +144,10 @@ class BinaryConversionMetadata:
 # Par-dict helpers
 # ---------------------------------------------------------------------------
 
+# Day-to-second arithmetic on MJD differences only; parameter-value unit
+# conventions live in the `si_from_par` / `token_from_si` boundary
+# (nltiming.pint_compat), never here.
 _SECDAY = 86400.0
-_DAY_PER_YEAR = 365.25
 
 # Alias closure §7.3: canonical ← accepted spellings
 _ALIAS_TO_CANONICAL: dict[str, str] = {
@@ -235,9 +253,17 @@ def _param_str(par: Mapping[str, Any], *names: str) -> Optional[str]:
     return tokens[0]
 
 
-def _param_float(
+def _par_token_float(
     par: Mapping[str, Any], *names: str, default: Optional[float] = None
 ) -> Optional[float]:
+    """The par token as written — its unit convention is UNRESOLVED.
+
+    For Tempo-convention parameters (EPS dots, A1DOT/XDOT, PBDOT, EDOT, OMDOT)
+    the token is not the physical value, so this must never feed physics; use
+    ``si_from_par`` (or ``mjd_from_par`` for epochs) instead. Legitimate uses
+    are presence/zero checks, counts (NHARMS), and row-C reads where token and
+    value coincide by construction (see `feature_par_units.md` §2).
+    """
     raw = _param_str(par, *names)
     if raw is None:
         return default
@@ -340,6 +366,42 @@ def _format_line(
 # ---------------------------------------------------------------------------
 
 
+#: PINT binary component → MetaPulsar family label (§6.2 D4), for a ``BINARY T2``
+#: par resolved through PINT. ``ELL1`` keeps the ``T2-EPS`` label so the source
+#: spelling stays visible downstream. Every other component PINT can build
+#: (``DD``, ``DDK``, ``DDGR``, ``DDS``, ``DDH``, ``BT``, ``Isolated``) is absent
+#: on purpose: those are not ELL1-family, the gate must not fire on them, and
+#: the orthometric map has no Laplace coordinates to transfer.
+_PINT_MODEL_TO_FAMILY: dict[str, str] = {
+    "ELL1": "T2-EPS",
+    "ELL1H": "ELL1H",
+    "ELL1k": "ELL1k",
+}
+
+
+def _classify_t2_family(par: Mapping[str, Any]) -> Optional[str]:
+    """Resolve ``BINARY T2`` through PINT's model builder (§5.1/§5.5).
+
+    T2 is a Tempo2 wrapper rather than a model, so the family has to follow the
+    component PINT actually builds for this parameter set. MetaPulsar builds
+    every model with ``allow_T2=True``, so reading T2 with a local key heuristic
+    would let the gate reason about a model no engine ever instantiates.
+
+    The EPS guard stays as a postcondition: PINT's guess is parameter-driven and
+    would answer ``ELL1`` for a circular T2 par carrying neither EPS nor ECC,
+    which has no Laplace coordinates for the gate or the map to work with.
+    """
+    resolved = resolve_binary_model(par)
+    if resolved is None:
+        return None  # no BINARY line, or no PINT component covers this par
+    family = _PINT_MODEL_TO_FAMILY.get(resolved)
+    if family is None:
+        return None  # DD / DDK / DDH / DDS / DDGR / BT / Isolated
+    if not _has_any(par, ("EPS1", "EPS2")):
+        return None
+    return family
+
+
 def _classify_family(par: Mapping[str, Any]) -> Optional[str]:
     binary = _binary_value(par)
     if binary is None:
@@ -352,13 +414,7 @@ def _classify_family(par: Mapping[str, Any]) -> Optional[str]:
     if binary == "ELL1":
         return "ELL1H" if has_h else "ELL1"
     if binary == "T2":
-        # §5.1/§5.5: only T2 *with EPS* is ELL1-family. A T2-Kepler par
-        # (ECC/OM/T0, no EPS) is not, even when it carries H-terms — the gate
-        # must never fire on it, and the orthometric map has no Laplace
-        # coordinates to transfer.
-        if not _has_any(par, ("EPS1", "EPS2")):
-            return None  # T2-Kepler
-        return "ELL1H" if has_h else "T2-EPS"
+        return _classify_t2_family(par)
     return None
 
 
@@ -381,17 +437,17 @@ def _compute_scale_gate(
     *,
     span_mjd: Optional[tuple[float, float]] = None,
 ) -> BinaryScaleGate:
-    a1 = _param_float(par, "A1")
+    a1 = si_from_par(par, "A1", default=None)
     if a1 is None:
         raise BinaryConversionError(
             f"missing_a1: BINARY block has no A1\n{remediation_message()}"
         )
     a1_ref = abs(float(a1))
 
-    eps1 = _param_float(par, "EPS1", default=None)
-    eps2 = _param_float(par, "EPS2", default=None)
+    eps1 = si_from_par(par, "EPS1", default=None)
+    eps2 = si_from_par(par, "EPS2", default=None)
     if eps1 is None and eps2 is None:
-        ecc = _param_float(par, "ECC", "E", default=None)
+        ecc = si_from_par(par, "ECC", "E", default=None)
         e_ref = abs(float(ecc)) if ecc is not None else 0.0
         eps1 = 0.0
         eps2 = e_ref  # unused when no EPS; e_ref from ECC
@@ -400,9 +456,12 @@ def _compute_scale_gate(
         eps2 = float(eps2 or 0.0)
         e_ref = float(math.hypot(eps1, eps2))
 
-    tasc = _param_float(par, "TASC", default=None)
-    par_start = _param_float(par, "START", default=None)
-    par_finish = _param_float(par, "FINISH", default=None)
+    tasc_mjd = mjd_from_par(par, "TASC", default=None)
+    tasc = None if tasc_mjd is None else float(tasc_mjd)
+    par_start_mjd = mjd_from_par(par, "START", default=None)
+    par_start = None if par_start_mjd is None else float(par_start_mjd)
+    par_finish_mjd = mjd_from_par(par, "FINISH", default=None)
+    par_finish = None if par_finish_mjd is None else float(par_finish_mjd)
 
     # Prefer par START/FINISH when both are present; otherwise accept an
     # explicit tim-derived span (factory / ParameterManager path).
@@ -436,8 +495,8 @@ def _compute_scale_gate(
 
     e_max = e_ref
     if has_eps_dots and span_known and tasc is not None:
-        e1d = float(_param_float(par, "EPS1DOT", default=0.0) or 0.0)
-        e2d = float(_param_float(par, "EPS2DOT", default=0.0) or 0.0)
+        e1d = float(si_from_par(par, "EPS1DOT", default=0.0) or 0.0)
+        e2d = float(si_from_par(par, "EPS2DOT", default=0.0) or 0.0)
         for mjd in (start, finish):
             assert mjd is not None
             dt = _dt(mjd)
@@ -445,17 +504,33 @@ def _compute_scale_gate(
 
     a1_max = a1_ref
     if has_a1_dots and span_known and tasc is not None:
-        a1dot = float(_param_float(par, "A1DOT", "XDOT", default=0.0) or 0.0)
+        a1dot = float(si_from_par(par, "A1DOT", "XDOT", default=0.0) or 0.0)
         a1_val = float(a1)
         for mjd in (start, finish):
             assert mjd is not None
             a1_max = max(a1_max, abs(a1_val + a1dot * _dt(mjd)))
 
-    pb = _param_float(par, "PB", default=None)
+    # §7.2 physical invariants: a violated bound here is a unit-convention
+    # error somewhere upstream, never a pathological pulsar (an eccentricity
+    # of 7e5 was silently forcing conversions before the SI boundary).
+    if not 0.0 <= e_max < 1.0:
+        raise BinaryConversionError(
+            f"gate_unit_sanity: e_max={e_max:.6g} is not a valid eccentricity; "
+            "this indicates a unit-convention error, not a pathological pulsar\n"
+            f"{remediation_message()}"
+        )
+    if a1_max > 1.0e4:  # lt-s; well above any known binary
+        raise BinaryConversionError(
+            f"gate_unit_sanity: a1_max={a1_max:.6g} lt-s is not a plausible "
+            "projected semi-major axis; this indicates a unit-convention "
+            f"error, not a pathological pulsar\n{remediation_message()}"
+        )
+
+    pb = si_from_par(par, "PB", default=None)  # canonical PB is seconds
     if pb is None or pb == 0.0:
         nb = 0.0
     else:
-        nb = 2.0 * math.pi / (float(pb) * _SECDAY)
+        nb = 2.0 * math.pi / float(pb)
 
     scale_s = a1_max * e_max**2 + 0.5 * nb * a1_max**2 * e_max
     return BinaryScaleGate(
@@ -561,7 +636,7 @@ def _source_free_params(par: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _ell1h_case(par: Mapping[str, Any]) -> Literal["A", "B", "C", "D", "invalid"]:
-    h3 = _param_float(par, "H3", default=None)
+    h3 = _par_token_float(par, "H3", default=None)
     if h3 is None:
         return "invalid"
     if _has_any(par, ("STIGMA", "STIG", "VARSIGMA")):
@@ -603,21 +678,21 @@ def _classify_unsupported(
     design table names first.
     """
     if _is_orthometric_family(family):
-        h3 = _param_float(par, "H3", default=None)
-        a1 = _param_float(par, "A1", default=None)
+        h3 = _par_token_float(par, "H3", default=None)
+        a1 = _par_token_float(par, "A1", default=None)
         if h3 is None or a1 is None:
             return "ell1h_domain_violation"
         case = _ell1h_case(par)
         if case in ("A", "B"):
-            stig = float(_param_float(par, "STIGMA", "STIG", "VARSIGMA") or 0.0)
+            stig = float(_par_token_float(par, "STIGMA", "STIG", "VARSIGMA") or 0.0)
             if not _domain_ok(float(h3), stig, float(a1)):
                 return "ell1h_domain_violation"
         elif case == "C":
-            h4 = float(_param_float(par, "H4") or 0.0)
+            h4 = float(_par_token_float(par, "H4") or 0.0)
             stig = h4 / float(h3) if h3 else 0.0
             if not _domain_ok(float(h3), stig, float(a1)):
                 return "ell1h_domain_violation"
-            nharms_raw = _param_float(par, "NHARMS", "NHARM", default=7.0) or 7.0
+            nharms_raw = _par_token_float(par, "NHARMS", "NHARM", default=7.0) or 7.0
             nharms = int(nharms_raw)
             bound = _case_c_tail_bound(float(h3), h4, nharms)
             if bound > policy.binary_conversion_threshold_s:
@@ -638,7 +713,7 @@ def _classify_unsupported(
     else:  # ELL1k and anything else that reached D8
         return "ell1k_secular_terms_unvalidated"
 
-    if _has_fb(par) or _param_float(par, "PB", default=None) is None:
+    if _has_fb(par) or _par_token_float(par, "PB", default=None) is None:
         return "fb_orbital_series_unsupported"
 
     if _check_fit_pattern(par, orthometric=_is_orthometric_family(family)) is not None:
@@ -683,9 +758,9 @@ def _unsupported_message(
             f"a1_max={scale.a1_max_lt_s:.6g} e_max={scale.e_max:.6g}"
         )
     if reason == "ell1h_h4_tail_exceeds_tolerance" and par is not None:
-        h3 = float(_param_float(par, "H3") or 0.0)
-        h4 = float(_param_float(par, "H4") or 0.0)
-        nharms = int(_param_float(par, "NHARMS", "NHARM", default=7.0) or 7.0)
+        h3 = float(_par_token_float(par, "H3") or 0.0)
+        h4 = float(_par_token_float(par, "H4") or 0.0)
+        nharms = int(_par_token_float(par, "NHARMS", "NHARM", default=7.0) or 7.0)
         bound = _case_c_tail_bound(h3, h4, nharms)
         parts.append(f"tail_bound_s={bound:.6e} NHARMS={nharms}")
     if reason == "unsupported_fit_pattern" and detail:
@@ -756,6 +831,9 @@ def decide_binary_conversion(
             f"reference_pta={reference_pta!r} missing from parfile_dicts"
         )
     ref = parfile_dicts[reference_pta]
+    # What the engines will actually build: a Tempo2 ``T2`` wrapper resolves
+    # through PINT's model builder, every other declared model stands.
+    resolved = resolve_binary_model(ref)
 
     # D4
     if _binary_value(ref) is None:
@@ -765,6 +843,7 @@ def decide_binary_conversion(
             source_family=None,
             target_family=None,
             scale=None,
+            resolved_binary_model=resolved,
         )
     family = _classify_family(ref)
     if family is None:
@@ -774,6 +853,7 @@ def decide_binary_conversion(
             source_family=None,
             target_family=None,
             scale=None,
+            resolved_binary_model=resolved,
         )
 
     # D5 — binary-owned blocks must be string-identical across PTAs
@@ -803,6 +883,7 @@ def decide_binary_conversion(
                     source_family=family,
                     target_family=None,
                     scale=scale,
+                    resolved_binary_model=resolved,
                 )
             # D7b: sub-threshold with unknown span
             return BinaryConversionDecision(
@@ -811,6 +892,7 @@ def decide_binary_conversion(
                 source_family=family,
                 target_family=None,
                 scale=scale,
+                resolved_binary_model=resolved,
             )
 
     # D8
@@ -829,6 +911,7 @@ def decide_binary_conversion(
             target_family=None,
             scale=scale,
             warnings=(fit_detail,) if fit_detail else (),
+            resolved_binary_model=resolved,
         )
 
     # D9
@@ -839,6 +922,7 @@ def decide_binary_conversion(
         source_family=family,
         target_family=target,
         scale=scale,
+        resolved_binary_model=resolved,
     )
 
 
@@ -919,27 +1003,29 @@ def _intrinsic_dots(
 def _rereference_dots(params: Any, tau_s: float) -> None:
     """TASC→T0 epoch re-referencing of every t-linear parameter.
 
-    ``params`` may be a :class:`SimpleNamespace` (OM in radians, OMDOT in rad/s)
-    or a PINT TimingModel (OM in degrees, OMDOT in deg/yr).
+    ``params`` may be a :class:`SimpleNamespace` in the §7.6 map frame (PB in
+    days, OM in radians, dots in SI) or a PINT TimingModel. The TimingModel
+    branch reads through the SI boundary and writes back through
+    ``param.quantity``, so no unit conversion is hand-rolled here.
     """
+    import astropy.units as u
+
     tau_s = float(np.longdouble(tau_s))
     if hasattr(params, "params"):  # TimingModel duck
-        pb = np.longdouble(params.PB.value)
-        pbdot = np.longdouble(_model_value(params, "PBDOT"))
-        params.PB.value = float(pb + pbdot * tau_s / _SECDAY)
-        a1 = np.longdouble(params.A1.value)
-        a1dot = np.longdouble(_model_value(params, "A1DOT"))
-        params.A1.value = float(a1 + a1dot * tau_s)
+        pb_s = np.longdouble(si_from_model(params, "PB"))
+        pbdot = np.longdouble(si_from_model(params, "PBDOT"))
+        params.PB.quantity = float(pb_s + pbdot * tau_s) * u.s
+        a1 = np.longdouble(si_from_model(params, "A1"))
+        a1dot = np.longdouble(si_from_model(params, "A1DOT"))
+        params.A1.quantity = float(a1 + a1dot * tau_s) * u.Unit("lsec")
         if hasattr(params, "ECC") and params.ECC.value is not None:
-            edot = np.longdouble(_model_value(params, "EDOT"))
-            params.ECC.value = float(np.longdouble(params.ECC.value) + edot * tau_s)
+            ecc = np.longdouble(si_from_model(params, "ECC"))
+            edot = np.longdouble(si_from_model(params, "EDOT"))
+            params.ECC.value = float(ecc + edot * tau_s)
         if hasattr(params, "OM") and params.OM.value is not None:
-            # PINT OMDOT is deg/yr
-            omdot = np.longdouble(_model_value(params, "OMDOT"))
-            params.OM.value = float(
-                np.longdouble(params.OM.value)
-                + omdot * tau_s / (_SECDAY * _DAY_PER_YEAR)
-            )
+            om = np.longdouble(si_from_model(params, "OM"))
+            omdot = np.longdouble(si_from_model(params, "OMDOT"))
+            params.OM.quantity = float(om + omdot * tau_s) * u.rad
         return
 
     params.PB = np.longdouble(params.PB) + np.longdouble(params.PBDOT) * tau_s / _SECDAY
@@ -949,22 +1035,8 @@ def _rereference_dots(params: Any, tau_s: float) -> None:
 
 
 def _model_value(model: Any, name: str, default: float = 0.0) -> float:
-    if not hasattr(model, name):
-        return default
-    param = getattr(model, name)
-    if param is None or getattr(param, "value", None) is None:
-        return default
-    try:
-        quantity = param.quantity
-        if quantity is not None:
-            # Prefer SI-ish bases where unambiguous
-            unit = getattr(param, "units", None)
-            if unit is not None and str(unit) in {"", "1", "dimensionless_unscaled"}:
-                return float(np.longdouble(param.value))
-            return float(np.longdouble(param.value))
-    except Exception:
-        pass
-    return float(np.longdouble(param.value))
+    """SI read of a model parameter; thin wrapper kept for call-site brevity."""
+    return si_from_model(model, name, default=default)
 
 
 def _check_domain(h3: float, stig: float, a1: float) -> None:
@@ -982,7 +1054,7 @@ def apply_conversion_corrections(dd_model: Any, source_model: Any) -> None:
     eps1 = _model_value(source_model, "EPS1")
     dt0 = _delta_t0_seconds(a1, eps1)
     dd_model.T0.value = float(np.longdouble(dd_model.T0.value) + dt0 / _SECDAY)
-    tasc = _model_value(source_model, "TASC")
+    tasc = mjd_from_model(source_model, "TASC")
     tau = (np.longdouble(dd_model.T0.value) - np.longdouble(tasc)) * _SECDAY
     _rereference_dots(dd_model, float(tau))
 
@@ -1004,8 +1076,11 @@ def _ddh_map(
 ) -> SimpleNamespace:
     """Pure §7.6 ELL1H → DDH map (no model objects, no I/O).
 
-    Inputs are printed-par units (A1 lt-s, TASC/PB days, H3 s); outputs carry
-    ``OM`` in radians and ``OMDOT`` in rad/s. Isolated from
+    Inputs and outputs are one consistent frame: A1 lt-s, TASC/PB MJD days
+    (epoch arithmetic), H3 s, and every dot in SI (``xdot`` lsec/s,
+    ``e1dot_p``/``e2dot_p`` 1/s, ``pbdot`` s/s); outputs carry ``OM`` in
+    radians, ``OMDOT`` in rad/s and ``EDOT`` in 1/s. Declared-unit spelling
+    is applied only at emission, via ``token_from_si``. Isolated from
     :func:`_convert_ell1h_block` so the uncertainty Jacobian (§7.6) can
     difference the exact same map that produces the values.
     """
@@ -1074,19 +1149,39 @@ def _ddh_map(
     return out
 
 
-# Outputs the §7.6 uncertainty Jacobian reports, and the unit conversion from
-# the `_ddh_map` frame (OM rad, OMDOT rad/s) to the par frame (deg, deg/yr).
-_DDH_UNC_OUTPUT_SCALE: dict[str, float] = {
-    "A1": 1.0,
-    "PB": 1.0,
-    "ECC": 1.0,
-    "OM": 180.0 / math.pi,
-    "T0": 1.0,
-    "H3": 1.0,
-    "STIGMA": 1.0,
-    "EDOT": 1.0,
-    "OMDOT": (180.0 / math.pi) * _SECDAY * _DAY_PER_YEAR,
-}
+# Outputs the §7.6 uncertainty Jacobian reports, in the `_ddh_map` frame
+# (OM rad, OMDOT rad/s, PB/T0 days). Conversion to the written par frame
+# happens at emission, through `_unc_token` / `token_from_si`.
+_DDH_UNC_OUTPUT_KEYS: tuple[str, ...] = (
+    "A1",
+    "PB",
+    "ECC",
+    "OM",
+    "T0",
+    "H3",
+    "STIGMA",
+    "EDOT",
+    "OMDOT",
+)
+
+# `_ddh_map` outputs that stay in MJD days at emission (row D of the unit
+# table); everything else in `_DDH_UNC_OUTPUT_KEYS` is on its canonical SI
+# axis and is spelled by `token_from_si`.
+_MAP_FRAME_DAY_KEYS = frozenset({"PB", "T0"})
+
+
+def _unc_token(name: str, sigma: Any) -> Optional[str]:
+    """Map-frame 1-sigma → par-line uncertainty token, or None if unusable.
+
+    PINT applies the row-B magnitude heuristic to uncertainty tokens exactly
+    as it does to value tokens (``_set_uncertainty`` is ``_set_quantity``), so
+    the sigma must go through the same emission boundary as the value.
+    """
+    if sigma is None or not math.isfinite(float(sigma)) or float(sigma) <= 0.0:
+        return None
+    if name in _MAP_FRAME_DAY_KEYS:
+        return f"{float(sigma):.16g}"
+    return token_from_si(name, float(sigma))
 
 
 def _propagate_ddh_uncertainties(
@@ -1101,7 +1196,7 @@ def _propagate_ddh_uncertainties(
     errors. Partials come from central differences on :func:`_ddh_map` itself,
     so they can never drift from the values that map produces.
     """
-    variance = {name: 0.0 for name in _DDH_UNC_OUTPUT_SCALE}
+    variance = {name: 0.0 for name in _DDH_UNC_OUTPUT_KEYS}
     for key, sigma in sigmas.items():
         if key not in base:
             continue
@@ -1114,16 +1209,22 @@ def _propagate_ddh_uncertainties(
         )
         plus = _ddh_map(**{**dict(base), key: x0 + step}, absorbed=absorbed)
         minus = _ddh_map(**{**dict(base), key: x0 - step}, absorbed=absorbed)
-        for name, scale in _DDH_UNC_OUTPUT_SCALE.items():
+        for name in _DDH_UNC_OUTPUT_KEYS:
             deriv = (
                 np.longdouble(getattr(plus, name)) - np.longdouble(getattr(minus, name))
             ) / (2.0 * step)
-            variance[name] += float(deriv * scale * sigma) ** 2
+            variance[name] += float(deriv * sigma) ** 2
     return {name: math.sqrt(value) for name, value in variance.items()}
 
 
 def _source_uncertainties(par: Mapping[str, Any]) -> dict[str, float]:
-    """Read per-parameter 1-sigma values off the source par lines (token 2)."""
+    """Read per-parameter 1-sigma values off the source par lines (token 2).
+
+    Sigmas are returned on the `_ddh_map` input axes: the dot keys go through
+    the SI boundary (PINT applies the same Tempo-convention rules to
+    uncertainty tokens as to value tokens), everything else is row C / row D
+    where the token already sits on the map axis.
+    """
     wanted = {
         "a1_p": ("A1",),
         "e1p": ("EPS1",),
@@ -1137,13 +1238,24 @@ def _source_uncertainties(par: Mapping[str, Any]) -> dict[str, float]:
         "e2dot_p": ("EPS2DOT",),
         "pbdot": ("PBDOT",),
     }
+    si_sigma_keys = {
+        "xdot": "A1DOT",
+        "e1dot_p": "EPS1DOT",
+        "e2dot_p": "EPS2DOT",
+        "pbdot": "PBDOT",
+    }
     out: dict[str, float] = {}
     for key, names in wanted.items():
         raw = _uncertainty_str(par, *names)
         if raw is None:
             continue
         try:
-            value = float(raw)
+            if key in si_sigma_keys:
+                value = abs(
+                    float(si_quantity_from_token(si_sigma_keys[key], raw).value)
+                )
+            else:
+                value = float(raw)
         except (TypeError, ValueError):
             continue
         if math.isfinite(value) and value > 0.0:
@@ -1191,12 +1303,13 @@ def _convert_ell1h_block(
 
     _check_domain(float(h3), float(stig), float(a1_p))
 
+    tasc_mjd = mjd_from_model(model, "TASC")
     base = {
         "a1_p": a1_p,
         "e1p": np.longdouble(_model_value(model, "EPS1")),
         "e2p": np.longdouble(_model_value(model, "EPS2")),
-        "tasc": np.longdouble(_model_value(model, "TASC")),
-        "pb": np.longdouble(_model_value(model, "PB")),
+        "tasc": np.longdouble(tasc_mjd if tasc_mjd is not None else 0.0),
+        "pb": np.longdouble(_model_value(model, "PB")) / _SECDAY,
         "h3": h3,
         "stig": stig,
         "xdot": np.longdouble(_model_value(model, "A1DOT")),
@@ -1261,19 +1374,11 @@ def _timing_model_from_ddh_params(
         raise BinaryConversionError("unexpected_converter_output: missing BINARY")
     par[bin_key] = ["DDH"]
 
-    om_deg = float(np.degrees(np.longdouble(params.OM)))
-    omdot_deg_yr = float(
-        np.degrees(np.longdouble(params.OMDOT)) * _SECDAY * _DAY_PER_YEAR
-    )
-
     unc_map = dict(uncertainties or {})
 
     def _unc(name: str) -> Optional[str]:
         """Propagated 1-sigma for an output key, or None when unavailable."""
-        value = unc_map.get(name)
-        if value is None or not math.isfinite(float(value)) or float(value) <= 0.0:
-            return None
-        return f"{float(value):.16g}"
+        return _unc_token(name, unc_map.get(name))
 
     def _set(
         name: str, value: Any, fit: bool = False, unc: Optional[str] = None
@@ -1295,26 +1400,33 @@ def _timing_model_from_ddh_params(
         else False
     )
     _set("ECC", float(params.ECC), triple_free, _unc("ECC"))
-    _set("OM", om_deg, triple_free, _unc("OM"))
+    _set("OM", token_from_si("OM", float(params.OM)), triple_free, _unc("OM"))
     _set("T0", float(params.T0), triple_free, _unc("T0"))
 
-    # Emit EDOT/OMDOT when source had EPS dots
+    # Emit EDOT/OMDOT when source had EPS dots. Map-frame SI values are
+    # spelled by token_from_si (§5.3.2), which is also where an unportable
+    # spelling would be refused.
     if hasattr(source_model, "EPS1DOT") and source_model.EPS1DOT.value is not None:
         dots_free = not source_model.EPS1DOT.frozen
-        _set("EDOT", float(params.EDOT), dots_free, _unc("EDOT"))
-        _set("OMDOT", omdot_deg_yr, dots_free, _unc("OMDOT"))
+        _set("EDOT", token_from_si("EDOT", float(params.EDOT)), dots_free, _unc("EDOT"))
+        _set(
+            "OMDOT",
+            token_from_si("OMDOT", float(params.OMDOT)),
+            dots_free,
+            _unc("OMDOT"),
+        )
 
     if _model_value(source_model, "PBDOT") != 0.0 or (
         hasattr(source_model, "PBDOT") and source_model.PBDOT.value is not None
     ):
         pbdot_fit = not getattr(source_model.PBDOT, "frozen", True)
-        _set("PBDOT", float(params.PBDOT), pbdot_fit)
+        _set("PBDOT", token_from_si("PBDOT", float(params.PBDOT)), pbdot_fit)
 
     if _model_value(source_model, "A1DOT") != 0.0 or (
         hasattr(source_model, "A1DOT") and source_model.A1DOT.value is not None
     ):
         a1dot_fit = not getattr(source_model.A1DOT, "frozen", True)
-        _set("A1DOT", float(params.A1DOT), a1dot_fit)
+        _set("A1DOT", token_from_si("A1DOT", float(params.A1DOT)), a1dot_fit)
 
     h3_fit = not getattr(source_model.H3, "frozen", True)
     _set("H3", float(params.H3), h3_fit, _unc("H3"))
@@ -1411,10 +1523,22 @@ def _build_patch_plain(
     )
     if had_dots:
         added.append(
-            ("EDOT", _format_line(_model_value(converted_model, "EDOT"), dots_free))
+            (
+                "EDOT",
+                _format_line(
+                    token_from_si("EDOT", _model_value(converted_model, "EDOT")),
+                    dots_free,
+                ),
+            )
         )
         added.append(
-            ("OMDOT", _format_line(_model_value(converted_model, "OMDOT"), dots_free))
+            (
+                "OMDOT",
+                _format_line(
+                    token_from_si("OMDOT", _model_value(converted_model, "OMDOT")),
+                    dots_free,
+                ),
+            )
         )
     if reemit_pb:
         pb_fit = _fit_flag(source_dict, "PB")
@@ -1445,10 +1569,7 @@ def _build_patch_orthometric(
     uncertainties: Mapping[str, float],
 ) -> BinaryPatch:
     def _unc(name: str) -> Optional[str]:
-        value = uncertainties.get(name)
-        if value is None or not math.isfinite(float(value)) or float(value) <= 0.0:
-            return None
-        return f"{float(value):.16g}"
+        return _unc_token(name, uncertainties.get(name))
 
     removed: list[str] = []
     for name in (
@@ -1490,7 +1611,9 @@ def _build_patch_orthometric(
             (
                 "EDOT",
                 _format_line(
-                    _model_value(converted_model, "EDOT"), dots_free, _unc("EDOT")
+                    token_from_si("EDOT", _model_value(converted_model, "EDOT")),
+                    dots_free,
+                    _unc("EDOT"),
                 ),
             )
         )
@@ -1498,7 +1621,9 @@ def _build_patch_orthometric(
             (
                 "OMDOT",
                 _format_line(
-                    _model_value(converted_model, "OMDOT"), dots_free, _unc("OMDOT")
+                    token_from_si("OMDOT", _model_value(converted_model, "OMDOT")),
+                    dots_free,
+                    _unc("OMDOT"),
                 ),
             )
         )
@@ -1570,9 +1695,10 @@ def _audit_converter_output(
     """C5 audit of binary-owned keys after conversion.
 
     Pass-through equality is alias-symmetric (PINT aliases via
-    ``get_aliases_for_parameter``) and, for numeric axes present on
-    ``source_model``, compares physical ``_model_value``s so Tempo-style
-    ``unit_scale`` (e.g. XDOT −0.009436 → A1DOT −9.436e−15) does not false-fail.
+    ``get_aliases_for_parameter``) and, for axes with a declared canonical
+    unit, compares both sides in SI through ``si_from_par`` so Tempo-style
+    conventions (e.g. XDOT −0.009436 → A1DOT −9.436e−15) do not false-fail —
+    convention-proof, not merely alias-proof.
 
     Frozen-zero converter defaults (EDOT/OMDOT/PBDOT/A1DOT/GAMMA/…) that are
     absent from both the source and the patch are ignorable extras — convert_binary
@@ -1601,7 +1727,7 @@ def _audit_converter_output(
             key in _CONVERTER_DEFAULT_ZERO_KEYS
             or _canon_key(key) in _CONVERTER_DEFAULT_ZERO_KEYS
         ):
-            val = _param_float(converted_dict, key, default=None)
+            val = _par_token_float(converted_dict, key, default=None)
             if val is None or abs(float(val)) == 0.0:
                 if not _fit_flag(converted_dict, key):
                     ignorable.add(key)
@@ -1609,7 +1735,7 @@ def _audit_converter_output(
     # M2/SINI may appear as None defaults on DD — ignore if absent from source
     for key in ("M2", "SINI"):
         if key in extras and key not in src_keys:
-            val = _param_float(converted_dict, key, default=None)
+            val = _par_token_float(converted_dict, key, default=None)
             if val is None:
                 extras.discard(key)
 
@@ -1635,52 +1761,35 @@ def _audit_converter_output(
         if not aliases:
             aliases = (canon,)
 
-        # Prefer physical model values when the source TimingModel owns the axis.
-        # source_model was loaded with create_pint_model (PINT unit_scale applied);
-        # corrected_model is the post-§7.6 converted TimingModel. Canonical PINT
-        # names (A1DOT, not XDOT) are the model attribute names.
-        source_has_param = (
-            hasattr(source_model, canon)
-            and getattr(getattr(source_model, canon), "value", None) is not None
-        )
-        if source_has_param:
-            src_phys = _model_value(source_model, canon)
-            conv_phys = _model_value(corrected_model, canon)
-            if canon in {"TASC", "T0", "PEPOCH", "POSEPOCH", "DMEPOCH"}:
-                if not np.isclose(
-                    np.longdouble(src_phys),
-                    np.longdouble(conv_phys),
-                    rtol=0.0,
-                    atol=1e-12,
-                ):
+        # Declared axes are compared in SI on BOTH sides, so a Tempo-scaled
+        # source spelling (XDOT −0.009436) equals PINT's canonical emission
+        # (A1DOT −9.436e−15) exactly when the physics agrees. Every other
+        # passthrough key (epochs, NHARMS, GAMMA, whatever the release
+        # carries) keeps the alias-aware token comparison below.
+        if has_canonical_unit(canon):
+            src_si = si_from_par(source_dict, *aliases, default=None)
+            conv_si = si_from_par(converted_dict, *aliases, default=None)
+            if src_si is None and conv_si is None:
+                continue
+            if src_si is not None and conv_si is not None:
+                if not np.isclose(float(src_si), float(conv_si), rtol=1e-12, atol=0.0):
                     raise BinaryConversionError(
                         f"converter_modified_passthrough_key: {canon} "
-                        f"src_model={src_phys} conv_model={conv_phys}"
+                        f"src_si={src_si} conv_si={conv_si}"
                     )
-            else:
-                if not np.isclose(
-                    float(src_phys), float(conv_phys), rtol=1e-12, atol=0.0
-                ):
-                    if float(src_phys) == float(int(src_phys)) and float(
-                        src_phys
-                    ) != float(conv_phys):
-                        raise BinaryConversionError(
-                            f"converter_modified_passthrough_key: {canon} "
-                            f"src_model={src_phys} conv_model={conv_phys}"
-                        )
-                    if abs(float(src_phys)) > 0 and (
-                        abs(float(src_phys) - float(conv_phys)) / abs(float(src_phys))
-                        > 1e-12
-                    ):
-                        raise BinaryConversionError(
-                            f"converter_modified_passthrough_key: {canon} "
-                            f"src_model={src_phys} conv_model={conv_phys}"
-                        )
+                continue
+            src_s = _param_str(source_dict, *aliases)
+            conv_s = _param_str(converted_dict, *aliases)
+            if src_s != conv_s:
+                raise BinaryConversionError(
+                    f"converter_modified_passthrough_key: {canon} "
+                    f"src={src_s!r} conv={conv_s!r}"
+                )
             continue
 
         # Fallback: alias-aware dict-token compare (string / non-model keys).
-        src_val = _param_float(source_dict, *aliases, default=None)
-        conv_val = _param_float(converted_dict, *aliases, default=None)
+        src_val = _par_token_float(source_dict, *aliases, default=None)
+        conv_val = _par_token_float(converted_dict, *aliases, default=None)
         if src_val is None and conv_val is None:
             continue
         if src_val is None or conv_val is None:
@@ -1736,10 +1845,11 @@ def _audit_converter_output(
                 "the patch carries no line for it, so the §7.6 correction would "
                 "be dropped from every written par"
             )
-        if not np.isclose(float(emitted), float(corrected), rtol=1e-12, atol=0.0):
+        emitted_si = float(si_quantity_from_token(name, emitted).value)
+        if not np.isclose(emitted_si, float(corrected), rtol=1e-12, atol=0.0):
             raise BinaryConversionError(
                 f"correction_not_applied: {name} patch={emitted} "
-                f"corrected_model={corrected}"
+                f"corrected_model_si={corrected}"
             )
 
 
@@ -1794,10 +1904,12 @@ def _stand_alone_delay_s(model: Any, toas: Any) -> Optional[np.ndarray]:
     )
 
 
-def _orbital_phase(model: Any, mjds: np.ndarray) -> np.ndarray:
-    tasc = _model_value(model, "TASC", default=_model_value(model, "T0"))
-    pb = _model_value(model, "PB")
-    return 2.0 * np.pi * (np.asarray(mjds, dtype=np.longdouble) - tasc) / pb
+def _anchor_epoch_mjd(model: Any) -> float:
+    """TASC (or T0) as a float MJD for grid anchoring; 0.0 when neither is set."""
+    epoch = mjd_from_model(model, "TASC")
+    if epoch is None:
+        epoch = mjd_from_model(model, "T0")
+    return float(epoch) if epoch is not None else 0.0
 
 
 def _tail_pred_case_c(
@@ -1809,12 +1921,11 @@ def _tail_pred_case_c(
 
     bm = ELL1Hmodel()
     bm.fit_params = ["H3", "STIGMA"]
-    pb = _model_value(model, "PB")
     bm.update_input(
         barycentric_toa=np.asarray(mjds, dtype=np.longdouble),
-        PB=pb * u.day,
+        PB=(_model_value(model, "PB") * u.s).to(u.day),
         A1=_model_value(model, "A1") * u.lsec,
-        TASC=np.longdouble(_model_value(model, "TASC")) * u.day,
+        TASC=np.longdouble(mjd_from_model(model, "TASC")) * u.day,
         EPS1=_model_value(model, "EPS1") * u.Unit(""),
         EPS2=_model_value(model, "EPS2") * u.Unit(""),
         H3=h3 * u.s,
@@ -1836,12 +1947,13 @@ def _tail_pred_case_d(
 
     bm = ELL1Hmodel()
     bm.fit_params = ["H3", "STIGMA"]
-    pb = _model_value(model, "PB")
+    pb_day = (_model_value(model, "PB") * u.s).to(u.day)
+    tasc_day = np.longdouble(mjd_from_model(model, "TASC")) * u.day
     bm.update_input(
         barycentric_toa=np.asarray(mjds, dtype=np.longdouble),
-        PB=pb * u.day,
+        PB=pb_day,
         A1=_model_value(model, "A1") * u.lsec,
-        TASC=np.longdouble(_model_value(model, "TASC")) * u.day,
+        TASC=tasc_day,
         EPS1=_model_value(model, "EPS1") * u.Unit(""),
         EPS2=_model_value(model, "EPS2") * u.Unit(""),
         H3=h3 * u.s,
@@ -1852,9 +1964,9 @@ def _tail_pred_case_d(
     bm.fit_params = ["H3"]
     bm.update_input(
         barycentric_toa=np.asarray(mjds, dtype=np.longdouble),
-        PB=pb * u.day,
+        PB=pb_day,
         A1=_model_value(model, "A1") * u.lsec,
-        TASC=np.longdouble(_model_value(model, "TASC")) * u.day,
+        TASC=tasc_day,
         EPS1=_model_value(model, "EPS1") * u.Unit(""),
         EPS2=_model_value(model, "EPS2") * u.Unit(""),
         H3=h3 * u.s,
@@ -1918,9 +2030,9 @@ def _absorbed_shapiro_to_full(
     if stig <= 0.0:
         return d_s_absorbed
     r = h3 / stig**3
-    tasc = _model_value(model, "TASC", default=_model_value(model, "T0"))
-    pb = _model_value(model, "PB")
-    phi = 2.0 * np.pi * (np.asarray(mjds, dtype=np.longdouble) - tasc) / pb
+    tasc = _anchor_epoch_mjd(model)
+    pb_s = _model_value(model, "PB")
+    phi = 2.0 * np.pi * (np.asarray(mjds, dtype=np.longdouble) - tasc) * _SECDAY / pb_s
     return np.asarray(
         d_s_absorbed
         + 4.0 * r * stig * np.sin(phi)
@@ -1944,17 +2056,18 @@ def run_fidelity_check(
     from pint.simulation import make_fake_toas_fromMJDs
     import astropy.units as u
 
-    tasc = _model_value(source_model, "TASC", default=_model_value(source_model, "T0"))
-    pb = _model_value(source_model, "PB")
+    tasc = _anchor_epoch_mjd(source_model)
+    pb_s = _model_value(source_model, "PB")
+    pb_days = pb_s / _SECDAY
     anchors = [tasc]
     has_dots = any(
         _model_value(source_model, n) != 0.0
         for n in ("EPS1DOT", "EPS2DOT", "A1DOT", "PBDOT")
     )
-    start = _model_value(source_model, "START", default=float("nan"))
-    finish = _model_value(source_model, "FINISH", default=float("nan"))
-    if has_dots and math.isfinite(start) and math.isfinite(finish):
-        anchors.extend([start, finish])
+    start_mjd = mjd_from_model(source_model, "START")
+    finish_mjd = mjd_from_model(source_model, "FINISH")
+    if has_dots and start_mjd is not None and finish_mjd is not None:
+        anchors.extend([float(start_mjd), float(finish_mjd)])
 
     a1_max = abs(_model_value(source_model, "A1"))
     e_max = math.hypot(
@@ -1962,7 +2075,7 @@ def run_fidelity_check(
     )
     if e_max == 0.0 and hasattr(converted_model, "ECC"):
         e_max = abs(_model_value(converted_model, "ECC"))
-    nb = 2.0 * math.pi / (pb * _SECDAY) if pb else 0.0
+    nb = 2.0 * math.pi / pb_s if pb_s else 0.0
     h3 = _model_value(source_model, "H3")
     if case == "C":
         stig = _model_value(source_model, "H4") / h3 if h3 else 0.0
@@ -1981,7 +2094,7 @@ def run_fidelity_check(
 
     for t_a in anchors:
         mjds = np.asarray(
-            t_a + (np.arange(grid_points) / float(grid_points)) * pb,
+            t_a + (np.arange(grid_points) / float(grid_points)) * pb_days,
             dtype=float,
         )
         toas = make_fake_toas_fromMJDs(
@@ -2030,7 +2143,7 @@ def run_fidelity_check(
     # 22% wrong and would trip the 10% assertion on a correct conversion.
     a1_i = abs(_model_value(converted_model, "A1"))
     ecc_i = _model_value(converted_model, "ECC")
-    om_i_rad = math.radians(_model_value(converted_model, "OM"))
+    om_i_rad = _model_value(converted_model, "OM")  # canonical OM is radians
     eps1_i = ecc_i * math.sin(om_i_rad)
     c_pred = 1.5 * a1_i * eps1_i
     if not plain and stig:
@@ -2374,7 +2487,9 @@ def convert_shared_binary(
     )
 
     # C6 fidelity
-    nharms = int(_param_float(reference_dict, "NHARMS", "NHARM", default=7.0) or 7.0)
+    nharms = int(
+        _par_token_float(reference_dict, "NHARMS", "NHARM", default=7.0) or 7.0
+    )
     try:
         fidelity = run_fidelity_check(
             source_model,

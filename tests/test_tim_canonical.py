@@ -90,6 +90,81 @@ class TestFlatten:
         assert "# hash comment" in result.text
         assert "T2EFAC -sys foo 1.2" in result.text
 
+    def test_cc_comment_is_not_a_toa(self, tmp_path):
+        """EPTA Effelsberg rejects TOAs with tempo2's two-character marker.
+
+        Read as data, ``CC`` shifts every field left by one and the archive
+        name lands in the frequency column, which PINT then dies on.
+        """
+        rejected = (
+            "CC ?c062776.align.pazr.30min 1345.999 56522.2190165978952"
+            "   4.381  g  -group EFF.EBPP.1360"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{rejected}\nC RFI ??c059607\n{_toa(58000.0)}\n",
+            encoding="utf-8",
+        )
+
+        result = flatten_tim(root)
+
+        assert [line.split()[0] for line in _toa_lines(result.text)] == ["toa00001"]
+        assert "?c062776.align.pazr.30min" not in " ".join(_toa_lines(result.text))
+        assert rejected in result.text  # kept as a comment, not dropped
+        assert "C RFI ??c059607" in result.text
+
+    @pytest.mark.parametrize(
+        "source,expected",
+        [
+            ("C Er. c038950", "C Er. c038950"),
+            ("CC ?c062776 1345.999", "CC ?c062776 1345.999"),
+            ("# hash comment", "# hash comment"),
+            ("   C indented", "C indented"),
+            ("   # indented hash", "# indented hash"),
+            ("c lowercase", "# c lowercase"),
+            ("cc lowercase two", "# cc lowercase two"),
+            ("C", "# C"),
+            ("CC", "# CC"),
+        ],
+    )
+    def test_comments_are_emitted_in_a_pint_safe_shape(
+        self, tmp_path, source, expected
+    ):
+        """PINT only honors an uppercase marker at column 0 with text after it.
+
+        Tempo2 accepts every form, so the canonical file normalizes the rest to
+        ``#`` rather than passing through a line PINT would parse as a TOA.
+        """
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{source}\n{_toa(58000.0)}\n", encoding="utf-8")
+
+        result = flatten_tim(root)
+
+        assert expected in result.text.splitlines()
+
+    def test_canonical_comments_round_trip_through_pint(self, tmp_path):
+        toa = pytest.importorskip("pint.toa")
+        comments = "\n".join(
+            [
+                "CC ?c062776.align.pazr.30min 1345.999 56522.2190165978952 4.381 g",
+                "C Er. c038950",
+                "   C indented",
+                "c lowercase",
+                "CC",
+            ]
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{comments}\n{_toa(58000.0)}\n{_toa(58010.0)}\n",
+            encoding="utf-8",
+        )
+        canonical = tmp_path / "canonical.tim"
+        canonical.write_text(flatten_tim(root).text + "\n", encoding="utf-8")
+
+        toas = toa.get_TOAs(str(canonical), planets=False, ephem="DE421")
+
+        assert len(toas) == 2
+
     def test_nested_and_repeated_includes(self, tmp_path):
         (tmp_path / "inner.tim").write_text(
             f"FORMAT 1\n{_toa(58002.0)}\n", encoding="utf-8"

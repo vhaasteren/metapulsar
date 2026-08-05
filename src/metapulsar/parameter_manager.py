@@ -34,7 +34,8 @@ from .pint_helpers import (
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
     dedupe_nonrepeatable_par_lines,
-    parse_parameter_using_pint,
+    parse_par_token,
+    si_from_par,
     detect_astrometry_style,
 )
 
@@ -1120,15 +1121,12 @@ class ParameterManager:
     def _parse_ne_sw_value(self, parfile_dict: Dict[str, List[str]]) -> Optional[float]:
         """Return explicit NE_SW (cm^-3) from a parfile dict, or None if absent.
 
-        Alias-aware: NANOGrav-style par files spell it SOLARN0 (PINT aliases:
-        NE1AU, SOLARN0), which must count as an explicit value.
+        Alias-aware via the SI boundary: NANOGrav-style par files spell it
+        SOLARN0 (PINT aliases: NE1AU, SOLARN0), which must count as an
+        explicit value.
         """
-        for alias in get_aliases_for_parameter("NE_SW"):
-            raw = parfile_dict.get(alias)
-            if raw:
-                value, _frozen = parse_parameter_using_pint(alias, raw)
-                return float(value)
-        return None
+        value = si_from_par(parfile_dict, "NE_SW", default=None)
+        return None if value is None else float(value)
 
     def _resolve_consistent_ne_sw(
         self,
@@ -1832,7 +1830,11 @@ class ParameterManager:
             self.last_binary_conversion_report = BinaryConversionReport(
                 decision=decision, record=None
             )
-            self.logger.info("Binary conversion skipped: reason=%s", decision.reason)
+            self.logger.info(
+                "Binary conversion skipped: reason=%s pint_binary_model=%s",
+                decision.reason,
+                decision.resolved_binary_model,
+            )
             return
 
         if decision.outcome == "unsupported":
@@ -1887,9 +1889,10 @@ class ParameterManager:
         scale = decision.scale
         fid = record.fidelity
         self.logger.info(
-            "Binary conversion applied: %s → %s reason=%s "
+            "Binary conversion applied: %s (PINT %s) → %s reason=%s "
             "scale_s=%s total_max_abs_s=%s",
             decision.source_family,
+            decision.resolved_binary_model,
             decision.target_family,
             decision.reason,
             None if scale is None else f"{scale.scale_s:.6e}",
@@ -1943,7 +1946,7 @@ class ParameterManager:
         """Handle DM-specific special cases: DMX removal, DMEPOCH, DM1/DM2 derivatives."""
 
         dmepoch_value = reference_dict.get("DMEPOCH", ["55000"])
-        reference_dmepoch, _ = parse_parameter_using_pint("DMEPOCH", dmepoch_value)
+        reference_dmepoch, _ = parse_par_token("DMEPOCH", dmepoch_value)
         self.logger.debug(f"Reference DMEPOCH: {reference_dmepoch}")
 
         for pta_name, parfile_dict in parfile_dicts.items():
@@ -1961,7 +1964,7 @@ class ParameterManager:
                     "is kept as that PTA's local reference DM."
                 )
 
-            local_dm, dm_is_frozen = parse_parameter_using_pint("DM", dm_value)
+            local_dm, dm_is_frozen = parse_par_token("DM", dm_value)
             if dm_is_frozen:
                 self.logger.warning(
                     f"DM parameter in parfile for PTA {pta_name} is not free. "

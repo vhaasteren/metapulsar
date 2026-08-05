@@ -13,6 +13,7 @@ import pytest
 
 from metapulsar.file_discovery import FileDiscovery
 from metapulsar.metapulsar_factory import MetaPulsarFactory
+from metapulsar.tim_file_analyzer import is_tim_comment_line
 
 DATA = Path(__file__).parent.parent / "data" / "ipta-dr2"
 PULSAR = "J1857+0943"
@@ -61,8 +62,8 @@ class TestCanonicalTimArtifacts:
                 line
                 for line in text.splitlines()
                 if line.split()
-                and not line.lstrip().startswith("#")
-                and line.split()[0] not in ("FORMAT", "MODE", "C")
+                and not is_tim_comment_line(line)
+                and line.split()[0] not in ("FORMAT", "MODE")
             ]
             assert toa_lines
             for line in toa_lines:

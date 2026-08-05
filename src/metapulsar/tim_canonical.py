@@ -35,7 +35,7 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import numpy as np
 from loguru import logger
 
-from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
+from .tim_file_analyzer import TimFileAnalyzer, TimMetadata, is_tim_comment_line
 
 # Flags MetaPulsar owns. An input that already uses one of these names has it
 # renamed to ``<name>_orig`` so the release's own value stays auditable.
@@ -61,6 +61,7 @@ _MIN_MJD_EXACT = Fraction(_MIN_MJD)
 _MAX_MJD_EXACT = Fraction(_MAX_MJD)
 _PAR_MODE_ALIASES = frozenset({"MODE", "WEIGHT"})
 _PRINCETON_RE = re.compile(r"[0-9a-z@] ")
+_PINT_SAFE_COMMENT_RE = re.compile(r"CC? \S")
 _TWO_NONSPACE_RE = re.compile(r"\S\S")
 _PN_INTEGER_RE = re.compile(r"([+-]?\d+)(?:\.0+)?\Z")
 _MAX_COLUMN_DODGE = 8
@@ -273,15 +274,29 @@ def _read_lines(path: Path) -> List[str]:
     return text.splitlines()
 
 
+def _canonical_comment_line(line: str) -> str:
+    """Render a source comment so both engines re-read it as a comment.
+
+    PINT honors a comment marker only at column 0, uppercase, and followed by
+    text: it sniffs lowercase ``c `` as Princeton format and indexes past the
+    end of the field list on a bare ``C``/``CC``, so an indented, lowercase or
+    bare marker becomes a TOA parse error in a FORMAT 1 file. Tempo2 accepts
+    all of those, so anything outside the shape PINT shares is re-marked with
+    ``#`` — the one introducer both packages honor unconditionally — keeping
+    the original text as comment payload.
+    """
+    stripped = line.strip()
+    if stripped.startswith("#") or _PINT_SAFE_COMMENT_RE.match(stripped):
+        return stripped
+    return f"# {stripped}"
+
+
 def _classify(line: str) -> Tuple[str, List[str]]:
     """Return ``(kind, tokens)`` where kind is comment/blank/directive/data."""
     stripped = line.strip()
     if not stripped:
         return "blank", []
-    if stripped.startswith("#"):
-        return "comment", []
-    upper = stripped.upper()
-    if upper == "C" or upper.startswith("C "):
+    if is_tim_comment_line(stripped):
         return "comment", []
     tokens = stripped.split()
     name = tokens[0].upper()
@@ -510,8 +525,12 @@ class _TimWalker:
             for line in _read_lines(path):
                 kind, tokens = _classify(line)
 
-                if kind in ("blank", "comment"):
+                if kind == "blank":
                     self._write(line)
+                    continue
+
+                if kind == "comment":
+                    self._write(_canonical_comment_line(line))
                     continue
 
                 if kind == "data":
