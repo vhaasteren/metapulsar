@@ -74,8 +74,11 @@ Users who need engine‑native terms preserved should use
 For the **shared** strategy MetaPulsar uses this timescale policy:
 
 1. Mixed PINT/Tempo2 stacks are normalized to explicit TDB, including an
-   all‑TCB input collection. PINT otherwise performs the TCB conversion
-   internally, hiding the representation it actually evaluates.
+   all‑TCB input collection. PINT does not evaluate TCB models at all: by
+   default (`allow_tcb=False`) it refuses a TCB par outright, and only with
+   `allow_tcb=True` — which MetaPulsar passes — does it convert the model to
+   TDB at read time. That conversion never appears in the serialized par,
+   which is why the mixed stack must expose it explicitly.
 
    * For PINT models MetaPulsar re‑emits the model in TDB;
    * For Tempo2 models MetaPulsar calls the `transform tdb` plugin (both paths are implemented).
