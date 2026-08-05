@@ -1529,8 +1529,8 @@ UNITS TDB
             model = create_pint_model(content)  # must not raise
             assert float(model.NE_SW.value) == pytest.approx(4.0)
 
-    def test_make_parfiles_shared_writes_engine_native_clock_keys(self, tmp_path):
-        """PINT targets use CLOCK and Tempo2 targets use CLK after alignment."""
+    def test_make_parfiles_shared_writes_portable_clk_on_both_engines(self, tmp_path):
+        """Both flavours emit CLK only — Tempo2 ignores CLOCK silently."""
         body = (
             "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\nF1 -6.2e-16\n"
             "RAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\n"
@@ -1563,10 +1563,9 @@ UNITS TDB
                 if line.strip() and not line.startswith("#")
             }
 
-        assert rows_by_pta["NG"]["CLOCK"] == ["TT(BIPM2019)"]
-        assert "CLK" not in rows_by_pta["NG"]
-        assert rows_by_pta["EPTA"]["CLK"] == ["TT(BIPM2019)"]
-        assert "CLOCK" not in rows_by_pta["EPTA"]
+        for pta_name in ("NG", "EPTA"):
+            assert rows_by_pta[pta_name]["CLK"] == ["TT(BIPM2019)"], pta_name
+            assert "CLOCK" not in rows_by_pta[pta_name], pta_name
 
 
 class TestUnitsNormalizationM1:
@@ -2545,7 +2544,8 @@ class TestReferenceConventionResolution:
             "TT(BIPM2021)",
         )
 
-    def test_clk_alias_is_accepted_and_spelling_is_retained(self):
+    def test_clk_is_written_on_both_flavours_after_alignment(self):
+        """PINT input CLOCK is rewritten to portable CLK (bug_clock_keyword_portability)."""
         pm = ParameterManager(file_data=_cross_engine_file_data())
         parfile_dicts = pm._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]
@@ -2553,9 +2553,9 @@ class TestReferenceConventionResolution:
         align_conventions(pm, parfile_dicts, reference_dict)
 
         assert parfile_dicts["EPTA"]["CLK"] == ["TT(BIPM2019)"]
-        assert parfile_dicts["NG"]["CLOCK"] == ["TT(BIPM2019)"]
+        assert parfile_dicts["NG"]["CLK"] == ["TT(BIPM2019)"]
         assert "CLOCK" not in parfile_dicts["EPTA"]
-        assert "CLK" not in parfile_dicts["NG"]
+        assert "CLOCK" not in parfile_dicts["NG"]
 
     def test_bare_bipm_without_version_raises(self):
         pm = ParameterManager(

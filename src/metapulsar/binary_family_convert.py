@@ -2089,7 +2089,8 @@ def engine_native_binary_key(key: str, timing_package: Optional[str]) -> str:
     has no ``STIGMA``/``VARSIGMA`` branch, and ``DDHmodel.C`` *exits the
     process* when ``stig`` is unset. PINT accepts ``STIG`` as an alias of
     ``STIGMA``, so the tempo2-native spelling is the one both engines read.
-    Same pattern as ``ParameterManager._set_engine_clock_value`` for CLOCK/CLK.
+    Analogous to portable ``CLK`` for the clock pin: prefer the spelling every
+    target engine actually reads.
     """
     if _canon_key(key) == "STIGMA" and normalize_timing_package(timing_package) == (
         "tempo2"

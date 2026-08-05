@@ -1278,16 +1278,20 @@ class ParameterManager:
 
     def _set_engine_clock_value(
         self,
-        pta_name: str,
         parfile_dict: Dict[str, List[str]],
         value: str,
     ) -> None:
-        """Write the resolved clock with the target engine's native keyword."""
-        package = self._normalize_timing_package(self._get_timing_package(pta_name))
-        target_key = "CLK" if package == "tempo2" else "CLOCK"
+        """Write the resolved clock as ``CLK``, which both PINT and Tempo2 honour.
+
+        Tempo2 only reads ``CLK`` (it silently ignores ``CLOCK`` and falls back
+        to its default realization). PINT declares ``CLOCK`` with
+        ``aliases=["CLK"]``, so the Tempo2 spelling is the portable pin.
+        Never emit both keywords — PINT rejects that as a non-repeatable
+        parameter. See ``bug_clock_keyword_portability.md``.
+        """
         for alias in get_aliases_for_parameter("CLOCK"):
             parfile_dict.pop(alias, None)
-        parfile_dict[target_key] = [value]
+        parfile_dict["CLK"] = [value]
 
     def _align_reference_conventions(
         self,
@@ -1298,7 +1302,7 @@ class ParameterManager:
         """Apply the resolved EPHEM and clock convention to every PTA."""
         for pta_name, parfile_dict in parfile_dicts.items():
             self._set_aliased_value(parfile_dict, ["EPHEM"], ephem)
-            self._set_engine_clock_value(pta_name, parfile_dict, clock)
+            self._set_engine_clock_value(parfile_dict, clock)
 
     def _apply_cross_engine_rules(
         self,
@@ -1867,8 +1871,8 @@ class ParameterManager:
             ) from exc
 
         for pta_name, par in parfile_dicts.items():
-            # Engine-native spellings (STIGMA vs tempo2's STIG), same rule as
-            # the CLOCK/CLK emission; postcondition 2 is alias-resolved.
+            # Engine-native spellings (STIGMA vs tempo2's STIG); postcondition 2
+            # is alias-resolved. Clock pins always use portable ``CLK``.
             apply_binary_patch(par, patch, timing_package=timing_packages[pta_name])
         self._set_pint_models_from_dicts(parfile_dicts)
         assert_postconditions(

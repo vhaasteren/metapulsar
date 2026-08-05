@@ -179,8 +179,9 @@ parity floor is emitted.
 #### Reference conventions
 
 Every PTA adopts the resolved `EPHEM` and clock realization. The clock is
-written with the receiving engine's native keyword: `CLOCK` for PINT and `CLK`
-for Tempo2/libstempo.
+always written as `CLK` (the Tempo2 keyword). PINT accepts `CLK` as an alias of
+`CLOCK`; Tempo2 ignores `CLOCK` silently, so the portable spelling is required
+for any par that may be read by both packages.
 
 #### The explicit mixed‑engine profile
 
