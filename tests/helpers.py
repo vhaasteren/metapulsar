@@ -14,6 +14,8 @@ def make_tim_metadata(
     pn_status: TimPulseNumberStatus = "none",
     pn_with_count: Optional[int] = None,
     pn_without_count: Optional[int] = None,
+    mjd_min: Optional[float] = None,
+    mjd_max: Optional[float] = None,
 ) -> TimMetadata:
     """Build TimMetadata for tests without parsing a .tim file."""
     if pn_with_count is None:
@@ -25,10 +27,17 @@ def make_tim_metadata(
             pn_with_count = 0
     if pn_without_count is None:
         pn_without_count = toa_count - pn_with_count
+    if (
+        mjd_min is not None
+        and mjd_max is not None
+        and timespan_days == 0.0
+        and mjd_max >= mjd_min
+    ):
+        timespan_days = float(mjd_max - mjd_min)
     return TimMetadata(
         toa_count=toa_count,
-        mjd_min=None,
-        mjd_max=None,
+        mjd_min=mjd_min,
+        mjd_max=mjd_max,
         timespan_days=timespan_days,
         pn_with_count=pn_with_count,
         pn_without_count=pn_without_count,

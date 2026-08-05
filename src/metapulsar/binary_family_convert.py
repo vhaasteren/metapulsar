@@ -38,6 +38,9 @@ class BinaryConversionError(ValueError):
     """Shared binary cannot be converted under the active AlignmentPolicy."""
 
 
+SpanProvenance = Literal["par", "tim"]
+
+
 @dataclass(frozen=True)
 class BinaryScaleGate:
     a1_lt_s: float  # |A1| at reference
@@ -46,7 +49,8 @@ class BinaryScaleGate:
     e_max: float  # span-aware max e
     scale_s: float  # a1_max*e_max**2 + 0.5*nb*a1_max**2*e_max (§6.3 rev 2)
     threshold_s: float
-    span_known: bool  # False iff dots present but START/FINISH absent
+    span_known: bool  # False iff dots present but no usable span + TASC
+    span_provenance: Optional[SpanProvenance] = None  # "par" | "tim" | None
 
 
 @dataclass(frozen=True)
@@ -371,7 +375,12 @@ def _is_orthometric_family(family: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _compute_scale_gate(par: Mapping[str, Any], threshold_s: float) -> BinaryScaleGate:
+def _compute_scale_gate(
+    par: Mapping[str, Any],
+    threshold_s: float,
+    *,
+    span_mjd: Optional[tuple[float, float]] = None,
+) -> BinaryScaleGate:
     a1 = _param_float(par, "A1")
     if a1 is None:
         raise BinaryConversionError(
@@ -392,8 +401,26 @@ def _compute_scale_gate(par: Mapping[str, Any], threshold_s: float) -> BinarySca
         e_ref = float(math.hypot(eps1, eps2))
 
     tasc = _param_float(par, "TASC", default=None)
-    start = _param_float(par, "START", default=None)
-    finish = _param_float(par, "FINISH", default=None)
+    par_start = _param_float(par, "START", default=None)
+    par_finish = _param_float(par, "FINISH", default=None)
+
+    # Prefer par START/FINISH when both are present; otherwise accept an
+    # explicit tim-derived span (factory / ParameterManager path).
+    start: Optional[float]
+    finish: Optional[float]
+    span_provenance: Optional[SpanProvenance]
+    if par_start is not None and par_finish is not None:
+        start = float(par_start)
+        finish = float(par_finish)
+        span_provenance = "par"
+    elif span_mjd is not None:
+        start = float(span_mjd[0])
+        finish = float(span_mjd[1])
+        span_provenance = "tim"
+    else:
+        start = None
+        finish = None
+        span_provenance = None
 
     has_eps_dots = _has_any(par, ("EPS1DOT", "EPS2DOT"))
     has_a1_dots = _has_any(par, ("A1DOT", "XDOT"))
@@ -401,6 +428,7 @@ def _compute_scale_gate(par: Mapping[str, Any], threshold_s: float) -> BinarySca
     span_known = True
     if dots_present and (start is None or finish is None or tasc is None):
         span_known = False
+        span_provenance = None
 
     def _dt(mjd: float) -> float:
         assert tasc is not None
@@ -438,6 +466,7 @@ def _compute_scale_gate(par: Mapping[str, Any], threshold_s: float) -> BinarySca
         scale_s=float(scale_s),
         threshold_s=float(threshold_s),
         span_known=span_known,
+        span_provenance=span_provenance,
     )
 
 
@@ -683,8 +712,14 @@ def decide_binary_conversion(
     timing_packages: Mapping[str, Optional[str]],
     combine_components: Sequence[str],
     policy: "AlignmentPolicy",
+    span_mjd: Optional[tuple[float, float]] = None,
 ) -> BinaryConversionDecision:
-    """Pure classification + scale gate. No mutation, no I/O, no model building."""
+    """Pure classification + scale gate. No mutation, no I/O, no model building.
+
+    ``span_mjd`` is an optional ``(mjd_min, mjd_max)`` from tim metadata used
+    when the reference par lacks ``START``/``FINISH``. Par keywords win when
+    both are present.
+    """
     # D1
     if policy.binary_conversion == "off":
         return BinaryConversionDecision(
@@ -754,7 +789,9 @@ def decide_binary_conversion(
             )
 
     # D6
-    scale = _compute_scale_gate(ref, policy.binary_conversion_threshold_s)
+    scale = _compute_scale_gate(
+        ref, policy.binary_conversion_threshold_s, span_mjd=span_mjd
+    )
 
     # D7 / D7b (auto mode only; "always" skips D7)
     if policy.binary_conversion == "auto":

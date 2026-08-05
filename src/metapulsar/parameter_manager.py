@@ -1825,6 +1825,7 @@ class ParameterManager:
             timing_packages=timing_packages,
             combine_components=self.combine_components,
             policy=self.alignment_policy,
+            span_mjd=self._tim_span_mjd(),
         )
 
         if decision.outcome == "skip":
@@ -2227,6 +2228,29 @@ class ParameterManager:
         from already-materialized models and do not carry the key.
         """
         return self.file_data[pta_name].get("timing_package", "pint")
+
+    def _tim_span_mjd(self) -> Optional[Tuple[float, float]]:
+        """Union ``(mjd_min, mjd_max)`` from PTA ``tim_metadata``, if available.
+
+        Used by the ELL1-family scale gate when the reference par lacks
+        ``START``/``FINISH``. Returns ``None`` when no leg carries both ends
+        (par-only / ParameterManager mapping callers).
+        """
+        mins: List[float] = []
+        maxs: List[float] = []
+        for info in self.file_data.values():
+            meta = info.get("tim_metadata")
+            if meta is None:
+                continue
+            mjd_min = getattr(meta, "mjd_min", None)
+            mjd_max = getattr(meta, "mjd_max", None)
+            if mjd_min is None or mjd_max is None:
+                continue
+            mins.append(float(mjd_min))
+            maxs.append(float(mjd_max))
+        if not mins:
+            return None
+        return (min(mins), max(maxs))
 
     def _convert_tempo2_to_tdb(self, parfile_content: str) -> str:
         """Convert par file from TCB to TDB using tempo2 subprocess."""

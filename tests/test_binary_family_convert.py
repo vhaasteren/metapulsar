@@ -35,6 +35,7 @@ from metapulsar.binary_family_convert import (
 )
 from metapulsar.parameter_manager import AlignmentPolicy, ParameterManager
 from metapulsar.pint_helpers import create_pint_model, dict_to_parfile_string
+from tests.helpers import make_tim_metadata
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -419,6 +420,7 @@ def test_t16_numeric_gate_and_span():
     d_dots = _decide(par)
     assert d_dots.outcome == "convert"
     assert d_dots.scale is not None and d_dots.scale.span_known
+    assert d_dots.scale.span_provenance == "par"
 
     # dots without START/FINISH, reference gate NOT firing → gate_span_unknown
     par2 = _ell1_dict(
@@ -431,6 +433,7 @@ def test_t16_numeric_gate_and_span():
     d_unk = _decide(par2)
     assert d_unk.outcome == "unsupported"
     assert d_unk.reason == "gate_span_unknown"
+    assert d_unk.scale is not None and d_unk.scale.span_provenance is None
 
     # dots without START/FINISH, reference gate firing → convert, span_known=False
     par3 = _ell1_dict(
@@ -443,6 +446,122 @@ def test_t16_numeric_gate_and_span():
     d_fire2 = _decide(par3)
     assert d_fire2.outcome == "convert"
     assert d_fire2.scale is not None and d_fire2.scale.span_known is False
+    assert d_fire2.scale.span_provenance is None
+
+
+def _subthreshold_eps1(*, a1=10.0, pb=6.83890261) -> float:
+    """EPS1 putting the two-term reference scale just under 1 ns (T16 helper)."""
+    nb = 2.0 * math.pi / (pb * 86400.0)
+
+    def scale(e: float) -> float:
+        return a1 * e**2 + 0.5 * nb * a1**2 * e
+
+    lo, hi = 1e-7, 5e-5
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if scale(mid) < 0.9e-9:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def test_gate_span_from_tim_metadata():
+    """Sub-threshold + dots + no START/FINISH: tim span certifies below_threshold."""
+    a1, pb = 10.0, 6.83890261
+    e_skip = _subthreshold_eps1(a1=a1, pb=pb)
+    # Tiny dots: present (so D7b would fire without a span) but negligible over
+    # a ~2000-day baseline, matching the AEI-DR2 sub-threshold refusals.
+    tiny_dots = {"EPS1DOT": ["1e-20 0"], "EPS2DOT": ["0 0"]}
+
+    par = _ell1_dict(
+        a1=a1,
+        pb=pb,
+        eps1=e_skip,
+        eps2=0.0,
+        extra=tiny_dots,
+    )
+
+    d_tim = _decide(par, span_mjd=(54000.0, 56000.0))
+    assert d_tim.outcome == "skip"
+    assert d_tim.reason == "below_threshold"
+    assert d_tim.scale is not None
+    assert d_tim.scale.span_known is True
+    assert d_tim.scale.span_provenance == "tim"
+
+    d_unk = _decide(par)
+    assert d_unk.outcome == "unsupported"
+    assert d_unk.reason == "gate_span_unknown"
+    assert d_unk.scale is not None and d_unk.scale.span_provenance is None
+
+    # Par START/FINISH win over an explicit tim span.
+    par_par = _ell1_dict(
+        a1=a1,
+        pb=pb,
+        eps1=e_skip,
+        eps2=0.0,
+        start=54000.0,
+        finish=56000.0,
+        extra=tiny_dots,
+    )
+    d_par = _decide(par_par, span_mjd=(53000.0, 57000.0))
+    assert d_par.scale is not None
+    assert d_par.scale.span_provenance == "par"
+
+
+def test_parameter_manager_feeds_tim_span_to_gate(tmp_path):
+    """Factory-style file_data with tim_metadata certifies sub-threshold dots."""
+    a1, pb = 10.0, 6.83890261
+    e_skip = _subthreshold_eps1(a1=a1, pb=pb)
+    par_text = COMMON_HEAD + (
+        f"BINARY ELL1\nPB {pb} 1 1e-10\n"
+        f"A1 {a1} 1 1e-8\nTASC {J2145['TASC']} 1 1e-6\n"
+        f"EPS1 {e_skip} 1 1e-9\nEPS2 0.0 1 1e-9\n"
+        "EPS1DOT 1e-20 0\nEPS2DOT 0 0\n"
+    )
+    tim_meta = make_tim_metadata(mjd_min=54000.0, mjd_max=56000.0)
+
+    pm = ParameterManager(
+        file_data={
+            "PINT": {
+                "par_content": par_text,
+                "timing_package": "pint",
+                "tim_metadata": tim_meta,
+            },
+            "T2": {
+                "par_content": par_text,
+                "timing_package": "tempo2",
+                "tim_metadata": tim_meta,
+            },
+        },
+        combine_components=["binary"],
+        add_dm_derivatives=False,
+        output_dir=tmp_path / "out_tim_span",
+        pulsar_name="J2145",
+        alignment_policy=AlignmentPolicy(ne_sw=0.0),
+    )
+    assert pm._tim_span_mjd() == (54000.0, 56000.0)
+    pm.make_parfiles_shared()
+    report = pm.last_binary_conversion_report
+    assert report is not None
+    assert report.decision.outcome == "skip"
+    assert report.decision.reason == "below_threshold"
+    assert report.decision.scale is not None
+    assert report.decision.scale.span_provenance == "tim"
+
+    pm_no_tim = ParameterManager(
+        file_data={
+            "PINT": {"par_content": par_text, "timing_package": "pint"},
+            "T2": {"par_content": par_text, "timing_package": "tempo2"},
+        },
+        combine_components=["binary"],
+        add_dm_derivatives=False,
+        output_dir=tmp_path / "out_no_tim_span",
+        pulsar_name="J2145",
+        alignment_policy=AlignmentPolicy(ne_sw=0.0),
+    )
+    with pytest.raises(BinaryConversionError, match="gate_span_unknown"):
+        pm_no_tim.make_parfiles_shared()
 
 
 def test_t17_fit_patterns():
