@@ -186,6 +186,10 @@ def test_policy_validation_binary_fields():
         AlignmentPolicy(binary_conversion_threshold_s=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="binary_fidelity_floor_s"):
         AlignmentPolicy(binary_fidelity_floor_s=-1.0)
+    with pytest.raises(ValueError, match="binary_fidelity_tolerance_factor"):
+        AlignmentPolicy(binary_fidelity_tolerance_factor=0.0)
+    with pytest.raises(ValueError, match="binary_fidelity_tolerance_factor"):
+        AlignmentPolicy(binary_fidelity_tolerance_factor=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unsupported_binary"):
         AlignmentPolicy(unsupported_binary="strip")  # type: ignore[arg-type]
     # Existing checks retained
@@ -1360,6 +1364,44 @@ def test_plain_ell1_with_m2_sini_converts():
         k.upper() for k in patch.removed_keys
     }
     assert not touched & {"M2", "SINI"}
+
+
+@slow
+def test_binary_fidelity_tolerance_factor_scales_reported_tolerances():
+    """AlignmentPolicy.binary_fidelity_tolerance_factor multiplies §7.5 budgets."""
+    par = _ell1_dict(a1=J2145["A1"], eps1=J2145["EPS1"], eps2=J2145["EPS2"])
+    par["M2"] = ["0.5 0"]
+    par["SINI"] = ["0.75 0"]
+    decision = _decide(par, policy=AlignmentPolicy(binary_conversion="always"))
+    assert decision.outcome == "convert"
+
+    _, record_1 = convert_shared_binary(
+        par,
+        decision,
+        pta_names=("PINT", "T2"),
+        policy=AlignmentPolicy(
+            binary_conversion="always", binary_fidelity_tolerance_factor=1.0
+        ),
+        ell1h_shapiro="full",
+    )
+    _, record_2 = convert_shared_binary(
+        par,
+        decision,
+        pta_names=("PINT", "T2"),
+        policy=AlignmentPolicy(
+            binary_conversion="always", binary_fidelity_tolerance_factor=2.0
+        ),
+        ell1h_shapiro="full",
+    )
+    fid1, fid2 = record_1.fidelity, record_2.fidelity
+    assert fid2.tolerance_total_s == pytest.approx(2.0 * fid1.tolerance_total_s)
+    assert fid2.tolerance_roemer_s == pytest.approx(2.0 * fid1.tolerance_roemer_s)
+    assert fid1.tolerance_shapiro_s is not None
+    assert fid2.tolerance_shapiro_s is not None
+    assert fid2.tolerance_shapiro_s == pytest.approx(2.0 * fid1.tolerance_shapiro_s)
+    # Measured residuals are unchanged; only the budget scales.
+    assert fid2.total_max_abs_s == pytest.approx(fid1.total_max_abs_s)
+    assert fid2.shapiro_max_abs_s == pytest.approx(fid1.shapiro_max_abs_s)
 
 
 def _t2_kepler_dict(*, h3=None, free=False):

@@ -2037,6 +2037,13 @@ def run_fidelity_check(
         peak_delay_s=peak_delay_s,
         floor=floor,
     )
+    # User-facing scale on the published §7.5 budget (AlignmentPolicy).
+    # Applied after derivation so factor=1 is bit-identical to the prior default.
+    factor = float(policy.binary_fidelity_tolerance_factor)
+    tol_roemer *= factor
+    tol_total *= factor
+    if tol_shapiro is not None:
+        tol_shapiro *= factor
 
     total_max = float(np.max(np.abs(d_total_all)))
     roemer_max = float(np.max(np.abs(d_roemer)))

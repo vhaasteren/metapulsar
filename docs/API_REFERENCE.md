@@ -433,6 +433,7 @@ class AlignmentPolicy:
     binary_conversion_threshold_s: float = 1e-9
     unsupported_binary: Literal["error", "keep"] = "error"
     binary_fidelity_floor_s: float = 1e-10
+    binary_fidelity_tolerance_factor: float = 1.0
     h3_only: Literal["error", "sample_stigma"] = "error"
     stigma_central: float | None = None
     stigma_provenance: str | None = None
@@ -449,14 +450,15 @@ class AlignmentPolicy:
 | `binary_conversion_threshold_s` | Scale gate on `a1_max·e_max² + ½·n_b·a1_max²·e_max`, in seconds. Must be finite and > 0. This is a *scale gate*, not a predicted residual. |
 | `unsupported_binary` | What to do when the gate fires on a family outside the supported sets (ELL1k, `FB` series, ELL1H domain violation, H4 tail above threshold, H3-only under the default `h3_only`, unknown span, unsupported fit pattern). `"error"` (default) raises `BinaryConversionError` with the reason and a remediation list; `"keep"` warns, records the decision, and proceeds unconverted. |
 | `binary_fidelity_floor_s` | Absolute floor of the mandatory delay-fidelity tolerance. Must be finite and > 0. |
+| `binary_fidelity_tolerance_factor` | Multiplier on every delay-fidelity tolerance (Roemer, Shapiro, total) after the derived §7.5 budget and floor. Default `1.0` is unchanged behaviour; `> 1` loosens (e.g. `1.05` for +5%), `(0, 1)` tightens. Does not alter the scale gate or the conversion map. Must be finite and > 0. |
 | `h3_only` | ELL1H sources carrying `H3` but neither `STIGMA` nor `H4`. `"error"` (default) refuses: no fixed ς is determined by such a par. `"sample_stigma"` converts at `stigma_central` and marks `required_sampling=("STIGMA",)` — the emitted ς is a **prior center, never a measurement**, and the analysis must sample it (or use a proper z-prior). |
 | `stigma_central` | Prior-central ς in (0, 1] for `h3_only="sample_stigma"`. Required by, and only valid with, that mode. |
 | `stigma_provenance` | Free-text provenance for `stigma_central` (e.g. `"mass-function closure, m_p=1.4"`), copied into the conversion record and the emitted par comment. Required by, and only valid with, `"sample_stigma"`. |
 
 Constructor validation: `unsupported` must be `"strip"` or `"error"`; `ne_sw`
-must be non-negative; `binary_conversion_threshold_s` and
-`binary_fidelity_floor_s` must be finite and > 0; and
-`stigma_central`/`stigma_provenance` may be set only when
+must be non-negative; `binary_conversion_threshold_s`,
+`binary_fidelity_floor_s`, and `binary_fidelity_tolerance_factor` must be
+finite and > 0; and `stigma_central`/`stigma_provenance` may be set only when
 `h3_only="sample_stigma"` (which in turn requires both).
 
 Conversion applies only to `shared` stacks that carry **both** PINT and Tempo2

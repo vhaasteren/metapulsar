@@ -253,7 +253,9 @@ class MetaPulsarFactory:
             alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
                 controlling the multi-PTA common profile (``unsupported="strip"``
                 by default, plus optional ``ephem``/``clock``/``bipm_version``/
-                ``ne_sw`` pins). Only valid for the ``"shared"`` strategy.
+                ``ne_sw`` pins, and gated binary-conversion knobs such as
+                ``binary_fidelity_tolerance_factor``). Only valid for the
+                ``"shared"`` strategy.
             convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
                 line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
                 ``{pta}_{k}`` values stamped on the canonical tim. Default False
@@ -1148,9 +1150,10 @@ def create_metapulsar(
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
             or ``"overwrite"``. See ``MetaPulsarFactory.create_metapulsar`` for semantics.
         alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
-            controlling the multi-PTA common profile. ``None`` means
-            ``AlignmentPolicy()``. Passing a policy with ``"per_pta"`` raises
-            ``ValueError``.
+            controlling the multi-PTA common profile (including gated binary
+            conversion knobs such as ``binary_fidelity_tolerance_factor``).
+            ``None`` means ``AlignmentPolicy()``. Passing a policy with
+            ``"per_pta"`` raises ``ValueError``.
         convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
             line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
             ``{pta}_{k}`` values stamped on the canonical tim. Default False

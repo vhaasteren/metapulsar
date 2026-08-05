@@ -72,6 +72,12 @@ class AlignmentPolicy:
         unsupported_binary: ``error``/``keep`` when the gate fires on an
             unsupported family.
         binary_fidelity_floor_s: Absolute floor of the delay-fidelity tolerance.
+        binary_fidelity_tolerance_factor: Multiplier applied to every delay-fidelity
+            tolerance (Roemer, Shapiro, and total) after the derived budget and
+            floor are computed. Default ``1.0`` preserves the published §7.5
+            budget; values ``> 1`` loosen the check (e.g. ``1.05`` for a 5%
+            margin), values in ``(0, 1)`` tighten it. Does not change the
+            scale gate or the conversion map.
         h3_only: ELL1H H3-only handling (``error`` or ``sample_stigma``).
         stigma_central: Prior-central ς for ``h3_only='sample_stigma'``.
         stigma_provenance: Provenance string for ``stigma_central``.
@@ -88,6 +94,7 @@ class AlignmentPolicy:
     binary_conversion_threshold_s: float = 1e-9
     unsupported_binary: UnsupportedBinaryPolicy = "error"
     binary_fidelity_floor_s: float = 1e-10
+    binary_fidelity_tolerance_factor: float = 1.0
     h3_only: H3OnlyPolicy = "error"
     stigma_central: Optional[float] = None
     stigma_provenance: Optional[str] = None
@@ -121,6 +128,16 @@ class AlignmentPolicy:
                 or not float(value) > 0
             ):
                 raise ValueError(f"{name} must be a finite number > 0")
+        factor = self.binary_fidelity_tolerance_factor
+        if (
+            isinstance(factor, bool)
+            or not isinstance(factor, (int, float))
+            or not math.isfinite(float(factor))
+            or not float(factor) > 0
+        ):
+            raise ValueError(
+                "binary_fidelity_tolerance_factor must be a finite number > 0"
+            )
         if self.unsupported_binary not in {"error", "keep"}:
             raise ValueError("unsupported_binary must be 'error' or 'keep'")
         if self.h3_only not in {"error", "sample_stigma"}:
