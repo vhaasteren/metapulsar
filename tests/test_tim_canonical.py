@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from metapulsar.tim_canonical import (
+    TEMPO2_MAX_TIM_LINE_BYTES,
     TimCanonicalizationError,
     TimIncludeScopeError,
     TimLegacyFormatError,
@@ -19,6 +20,7 @@ from metapulsar.tim_canonical import (
     discover_effective_tim_mode,
     ensure_par_mode,
     flatten_tim,
+    inject_pulse_numbers,
     parse_jump_mjd_windows,
     stamp_metadata_flags,
     stamp_mjd_jump_pta_flags,
@@ -112,6 +114,46 @@ class TestFlatten:
         assert line.split()[2] == "58000.1234567890123456"
         assert "-sys x" in line
         assert not _pint_legacy_heuristic_hit(line)
+
+    def test_dodges_pint_column_41_collision(self, tmp_path):
+        root = tmp_path / "epta.tim"
+        root.write_text(
+            "FORMAT 1\n"
+            " raw 2627.949 55758.3650868593914 10.917 g "
+            "-group EFF.EBPP.2639\n",
+            encoding="utf-8",
+        )
+
+        result = flatten_tim(root)
+        line = _toa_lines(result.text)[0]
+
+        assert result.column_dodge_count == 1
+        assert not _pint_legacy_heuristic_hit(line)
+        pint_toa = pytest.importorskip("pint.toa")
+        assert pint_toa._toa_format(line, fmt="Tempo2") == "Tempo2"
+        assert line.split()[1:] == [
+            "2627.949",
+            "55758.3650868593914",
+            "10.917",
+            "g",
+            "-group",
+            "EFF.EBPP.2639",
+        ]
+
+    def test_dodge_layout_is_idempotent(self, tmp_path):
+        root = tmp_path / "epta.tim"
+        root.write_text(
+            "FORMAT 1\n raw 2627.949 55758.3650868593914 10.917 g\n",
+            encoding="utf-8",
+        )
+        once = flatten_tim(root)
+        canonical = tmp_path / "canonical.tim"
+        canonical.write_text(once.text, encoding="utf-8")
+
+        twice = flatten_tim(canonical)
+
+        assert twice.text == once.text
+        assert twice.column_dodge_count == 1
 
     def test_missing_include_raises(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -440,6 +482,24 @@ class TestWriteCanonicalTim:
         assert "-pta epta_dr2" in text
         assert "toa00001" in text
 
+    def test_reports_metadata_and_dodge_count(self, tmp_path):
+        root = tmp_path / "epta.tim"
+        root.write_text(
+            "FORMAT 1\n raw 2627.949 55758.3650868593914 10.917 g\n",
+            encoding="utf-8",
+        )
+
+        result = write_canonical_tim(
+            root,
+            pta_name="epta",
+            timing_package="pint",
+            out_path=tmp_path / "canonical.tim",
+        )
+
+        assert result.column_dodge_count == 1
+        assert result.tim_metadata.toa_count == 1
+        assert result.tim_metadata.pn_status == "none"
+
     def test_toa_count_survives_canonicalization(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
             f"FORMAT 1\n{_toa(58001.0)}\n{_toa(58002.0)}\n", encoding="utf-8"
@@ -530,6 +590,117 @@ class TestWriteCanonicalTim:
         assert "-pta pta2" in text
         assert "-pta_dataset_orig pta1" in text
         assert "-timing_package_orig pint" in text
+
+
+class TestInjectPulseNumbers:
+    @staticmethod
+    def _write(path: Path, *lines: str) -> Path:
+        path.write_text("FORMAT 1\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_joins_by_name_and_replaces_all_existing_pn(self, tmp_path):
+        canonical = self._write(
+            tmp_path / "canonical.tim",
+            " toa00001 1400 58000 1 g -PN 8 -pn 9 -sys a",
+            " toa00002 1400 58001 1 g -sys b",
+        )
+        derived = self._write(
+            tmp_path / "derived.tim",
+            " toa00002 1400 58001 1 g -pn 22.0",
+            " toa00001 1400 58000 1 g -pn 11",
+        )
+
+        count = inject_pulse_numbers(canonical, derived_tim=derived)
+        lines = _toa_lines(canonical.read_text(encoding="utf-8"))
+
+        assert count == 2
+        assert lines[0].split()[-4:] == ["-sys", "a", "-pn", "11"]
+        assert lines[1].split()[-4:] == ["-sys", "b", "-pn", "22"]
+        assert sum(token.lower() == "-pn" for token in lines[0].split()) == 1
+
+    def test_leaves_unmatched_canonical_toa_byte_identical(self, tmp_path):
+        unmatched = " toa00001 1400 58000 1 g -sys skipped"
+        canonical = self._write(
+            tmp_path / "canonical.tim",
+            "SKIP",
+            unmatched,
+            "NOSKIP",
+            " toa00002 1400 58001 1 g -sys active",
+        )
+        derived = self._write(
+            tmp_path / "derived.tim",
+            " toa00002 1400 58001 1 g -pn 22",
+        )
+
+        assert inject_pulse_numbers(canonical, derived_tim=derived) == 1
+
+        assert unmatched in canonical.read_text(encoding="utf-8").splitlines()
+
+    @pytest.mark.parametrize(
+        ("derived_line", "message"),
+        [
+            (" toa00001 1400 58000 1 g", "exactly one -pn"),
+            (" toa00001 1400 58000 1 g -pn nope", "non-integral"),
+            (" toa00001 1400 58000 1 g -pn 1.5", "non-integral"),
+            (" toa99999 1400 58000 1 g -pn 1", "absent from canonical"),
+        ],
+    )
+    def test_rejects_bad_derived_data_without_modifying_file(
+        self, tmp_path, derived_line, message
+    ):
+        canonical = self._write(
+            tmp_path / "canonical.tim", " toa00001 1400 58000 1 g -sys keep"
+        )
+        before = canonical.read_bytes()
+        derived = self._write(tmp_path / "derived.tim", derived_line)
+
+        with pytest.raises(TimCanonicalizationError, match=message):
+            inject_pulse_numbers(canonical, derived_tim=derived)
+
+        assert canonical.read_bytes() == before
+
+    def test_rejects_duplicate_derived_name_without_modifying_file(self, tmp_path):
+        canonical = self._write(tmp_path / "canonical.tim", " toa00001 1400 58000 1 g")
+        before = canonical.read_bytes()
+        derived = self._write(
+            tmp_path / "derived.tim",
+            " toa00001 1400 58000 1 g -pn 1",
+            " toa00001 1400 58000 1 g -pn 2",
+        )
+
+        with pytest.raises(TimCanonicalizationError, match="Duplicate TOA name"):
+            inject_pulse_numbers(canonical, derived_tim=derived)
+
+        assert canonical.read_bytes() == before
+
+    def test_rejects_tempo2_flag_overflow_without_modifying_file(self, tmp_path):
+        flags = "".join(f" -f{i} v{i}" for i in range(39))
+        canonical = self._write(
+            tmp_path / "canonical.tim", f" toa00001 1400 58000 1 g{flags}"
+        )
+        before = canonical.read_bytes()
+        derived = self._write(
+            tmp_path / "derived.tim", " toa00001 1400 58000 1 g -pn 1"
+        )
+
+        with pytest.raises(TimCanonicalizationError, match="MAX_FLAGS"):
+            inject_pulse_numbers(canonical, derived_tim=derived)
+
+        assert canonical.read_bytes() == before
+
+    def test_rejects_tempo2_line_overflow_without_modifying_file(self, tmp_path):
+        prefix = " toa00001 1400 58000 1 g -long "
+        padding = "x" * (TEMPO2_MAX_TIM_LINE_BYTES - len(prefix))
+        canonical = self._write(tmp_path / "canonical.tim", prefix + padding)
+        before = canonical.read_bytes()
+        derived = self._write(
+            tmp_path / "derived.tim", " toa00001 1400 58000 1 g -pn 1"
+        )
+
+        with pytest.raises(TimCanonicalizationError, match="safely read"):
+            inject_pulse_numbers(canonical, derived_tim=derived)
+
+        assert canonical.read_bytes() == before
 
 
 class TestJumpMjd:

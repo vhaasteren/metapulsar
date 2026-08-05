@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from metapulsar.metapulsar_factory import MetaPulsarFactory, create_all_metapulsars
+from metapulsar.tim_canonical import _pint_legacy_heuristic_hit
 
 FIXTURE_PAR = Path(__file__).parent / "fixtures" / "sample_parfiles" / "simple.par"
 
@@ -154,8 +155,8 @@ def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
         tmp_path,
         tim_text=(
             "FORMAT 1\nMODE 1\n"
-            "test1 1400.0 54510.0 1.5 g -sys TEST\n"
-            "test2 1400.0 54520.0 1.5 g -sys TEST\n"
+            "test1 2627.949 55758.3650868593914 10.917 g -sys TEST\n"
+            "test2 2627.949 55768.3650868593914 10.917 g -sys TEST\n"
         ),
     )
     mp = MetaPulsarFactory().create_metapulsar(
@@ -171,6 +172,9 @@ def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
         for line in tim_text.splitlines()
     )
     assert "MODE 1" in par_text
+    toa_lines = [line for line in tim_text.splitlines() if line.startswith(" ")]
+    assert all(line.split().count("-pn") == 1 for line in toa_lines)
+    assert all(not _pint_legacy_heuristic_hit(line) for line in toa_lines)
     mode_par = retained.par_path.with_name("EPTA.mode.par")
     assert mode_par.is_file()
     assert "MODE 1" in mode_par.read_text(encoding="utf-8")

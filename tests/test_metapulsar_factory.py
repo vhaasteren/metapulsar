@@ -494,12 +494,17 @@ class TestMetaPulsarFactory:
         )
 
     def test_create_pulsar_objects_tempo2_yes_uses_track_minus_2(self, tmp_path):
-        """Tempo2 yes mode wraps par with TRACK -2."""
+        """Tempo2 derives from canonical tim and wraps par with TRACK -2."""
         par_path = tmp_path / "test.par"
         tim_path = tmp_path / "test.tim"
         par_path.write_text("PSR J1857+0943\nF0 123.456\n", encoding="utf-8")
         tim_path.write_text(
             "FORMAT 1\nMODE 1\n obs1 1400.0 58000.0 1.0 g\n", encoding="utf-8"
+        )
+        derived_path = tmp_path / "derived.tim"
+        derived_path.write_text(
+            "FORMAT 1\n toa00001 1400.0 58000.0 1.0 g -pn 42\n",
+            encoding="utf-8",
         )
 
         file_pairs = {"epta_dr2": (par_path, tim_path)}
@@ -521,7 +526,7 @@ class TestMetaPulsarFactory:
             ) as mock_track_par,
             patch("metapulsar.metapulsar_factory.tempopulsar") as mock_tempopulsar,
         ):
-            mock_resolved.return_value.__enter__.return_value = str(tim_path)
+            mock_resolved.return_value.__enter__.return_value = str(derived_path)
             mock_track_par.return_value.__enter__.return_value = "/tmp/track.par"
             mock_tempopulsar.return_value = Mock()
 
@@ -534,11 +539,16 @@ class TestMetaPulsarFactory:
             )
 
             mock_track_par.assert_called_once()
+            resolver_args = mock_resolved.call_args
+            canonical = session_dir / "epta_dr2.tim"
+            assert resolver_args.args[2] == canonical
+            assert resolver_args.kwargs["tim_metadata"].pn_status == "none"
             mock_tempopulsar.assert_called_once_with(
                 parfile="/tmp/track.par",
-                timfile=str(session_dir / "epta_dr2.tim"),
+                timfile=str(canonical),
                 dofit=False,
             )
+            assert "-pn 42" in canonical.read_text(encoding="utf-8")
 
     def test_validate_pulse_number_mode_rejects_bool(self):
         with pytest.raises(ValueError, match="must be one of"):

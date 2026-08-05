@@ -18,6 +18,7 @@ backend lazily).
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from collections import defaultdict, deque
@@ -29,6 +30,8 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 from loguru import logger
+
+from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 
 # Flags MetaPulsar owns. An input that already uses one of these names has it
 # renamed to ``<name>_orig`` so the release's own value stays auditable.
@@ -55,6 +58,8 @@ _MAX_MJD_EXACT = Fraction(_MAX_MJD)
 _PAR_MODE_ALIASES = frozenset({"MODE", "WEIGHT"})
 _PRINCETON_RE = re.compile(r"[0-9a-z@] ")
 _TWO_NONSPACE_RE = re.compile(r"\S\S")
+_PN_INTEGER_RE = re.compile(r"([+-]?\d+)(?:\.0+)?\Z")
+_MAX_COLUMN_DODGE = 8
 
 _DIRECTIVE_NAMES = frozenset(
     {
@@ -136,14 +141,17 @@ class FlattenTimResult:
 
     text: str
     effective_mode: Optional[int]
+    column_dodge_count: int = 0
 
 
 @dataclass(frozen=True)
 class CanonicalTimResult:
-    """Path of a written canonical ``.tim`` plus diagnostic ``MODE`` from that file."""
+    """Written canonical ``.tim`` plus metadata and layout diagnostics."""
 
     path: Path
     effective_mode: Optional[int]
+    tim_metadata: TimMetadata
+    column_dodge_count: int = 0
 
 
 @dataclass
@@ -319,7 +327,12 @@ def _pint_legacy_heuristic_hit(line: str) -> bool:
 
 
 def _render_canonical_toa_line(
-    line: str, *, tokens: List[str], accum: _TimeAccum, name_counter: List[int]
+    line: str,
+    *,
+    tokens: List[str],
+    accum: _TimeAccum,
+    name_counter: List[int],
+    column_dodge_counter: List[int],
 ) -> str:
     if len(tokens) < 5:
         raise TimCanonicalizationError(
@@ -329,12 +342,19 @@ def _render_canonical_toa_line(
     name = f"toa{name_counter[0]:05d}"
     mjd = _bake_mjd_token(tokens[2], accum)
     flags = (" " + " ".join(tokens[5:])) if len(tokens) > 5 else ""
-    rebuilt = f" {name} {tokens[1]} {mjd} {tokens[3]} {tokens[4]}{flags}"
-    if _pint_legacy_heuristic_hit(rebuilt):
-        raise TimCanonicalizationError(
-            f"Canonical TOA line still hits a PINT legacy heuristic: {rebuilt!r}"
+    for pad in range(_MAX_COLUMN_DODGE):
+        rebuilt = (
+            f" {name}{' ' * (pad + 1)}{tokens[1]} {mjd} "
+            f"{tokens[3]} {tokens[4]}{flags}"
         )
-    return rebuilt
+        if not _pint_legacy_heuristic_hit(rebuilt):
+            if pad:
+                column_dodge_counter[0] += 1
+            return rebuilt
+    raise TimCanonicalizationError(
+        "Cannot lay out canonical TOA line clear of PINT's legacy format "
+        f"heuristics after {_MAX_COLUMN_DODGE} attempts: {rebuilt!r}"
+    )
 
 
 class _TimWalker:
@@ -360,6 +380,7 @@ class _TimWalker:
         self.on_legacy_toa = on_legacy_toa
         self.out: List[str] = ["FORMAT 1"] if emit else []
         self.name_counter: List[int] = [0]
+        self.column_dodge_counter: List[int] = [0]
         self.effective_mode: Optional[int] = None
         self.shared_time = _TimeAccum()  # PINT shares; tempo2 is file-local
 
@@ -400,6 +421,7 @@ class _TimWalker:
                             tokens=tokens,
                             accum=accum,
                             name_counter=self.name_counter,
+                            column_dodge_counter=self.column_dodge_counter,
                         )
                     )
                     continue
@@ -528,7 +550,9 @@ def flatten_tim(
     walker = _TimWalker(timing_package=timing_package, emit=True, on_legacy_toa="raise")
     walker.walk(Path(tim_path).resolve(), [])
     return FlattenTimResult(
-        text="\n".join(walker.out) + "\n", effective_mode=walker.effective_mode
+        text="\n".join(walker.out) + "\n",
+        effective_mode=walker.effective_mode,
+        column_dodge_count=walker.column_dodge_counter[0],
     )
 
 
@@ -641,6 +665,161 @@ def stamp_metadata_flags(tim_text: str, *, pta_name: str, timing_package: str) -
             )
         )
     return "\n".join(out) + "\n"
+
+
+def _pn_occurrences(line: str) -> Tuple[List[Tuple[int, int]], List[str]]:
+    """Return source spans and values for positional, case-insensitive -pn pairs."""
+    spans = [(m.start(), m.end()) for m in _TOKEN_RE.finditer(line)]
+    tokens = [line[start:end] for start, end in spans]
+    occurrences: List[Tuple[int, int]] = []
+    values: List[str] = []
+    for index in _flag_key_indices(len(tokens)):
+        if tokens[index].lstrip("-").lower() != "pn":
+            continue
+        start = spans[index][0]
+        while start > 0 and line[start - 1].isspace():
+            start -= 1
+        occurrences.append((start, spans[index + 1][1]))
+        values.append(tokens[index + 1])
+    return occurrences, values
+
+
+def _replace_pn_on_toa_line(line: str, pn_value: str) -> str:
+    """Preserve a canonical line byte-for-byte except for its -pn pairs."""
+    occurrences, _ = _pn_occurrences(line)
+    replaced = line
+    for start, end in reversed(occurrences):
+        replaced = replaced[:start] + replaced[end:]
+    return replaced.rstrip("\r") + f" -pn {pn_value}"
+
+
+def _validate_injected_tim_text(text: str, affected_names: set[str]) -> None:
+    """Recheck Tempo2's hard limits on every TOA changed by PN injection."""
+    info_active = False
+    skipping = False
+    for line in text.splitlines():
+        kind, tokens = _classify(line)
+        if kind == "directive":
+            directive = tokens[0].upper()
+            if directive == "SKIP":
+                skipping = True
+            elif directive == "NOSKIP":
+                skipping = False
+            elif directive == "INFO" and not skipping:
+                info_active = len(tokens) >= 2 and tokens[1] != "-1"
+            continue
+        if kind != "data" or len(tokens) < 5 or tokens[0] not in affected_names:
+            continue
+
+        _, pn_values = _pn_occurrences(line)
+        if len(pn_values) != 1:
+            raise TimCanonicalizationError(
+                f"Injected TOA must contain exactly one -pn flag: {line.strip()!r}"
+            )
+        _validate_flag_text("-pn value", pn_values[0])
+        n_flags = len(_flag_key_indices(len(tokens))) + int(info_active)
+        if n_flags >= TEMPO2_MAX_FLAGS:
+            raise TimCanonicalizationError(
+                f"Injecting -pn would give this TOA {n_flags} flags, reaching "
+                f"tempo2's fatal MAX_FLAGS={TEMPO2_MAX_FLAGS}: {line.strip()!r}"
+            )
+        line_bytes = len(line.encode("utf-8"))
+        if line_bytes > TEMPO2_MAX_TIM_LINE_BYTES:
+            raise TimCanonicalizationError(
+                f"Injected TOA line is {line_bytes} bytes; tempo2 can safely read at "
+                f"most {TEMPO2_MAX_TIM_LINE_BYTES} bytes before the newline: "
+                f"{line.strip()!r}"
+            )
+
+
+def inject_pulse_numbers(canonical_tim: Path, *, derived_tim: Path) -> int:
+    """Replace canonical ``-pn`` flags with engine-derived values, joined by name.
+
+    Derived TOAs must have unique names, exactly one integer ``-pn`` pair, and
+    names present in the canonical file. Canonical-only names are permitted
+    because engine selection directives can omit TOAs from derived output.
+    """
+    canonical_tim = Path(canonical_tim)
+    derived_tim = Path(derived_tim)
+    canonical_text = canonical_tim.read_text(encoding="utf-8")
+    derived_text = derived_tim.read_text(encoding="utf-8")
+
+    canonical_names: Dict[str, int] = {}
+    canonical_lines = canonical_text.splitlines()
+    for index, line in enumerate(canonical_lines):
+        kind, tokens = _classify(line)
+        if kind != "data" or len(tokens) < 5:
+            continue
+        name = tokens[0]
+        if name in canonical_names:
+            raise TimCanonicalizationError(
+                f"Duplicate TOA name {name!r} in canonical file {canonical_tim}"
+            )
+        canonical_names[name] = index
+
+    derived_values: Dict[str, str] = {}
+    for line in derived_text.splitlines():
+        kind, tokens = _classify(line)
+        if kind != "data" or len(tokens) < 5:
+            continue
+        name = tokens[0]
+        if name in derived_values:
+            raise TimCanonicalizationError(
+                f"Duplicate TOA name {name!r} in derived file {derived_tim}"
+            )
+        _, values = _pn_occurrences(line)
+        if len(values) != 1:
+            raise TimCanonicalizationError(
+                f"Derived TOA {name!r} must contain exactly one -pn flag: "
+                f"{line.strip()!r}"
+            )
+        integer_match = _PN_INTEGER_RE.fullmatch(values[0])
+        if integer_match is None:
+            raise TimCanonicalizationError(
+                f"Derived TOA {name!r} has non-integral -pn value {values[0]!r}"
+            )
+        normalized = str(int(integer_match.group(1)))
+        _validate_flag_text("-pn value", normalized)
+        derived_values[name] = normalized
+
+    unknown = sorted(set(derived_values) - set(canonical_names))
+    if unknown:
+        raise TimCanonicalizationError(
+            f"Derived TOA names are absent from canonical file {canonical_tim}: "
+            + ", ".join(repr(name) for name in unknown[:5])
+        )
+
+    for name, pn_value in derived_values.items():
+        index = canonical_names[name]
+        canonical_lines[index] = _replace_pn_on_toa_line(
+            canonical_lines[index], pn_value
+        )
+
+    trailing_newline = canonical_text.endswith("\n")
+    replacement_text = "\n".join(canonical_lines) + ("\n" if trailing_newline else "")
+    affected_names = set(derived_values)
+    _validate_injected_tim_text(replacement_text, affected_names)
+
+    if replacement_text != canonical_text:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{canonical_tim.name}.", suffix=".tmp", dir=canonical_tim.parent
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(replacement_text)
+            os.chmod(temporary_path, canonical_tim.stat().st_mode)
+            os.replace(temporary_path, canonical_tim)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    unmatched_count = len(canonical_names) - len(derived_values)
+    logger.debug(
+        f"Injected pulse numbers into {len(derived_values)} TOAs in {canonical_tim}; "
+        f"left {unmatched_count} canonical-only TOAs unchanged"
+    )
+    return len(derived_values)
 
 
 def _stamp_toa_line(
@@ -1090,4 +1269,15 @@ def write_canonical_tim(
                 timing_package=timing_package,
             )
     out_path.write_text(text, encoding="utf-8")
-    return CanonicalTimResult(path=out_path, effective_mode=flattened.effective_mode)
+    tim_metadata = TimFileAnalyzer().get_tim_metadata(out_path)
+    if flattened.column_dodge_count:
+        logger.debug(
+            f"Shifted {flattened.column_dodge_count} canonical TOA lines clear of "
+            "PINT legacy format heuristics"
+        )
+    return CanonicalTimResult(
+        path=out_path,
+        effective_mode=flattened.effective_mode,
+        tim_metadata=tim_metadata,
+        column_dodge_count=flattened.column_dodge_count,
+    )

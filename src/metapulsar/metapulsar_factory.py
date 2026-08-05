@@ -6,7 +6,7 @@ building per-PTA timing objects, and wrapping them with metadata.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 from contextlib import nullcontext
 from pathlib import Path
 import shutil
@@ -33,6 +33,7 @@ from .tim_canonical import (
     convert_jump_mjd_par_text,
     discover_effective_tim_mode,
     ensure_par_mode,
+    inject_pulse_numbers,
     parse_jump_mjd_windows,
     write_canonical_tim,
 )
@@ -839,30 +840,35 @@ class MetaPulsarFactory:
             # Get timing package info from file data
             timing_package = file_data[pta_name]["timing_package"]
             original_par_text = file_data[pta_name]["par_content"]
-            tim_metadata = file_data[pta_name].get("tim_metadata")
             parfile = Path(parfile)
             timfile = Path(timfile)
-            derive_backend = "pint" if timing_package == "pint" else "tempo2"
+            derive_backend: Literal["pint", "tempo2"] = (
+                "pint" if timing_package == "pint" else "tempo2"
+            )
 
             try:
-                # Pulse-number derivation runs first, against the release's own
-                # coherent par + tim, then the canonical stamp is applied last so
-                # the engine, retained and exported files are the same bytes.
+                canonical = write_canonical_tim(
+                    timfile,
+                    pta_name=pta_name,
+                    timing_package=timing_package,
+                    out_path=pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim",
+                    par_text=original_par_text,
+                )
+                canonical_tim = canonical.path
+
+                # Derive only after canonicalization so both backends read the
+                # same standalone, PINT-safe TOA layout. Keep the canonical
+                # artifact and inject only the derived pulse-number flags.
                 with resolved_tim_for_pulse_numbers(
                     use_pulse_numbers,
                     original_par_text,
-                    timfile,
+                    canonical_tim,
                     derive_backend=derive_backend,
-                    tim_metadata=tim_metadata,
+                    tim_metadata=canonical.tim_metadata,
                 ) as resolved_tim:
-                    canonical = write_canonical_tim(
-                        Path(resolved_tim),
-                        pta_name=pta_name,
-                        timing_package=timing_package,
-                        out_path=pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim",
-                        par_text=original_par_text,
-                    )
-                    canonical_tim = canonical.path
+                    resolved_path = Path(resolved_tim)
+                    if resolved_path != canonical_tim:
+                        inject_pulse_numbers(canonical_tim, derived_tim=resolved_path)
 
                 if timing_package == "pint":
                     if get_model_and_toas is None:
