@@ -566,6 +566,58 @@ class TestMetaPulsarFactory:
                 use_pulse_numbers=True,  # type: ignore[arg-type]
             )
 
+    def test_create_pulsar_objects_skips_canonical_when_gated_off(self, tmp_path):
+        """canonicalize_tim=False loads a session copy of the release .tim."""
+        par_path, tim_path, file_pairs, file_data = self._write_session_inputs(
+            tmp_path, "pint"
+        )
+        session_dir = tmp_path / "session"
+        release_text = tim_path.read_text(encoding="utf-8")
+
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.write_canonical_tim"
+            ) as mock_canonical,
+            patch("metapulsar.metapulsar_factory.get_model_and_toas") as mock_get_model,
+        ):
+            mock_get_model.return_value = (Mock(), Mock())
+            self.factory._create_pulsar_objects(
+                file_pairs,
+                file_data,
+                use_pulse_numbers="no",
+                pta_file_dir=session_dir,
+                canonicalize_tim=False,
+            )
+
+        mock_canonical.assert_not_called()
+        engine_tim = session_dir / "epta_dr2.tim"
+        mock_get_model.assert_called_once_with(
+            str(par_path),
+            str(engine_tim),
+            planets=True,
+            allow_T2=True,
+            ell1h_shapiro="full",
+        )
+        assert engine_tim.read_text(encoding="utf-8") == release_text
+        assert "-pta epta_dr2" not in release_text
+
+    def test_convert_jump_mjd_requires_canonicalize_tim(self):
+        with pytest.raises(ValueError, match="canonicalize_tim=True"):
+            self.factory.create_metapulsar(
+                {
+                    "pta": [
+                        {
+                            "par": Path("x.par"),
+                            "tim": Path("x.tim"),
+                            "timing_package": "pint",
+                            "par_content": "PSR J0000+0000\nF0 1\n",
+                        }
+                    ]
+                },
+                convert_jump_mjd=True,
+                canonicalize_tim=False,
+            )
+
 
 class TestPerPulsarOrdering:
     """Test cases for per-pulsar reference PTA ordering functionality."""

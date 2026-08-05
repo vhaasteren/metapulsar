@@ -122,6 +122,7 @@ class MetaPulsarFactory:
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
+        canonicalize_tim: bool = True,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy."""
 
@@ -139,6 +140,7 @@ class MetaPulsarFactory:
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
+        canonicalize_tim: bool = True,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all pulsars in file_data."""
 ```
@@ -163,6 +165,7 @@ def create_metapulsar(
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
+    canonicalize_tim: bool = True,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -179,23 +182,27 @@ def create_metapulsar(
             when their component is merged. Defaults to ("DM",).
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
-        timfile_output_dir: Directory to save the canonical .tim files the engines
-            consumed, as {pulsar}_{pta}.tim. These are standalone Tempo2 FORMAT 1
-            files (INCLUDEs flattened; TIME baked into MJDs; TIME/MODE omitted;
-            TOA names rewritten to toaNNNNN) carrying -pta, -pta_dataset,
-            -timing_package, and (when the release par has JUMP MJD windows)
-            -mjd_jump_pta flags on post-bake SATs, so they can be reused directly.
-            Release-tim MODE is transferred onto the engine .par (absent MODE =
-            no override). If None, they are not saved to disk.
+        timfile_output_dir: Directory to save the .tim files the engines consumed,
+            as {pulsar}_{pta}.tim. With canonicalize_tim=True these are standalone
+            Tempo2 FORMAT 1 files (INCLUDEs flattened; TIME baked into MJDs;
+            TIME/MODE omitted; TOA names rewritten to toaNNNNN) carrying -pta,
+            -pta_dataset, -timing_package, and (when the release par has JUMP MJD
+            windows) -mjd_jump_pta flags on post-bake SATs. Release-tim MODE is
+            transferred onto the engine .par (absent MODE = no override). If None,
+            they are not saved to disk.
         use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
-            The .tim is always rewritten; this only controls pulse numbers.
+            Independent of canonicalize_tim; controls pulse numbers only.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: AlignmentPolicy for the multi-PTA common profile.
             None means AlignmentPolicy(). Passing a policy together with
             combination_strategy="per_pta" raises ValueError.
         convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
             JUMP -mjd_jump_pta {pta}_{k} ... using the same values stamped on
-            the canonical tim. Default False (tim flags are still stamped).
+            the canonical tim. Default False. Requires canonicalize_tim=True.
+        canonicalize_tim: If True (default), rewrite every release .tim into a
+            dual-engine-reloadable canonical artifact before load. If False,
+            engines load the release .tim tree (escape hatch; no TIME bake,
+            safe-name rewrite, or -mjd_jump_pta stamps).
 
     Returns:
         MetaPulsar object
@@ -224,6 +231,7 @@ def create_all_metapulsars(
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
+    canonicalize_tim: bool = True,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all pulsars in file_data.
 
@@ -236,13 +244,15 @@ def create_all_metapulsars(
         exclude_from_shared: Canonical parameter names kept PTA-specific.
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk. Files are named per pulsar.
-        timfile_output_dir: Directory to save the canonical .tim files the engines
+        timfile_output_dir: Directory to save the .tim files the engines
             consumed, as {pulsar}_{pta}.tim. If None, they are not saved to disk.
         use_pulse_numbers: Pulse-number tracking mode.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: Alignment policy for the shared strategy.
         convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
-            JUMP -mjd_jump_pta {pta}_{k} ... Default False (tim flags still stamped).
+            JUMP -mjd_jump_pta {pta}_{k} ... Default False. Requires
+            canonicalize_tim=True.
+        canonicalize_tim: Forwarded to each create_metapulsar call. Default True.
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects

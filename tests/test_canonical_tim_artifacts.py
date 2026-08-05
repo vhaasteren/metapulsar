@@ -1,8 +1,9 @@
 """End-to-end contract for the canonical .tim artifacts on real release data.
 
-MetaPulsar always hands its engines a rewritten standalone FORMAT 1 .tim that
-carries the PTA identity as real flags. These tests pin that the rewrite is
-data-preserving and that the exported artifact is the file the engine consumed.
+With ``canonicalize_tim=True`` (factory default) MetaPulsar hands its engines a
+rewritten standalone FORMAT 1 .tim that carries the PTA identity as real flags.
+These tests pin that the rewrite is data-preserving and that the exported
+artifact is the file the engine consumed.
 """
 
 from pathlib import Path
@@ -59,7 +60,9 @@ class TestCanonicalTimArtifacts:
             toa_lines = [
                 line
                 for line in text.splitlines()
-                if line.split() and line.split()[0] not in ("FORMAT", "MODE", "C", "#")
+                if line.split()
+                and not line.lstrip().startswith("#")
+                and line.split()[0] not in ("FORMAT", "MODE", "C")
             ]
             assert toa_lines
             for line in toa_lines:

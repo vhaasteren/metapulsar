@@ -430,10 +430,10 @@ class MetaPulsar:
         """Combine flags from all PTAs.
 
         ``pta``, ``pta_dataset`` and ``timing_package`` normally arrive from the
-        canonical ``.tim`` the factory writes (see
-        :mod:`metapulsar.tim_canonical`). They are filled here only for legs that
-        lack them, which happens when a MetaPulsar is built directly from pulsar
-        objects instead of from files.
+        canonical ``.tim`` the factory writes when ``canonicalize_tim=True``
+        (see :mod:`metapulsar.tim_canonical`). They are filled here only for legs
+        that lack them — MetaPulsar built with ``canonicalize_tim=False``, or
+        directly from pulsar objects rather than from files.
         """
         from collections import defaultdict
 

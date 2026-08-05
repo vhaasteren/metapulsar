@@ -121,10 +121,11 @@ longer accepted.
 
 Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`.
 
-### Canonical `.tim` files (`timfile_output_dir`)
+### Canonical `.tim` files (`canonicalize_tim`, `timfile_output_dir`)
 
-MetaPulsar never loads a release `.tim` directly. Every PTA leg is rewritten into
-a standalone Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload:
+By default (`canonicalize_tim=True`) MetaPulsar does not load a release `.tim`
+directly. Every PTA leg is rewritten into a standalone Tempo2 `FORMAT 1` file
+that both PINT and Tempo2 can reload:
 
 * `INCLUDE`s are flattened into one file.
 * Cumulative `TIME` offsets are baked into TOA MJDs with exact decimal arithmetic
@@ -145,13 +146,21 @@ a standalone Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload:
   the engine-facing `.par` as a single final `MODE` line (superseding any
   `MODE`/`WEIGHT`). An absent tim `MODE` means no override.
 
-Pulse numbers are included when `use_pulse_numbers` asks for them, but the rewrite
-itself always happens.
+Pulse numbers are included when `use_pulse_numbers` asks for them; that setting
+is independent of whether the release `.tim` is rewritten.
+
+Pass `canonicalize_tim=False` to skip the rewrite and load the release `.tim`
+tree (plus optional `-pn` derivation). That is an escape hatch for published
+releases that refuse to flatten — for example ambiguous `TIME` scope at an
+`INCLUDE` boundary. Off-path builds do **not** get cross-engine `TIME`/`INCLUDE`
+parity, safe TOA-name rewriting, or `-mjd_jump_pta` stamps. PTA identity flags
+are still filled in memory by `MetaPulsar._combine_flags()` when missing.
+`convert_jump_mjd=True` requires `canonicalize_tim=True`.
 
 By default (`convert_jump_mjd=False`) engine pars keep native `JUMP MJD` lines
-while the tim flags are still stamped. Pass `convert_jump_mjd=True` to rewrite
-those par lines to `JUMP -mjd_jump_pta {pta}_{k} …` (release files are never
-mutated).
+while the tim flags are still stamped (when canonicalizing). Pass
+`convert_jump_mjd=True` to rewrite those par lines to
+`JUMP -mjd_jump_pta {pta}_{k} …` (release files are never mutated).
 
 Pass `timfile_output_dir` to save the exact files the timing packages consumed,
 named `{pulsar}_{pta}.tim`, for auditing or reuse:
@@ -162,6 +171,9 @@ mp = create_metapulsar(
     parfile_output_dir="out/par",
     timfile_output_dir="out/tim",
 )
+
+# Escape hatch when canonicalization refuses a release tim tree:
+mp = create_metapulsar(file_data, canonicalize_tim=False)
 ```
 
 ### Nonlinear timing (`NonLinearTimingModel`)
