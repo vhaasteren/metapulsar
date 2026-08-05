@@ -1,16 +1,20 @@
 """Canonical .tim writer: flatten INCLUDEs, bake TIME, and stamp metadata flags.
 
-MetaPulsar always hands its timing engines a standalone Tempo2 ``FORMAT 1``
-file carrying authoritative ``-pta``, ``-pta_dataset`` and ``-timing_package``
-flags, so the PTA identity of every TOA travels with the data instead of being
-synthesized in memory. Cumulative ``TIME`` offsets are baked into TOA MJDs with
-exact decimal arithmetic (``sat += TIME / 86400``, rounded once at output — not
-Tempo2 ``double``/``longdouble`` bit-equivalence). ``TIME`` and ``MODE`` lines
+With the factory default ``canonicalize_tim=True``, MetaPulsar hands its timing
+engines a standalone Tempo2 ``FORMAT 1`` file carrying authoritative ``-pta``,
+``-pta_dataset`` and ``-timing_package`` flags, so the PTA identity of every TOA
+travels with the data instead of being synthesized in memory. Cumulative
+``TIME`` offsets are baked into TOA MJDs with exact decimal arithmetic
+(``sat += TIME / 86400``, rounded once at output — not Tempo2
+``double``/``longdouble`` bit-equivalence) under the leg's own package scoping
+rule, and a ``TIME`` left live at an ``INCLUDE`` boundary is recorded as an
+:class:`IncludeScopeResolution` rather than refused. ``TIME`` and ``MODE`` lines
 are omitted from the artifact; effective ``MODE`` is discovered from the release
 tim tree and transferred onto the engine-facing ``.par``. Every TOA name is
 rewritten to a safe ``toaNNNNN`` token. When the release par contains
 ``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
-flags on the selected (post-bake) TOAs.
+flags on the selected (post-bake) TOAs. Pass ``canonicalize_tim=False`` on the
+factory to skip this rewrite and load the release ``.tim`` tree instead.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).
@@ -128,11 +132,58 @@ class TimLegacyFormatError(TimCanonicalizationError):
 
 
 class TimIncludeScopeError(TimCanonicalizationError):
-    """A stateful directive is live across an INCLUDE boundary.
+    """An *emitted* stateful directive is live across an INCLUDE boundary.
 
-    Flattening such a file would change which TOAs the directive applies to on
-    a tempo2 leg, so MetaPulsar refuses instead of writing shifted TOAs.
+    ``EFAC``/``EQUAD``/``SKIP``/``PROFILE_DIR`` and friends survive verbatim
+    into the flattened file, which no longer carries the file boundary that
+    scoped them on a tempo2 leg, so MetaPulsar refuses rather than silently
+    widening them. ``TIME`` is exempt: it is baked into MJDs and never emitted,
+    so the walker's per-file accumulator already realizes tempo2's scope
+    exactly -- those boundaries are recorded instead (see
+    :class:`IncludeScopeResolution`).
     """
+
+
+BoundaryKind = Literal["include_entry", "include_eof", "include_end"]
+
+
+@dataclass(frozen=True)
+class IncludeScopeResolution:
+    """One recorded ``TIME``-scoping divergence between tempo2 and PINT.
+
+    tempo2 keeps its ``TIME`` accumulator function-local to each recursive
+    ``readTim()`` call (``readTimfile.C``) while PINT shares one command dict
+    across ``INCLUDE`` (``toa.py``), so a live ``TIME`` at an include boundary
+    is read differently by the two engines. Flattening must pick one reading and
+    picks the leg's own package; this records where that happened, so the choice
+    is auditable instead of silent.
+
+    Attributes:
+        path: File whose boundary this is -- the *parent* for ``include_entry``,
+            the included file for ``include_eof`` / ``include_end``.
+        directive: Always ``"TIME"`` today.
+        boundary: Which boundary, so ``path`` is never ambiguous.
+        offset_seconds: The exact offset the two engines disagree about. For
+            ``include_entry`` this is the live accumulator the parent holds at
+            the ``INCLUDE``; for the closing boundaries it is the included
+            file's *own* net contribution, measured against its entry value
+            (nonzero only on a PINT leg, which inherits the parent's total).
+        toas_emitted_before: TOAs already emitted when the boundary was reached.
+            A position marker, deliberately *not* a count of affected TOAs: the
+            counterfactual reach of a PINT-style leak runs on through later
+            siblings and ancestors.
+        disposition: ``"scoped"`` when the offset stops at the boundary (tempo2
+            rule), ``"carried"`` when it crosses it (PINT rule).
+        include_path: The included file, for ``include_entry`` only.
+    """
+
+    path: Path
+    directive: str
+    boundary: BoundaryKind
+    offset_seconds: Fraction
+    toas_emitted_before: int
+    disposition: Literal["scoped", "carried"]
+    include_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +193,7 @@ class FlattenTimResult:
     text: str
     effective_mode: Optional[int]
     column_dodge_count: int = 0
+    include_scope_resolutions: Tuple[IncludeScopeResolution, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,6 +204,7 @@ class CanonicalTimResult:
     effective_mode: Optional[int]
     tim_metadata: TimMetadata
     column_dodge_count: int = 0
+    include_scope_resolutions: Tuple[IncludeScopeResolution, ...] = ()
 
 
 @dataclass
@@ -165,10 +218,10 @@ class _TimeAccum:
 
 
 class _ScopeState:
-    """Tracks stateful tim directives so INCLUDE boundaries can be validated.
+    """Tracks the *emitted* stateful tim directives across INCLUDE boundaries.
 
-    ``TIME`` liveness is supplied by the walker's exact accumulator, not stored
-    here.
+    ``TIME`` is deliberately absent: it is baked into MJDs and never emitted, so
+    its scope is carried by the walker's exact accumulator instead.
     """
 
     def __init__(self) -> None:
@@ -192,14 +245,18 @@ class _ScopeState:
         elif directive == "NOSKIP":
             self.skipping = False
 
-    def live_directives(self, *, time_live: bool) -> List[str]:
-        """Return directives whose state would leak across an INCLUDE boundary."""
-        live = ["TIME"] if time_live else []
-        live.extend(
+    def live_directives(self) -> List[str]:
+        """Return emitted directives whose state would leak across an INCLUDE.
+
+        Flattening drops the file boundary that scoped these on a tempo2 leg,
+        and unlike ``TIME`` they reach the artifact as directive lines, so a
+        live one here is unrepresentable rather than merely ambiguous.
+        """
+        live = [
             name
             for name, default in _TEMPO2_ASSIGNING_DEFAULTS.items()
             if self.assignments[name] != default
-        )
+        ]
         live.extend(sorted(self.invalid))
         if self.profile_dir is not None:
             live.append("PROFILE_DIR")
@@ -383,10 +440,57 @@ class _TimWalker:
         self.column_dodge_counter: List[int] = [0]
         self.effective_mode: Optional[int] = None
         self.shared_time = _TimeAccum()  # PINT shares; tempo2 is file-local
+        self.include_scope_resolutions: List[IncludeScopeResolution] = []
 
     def _write(self, line: str) -> None:
         if self.emit:
             self.out.append(line)
+
+    def _record_time_scope(
+        self,
+        path: Path,
+        offset: Fraction,
+        *,
+        boundary: BoundaryKind,
+        include_path: Optional[Path] = None,
+    ) -> None:
+        """Record -- and, when emitting, warn about -- a TIME scope divergence.
+
+        ``offset`` is the exact quantity the two engines disagree about at this
+        boundary; callers supply the included file's *own* net contribution at
+        the closing boundaries, so an inherited PINT total is not miscounted as
+        child-emitted state.
+        """
+        if offset == 0:
+            return
+        disposition: Literal["scoped", "carried"] = (
+            "scoped" if self.timing_package == "tempo2" else "carried"
+        )
+        self.include_scope_resolutions.append(
+            IncludeScopeResolution(
+                path=path,
+                directive="TIME",
+                boundary=boundary,
+                offset_seconds=offset,
+                toas_emitted_before=self.name_counter[0],
+                disposition=disposition,
+                include_path=include_path,
+            )
+        )
+        # Discovery walks the same tree just before canonicalization, so warning
+        # on both would double every message.
+        if not self.emit:
+            return
+        rule = (
+            "stops at the boundary (tempo2 scope; PINT would carry it)"
+            if disposition == "scoped"
+            else "crosses the boundary (PINT scope; tempo2 would drop it)"
+        )
+        logger.warning(
+            f"TIME scope divergence at {boundary} of {path}: "
+            f"{float(offset):g} s (exact {offset}) {rule}. "
+            f"{self.name_counter[0]} TOAs emitted before this boundary."
+        )
 
     def walk(self, path: Path, stack: List[Path]) -> bool:
         """Walk one file. Returns True when a top-level END stops everything."""
@@ -398,6 +502,10 @@ class _TimWalker:
         tokenized = False
         scope = _ScopeState()
         accum = self.shared_time if self.timing_package == "pint" else _TimeAccum()
+        # Zero on a tempo2 leg (fresh accumulator); the inherited total on a
+        # PINT leg, which is what makes the closing boundaries measure this
+        # file's own contribution rather than its parent's.
+        entry_total = accum.total
         try:
             for line in _read_lines(path):
                 kind, tokens = _classify(line)
@@ -459,13 +567,21 @@ class _TimWalker:
 
                 if directive == "END":
                     if self.timing_package == "tempo2" and len(stack) > 1:
-                        live = scope.live_directives(time_live=accum.total != 0)
+                        # tempo2's `endit` is function-local too, so END and EOF
+                        # are the same event for the state this file holds.
+                        live = scope.live_directives()
                         if live:
                             raise TimIncludeScopeError(
                                 f"Included file {path} reaches END with "
-                                f"{', '.join(live)} still active. Flattening would "
-                                f"leak that tempo2 file-local state into the parent."
+                                f"{', '.join(live)} still active. These directives "
+                                f"are emitted verbatim, so flattening would leak "
+                                f"that tempo2 file-local state into the parent."
                             )
+                        self._record_time_scope(
+                            path,
+                            accum.total - entry_total,
+                            boundary="include_end",
+                        )
                         return False
                     self._write(line)
                     return True
@@ -475,19 +591,26 @@ class _TimWalker:
                         raise TimCanonicalizationError(
                             f"INCLUDE without a filename in {path}"
                         )
-                    live = scope.live_directives(time_live=accum.total != 0)
+                    live = scope.live_directives()
                     if self.timing_package == "tempo2" and live:
                         raise TimIncludeScopeError(
                             f"{path} reaches an INCLUDE with {', '.join(live)} still "
                             f"active. tempo2 scopes these per included file while PINT "
-                            f"leaks them into it, so flattening would change which TOAs "
-                            f"they apply to. Balance the directive around the INCLUDE."
+                            f"leaks them into it, and they are emitted verbatim, so "
+                            f"flattening would change which TOAs they apply to. "
+                            f"Balance the directive around the INCLUDE."
                         )
                     include_path = (path.parent / tokens[1]).resolve()
                     if not include_path.is_file():
                         raise TimCanonicalizationError(
                             f"INCLUDE file not found: {include_path} (from {path})"
                         )
+                    self._record_time_scope(
+                        path,
+                        accum.total,
+                        boundary="include_entry",
+                        include_path=include_path,
+                    )
                     logger.debug(f"Flattening included TOA file {include_path}")
                     if self.walk(include_path, stack):
                         return True
@@ -517,13 +640,18 @@ class _TimWalker:
                 scope.observe(directive, tokens)
                 self._write(line)
 
-            live = scope.live_directives(time_live=accum.total != 0)
-            if self.timing_package == "tempo2" and live and len(stack) > 1:
-                raise TimIncludeScopeError(
-                    f"Included file {path} ends with {', '.join(live)} still active. "
-                    f"tempo2 drops this state at the end of the file while flattening "
-                    f"would carry it into the parent's following TOAs. Balance the "
-                    f"directive inside the included file."
+            if len(stack) > 1:
+                live = scope.live_directives()
+                if self.timing_package == "tempo2" and live:
+                    raise TimIncludeScopeError(
+                        f"Included file {path} ends with {', '.join(live)} still "
+                        f"active. These directives are emitted verbatim, so while "
+                        f"tempo2 drops this state at the end of the file, flattening "
+                        f"would carry it into the parent's following TOAs. Balance "
+                        f"the directive inside the included file."
+                    )
+                self._record_time_scope(
+                    path, accum.total - entry_total, boundary="include_eof"
                 )
             return False
         finally:
@@ -540,10 +668,15 @@ def flatten_tim(
     output; ``MODE`` lines are omitted (their value is returned as
     ``effective_mode``). Every TOA name is rewritten to ``toaNNNNN``.
 
+    A ``TIME`` left live at an INCLUDE boundary is *not* an error: it is baked
+    under the leg's own package rule and reported in
+    ``include_scope_resolutions``.
+
     Raises:
         TimLegacyFormatError: A TOA appears without ``FORMAT 1`` in effect, or a
             non-``1`` ``FORMAT`` declaration is present.
-        TimIncludeScopeError: A stateful directive is live across an INCLUDE.
+        TimIncludeScopeError: An emitted stateful directive (``EFAC`` family,
+            ``PROFILE_DIR``, ``SKIP``) is live across an INCLUDE boundary.
         TimCanonicalizationError: Missing or circular INCLUDE, unreadable file,
             or invalid observed ``TIME``/``MODE``/MJD.
     """
@@ -553,6 +686,7 @@ def flatten_tim(
         text="\n".join(walker.out) + "\n",
         effective_mode=walker.effective_mode,
         column_dodge_count=walker.column_dodge_counter[0],
+        include_scope_resolutions=tuple(walker.include_scope_resolutions),
     )
 
 
@@ -563,9 +697,10 @@ def discover_effective_tim_mode(
 
     Runs the same structural directive traversal as :func:`flatten_tim` --
     INCLUDE resolution and circularity, SKIP/END semantics, TIME parsing and
-    tempo2 scope guards, FORMAT 1 TOA validation -- and raises the same errors
-    for FORMAT 1 input. Legacy input (a non-``1`` ``FORMAT`` declaration, or TOAs
-    with no ``FORMAT 1`` in effect) is tolerated rather than rejected, because
+    tempo2 emitted-directive scope guards, FORMAT 1 TOA validation -- and raises
+    the same errors for FORMAT 1 input. Legacy input (a non-``1`` ``FORMAT``
+    declaration, or TOAs with no ``FORMAT 1`` in effect) is tolerated rather
+    than rejected, because
     ``write_canonical_tim`` supports it by converting through the owning engine;
     directives are still processed so release MODE is discovered before any lossy
     conversion or pulse-number rewrite. Success here does *not* imply that the
@@ -1232,7 +1367,8 @@ def write_canonical_tim(
         :class:`CanonicalTimResult` with the written path. ``effective_mode``
         reflects the *converted/flattened* file and is diagnostic only; the
         factory discovers MODE from the release path via
-        :func:`discover_effective_tim_mode`.
+        :func:`discover_effective_tim_mode`. ``include_scope_resolutions``
+        lists every ``TIME`` scoping divergence resolved while flattening.
     """
     tim_path = Path(tim_path)
     out_path = Path(out_path)
@@ -1280,4 +1416,5 @@ def write_canonical_tim(
         effective_mode=flattened.effective_mode,
         tim_metadata=tim_metadata,
         column_dodge_count=flattened.column_dodge_count,
+        include_scope_resolutions=flattened.include_scope_resolutions,
     )

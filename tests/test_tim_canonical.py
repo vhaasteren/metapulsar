@@ -4,8 +4,10 @@ import re
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from loguru import logger
 
 from metapulsar.tim_canonical import (
     TEMPO2_MAX_TIM_LINE_BYTES,
@@ -239,27 +241,135 @@ class TestIncludeScopeGuard:
         assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
         assert lines[1].split()[2] == "58002.0"
 
-    def test_unbalanced_time_in_include_raises(self, tmp_path):
+    def test_unbalanced_time_at_include_eof_is_scoped_not_refused(self, tmp_path):
+        """tempo2 drops the child's residual TIME; the parent's TOAs are clean."""
         (tmp_path / "chunk.tim").write_text(
-            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\n", encoding="utf-8"
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\nTIME -1\n", encoding="utf-8"
         )
         root = tmp_path / "root.tim"
         root.write_text(
             f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
         )
 
-        with pytest.raises(TimIncludeScopeError, match="ends with TIME still active"):
-            flatten_tim(root)
+        result = flatten_tim(root, timing_package="tempo2")
+        lines = _toa_lines(result.text)
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
+        assert lines[1].split()[2] == "58002.0"  # parent unshifted
 
-    def test_time_live_at_include_entry_raises(self, tmp_path):
+        (resolution,) = result.include_scope_resolutions
+        assert resolution.boundary == "include_eof"
+        assert resolution.directive == "TIME"
+        assert resolution.disposition == "scoped"
+        assert resolution.offset_seconds == Fraction(-2)
+        assert resolution.toas_emitted_before == 1
+        assert resolution.path == (tmp_path / "chunk.tim").resolve()
+        assert resolution.include_path is None
+
+    def test_time_live_at_include_entry_is_scoped_not_refused(self, tmp_path):
+        """tempo2 withholds the parent's live TIME from the included TOAs."""
         (tmp_path / "chunk.tim").write_text(
             f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8"
         )
         root = tmp_path / "root.tim"
-        root.write_text("FORMAT 1\nTIME -1\nINCLUDE chunk.tim\n", encoding="utf-8")
+        root.write_text(
+            f"FORMAT 1\nTIME -1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n",
+            encoding="utf-8",
+        )
 
-        with pytest.raises(TimIncludeScopeError, match="INCLUDE with TIME"):
-            flatten_tim(root)
+        result = flatten_tim(root, timing_package="tempo2")
+        lines = _toa_lines(result.text)
+        assert lines[0].split()[2] == "58001.0"  # child unshifted
+        assert lines[1].split()[2] == _oracle_baked("58002.0", Fraction(-1))
+
+        (resolution,) = result.include_scope_resolutions
+        assert resolution.boundary == "include_entry"
+        assert resolution.disposition == "scoped"
+        assert resolution.offset_seconds == Fraction(-1)
+        assert resolution.toas_emitted_before == 0
+        assert resolution.path == root.resolve()
+        assert resolution.include_path == (tmp_path / "chunk.tim").resolve()
+
+    def test_time_live_at_included_end_is_scoped_not_refused(self, tmp_path):
+        """tempo2's `endit` is function-local too, so END behaves like EOF."""
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\nEND\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
+        )
+
+        result = flatten_tim(root, timing_package="tempo2")
+        lines = _toa_lines(result.text)
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
+        assert lines[1].split()[2] == "58002.0"
+
+        (resolution,) = result.include_scope_resolutions
+        assert resolution.boundary == "include_end"
+        assert resolution.offset_seconds == Fraction(-1)
+
+    def test_time_scope_resolution_warns_naming_the_file(self, tmp_path):
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text("FORMAT 1\nINCLUDE chunk.tim\n", encoding="utf-8")
+
+        with patch.object(logger, "warning") as mock_warning:
+            flatten_tim(root, timing_package="tempo2")
+        messages = [str(call) for call in mock_warning.call_args_list]
+        assert any("chunk.tim" in message for message in messages), messages
+        assert any("include_eof" in message for message in messages), messages
+
+    def test_time_scope_resolution_recorded_but_silent_during_discovery(self, tmp_path):
+        """Discovery walks the same tree just before flatten; don't warn twice."""
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text("FORMAT 1\nMODE 1\nINCLUDE chunk.tim\n", encoding="utf-8")
+
+        with patch.object(logger, "warning") as mock_warning:
+            assert discover_effective_tim_mode(root, timing_package="tempo2") == 1
+        assert not mock_warning.called
+
+    def test_balanced_time_records_no_resolution(self, tmp_path):
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\nTIME +1\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
+        )
+
+        assert (
+            flatten_tim(root, timing_package="tempo2").include_scope_resolutions == ()
+        )
+
+    def test_pint_leg_records_carried_child_contribution_only(self, tmp_path):
+        """PINT inherits the parent's total, so measure the child's own delta."""
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -2\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nTIME -1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n",
+            encoding="utf-8",
+        )
+
+        result = flatten_tim(root, timing_package="pint")
+        lines = _toa_lines(result.text)
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-3))
+        assert lines[1].split()[2] == _oracle_baked("58002.0", Fraction(-3))
+
+        entry, eof = result.include_scope_resolutions
+        assert entry.boundary == "include_entry"
+        assert entry.disposition == "carried"
+        assert entry.offset_seconds == Fraction(-1)
+        assert eof.boundary == "include_eof"
+        assert eof.disposition == "carried"
+        # -2, not the -3 the shared accumulator holds on the way out.
+        assert eof.offset_seconds == Fraction(-2)
 
     def test_unbalanced_efac_in_include_raises(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
@@ -926,7 +1036,12 @@ class TestExactTimeArithmetic:
         assert mjd == _oracle_baked("58000.0", Fraction(1))
 
     def test_exponent_span_cancellation_keeps_time_live(self, tmp_path):
-        # Exact total 1e-30 s; a digit-budgeted Decimal collapses to 0E-18.
+        """§6.1.4: exact total 1e-30 s; a digit-budgeted Decimal gives 0E-18.
+
+        The residual is far below the emitted MJD scale, so the observable is
+        the recorded INCLUDE-boundary offset, which pins the *exact* value a
+        budgeted accumulator would have lost.
+        """
         (tmp_path / "child.tim").write_text(
             f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8"
         )
@@ -935,8 +1050,10 @@ class TestExactTimeArithmetic:
             "FORMAT 1\nTIME 1e9\nTIME 1e-30\nTIME -1e9\nINCLUDE child.tim\n",
             encoding="utf-8",
         )
-        with pytest.raises(TimIncludeScopeError, match="INCLUDE with TIME"):
-            flatten_tim(root, timing_package="tempo2")
+        result = flatten_tim(root, timing_package="tempo2")
+        (resolution,) = result.include_scope_resolutions
+        assert resolution.boundary == "include_entry"
+        assert resolution.offset_seconds == Fraction(1, 10**30)
 
     def test_true_cancellation_balances_include_boundary(self, tmp_path):
         (tmp_path / "child.tim").write_text(
@@ -946,8 +1063,9 @@ class TestExactTimeArithmetic:
         root.write_text(
             "FORMAT 1\nTIME 1e9\nTIME -1e9\nINCLUDE child.tim\n", encoding="utf-8"
         )
-        text = flatten_tim(root, timing_package="tempo2").text
-        assert _toa_lines(text)[0].split()[2] == "58001.0"
+        result = flatten_tim(root, timing_package="tempo2")
+        assert _toa_lines(result.text)[0].split()[2] == "58001.0"
+        assert result.include_scope_resolutions == ()
 
     def test_forty_digit_fractional_delta(self, tmp_path):
         delta = "0." + ("0" * 39) + "1"
@@ -1085,7 +1203,8 @@ class TestTraversalSwitches:
             "format_no_arg": "FORMAT\n",
             "bad_time": f"FORMAT 1\nTIME nope\n{_toa(58000.0)}\n",
             "bad_mode": f"FORMAT 1\nMODE nope\n{_toa(58000.0)}\n",
-            "unbalanced_time": None,
+            # TIME is baked, so only the *emitted* directives still refuse.
+            "unbalanced_efac": None,
             "short_toa": "FORMAT 1\n obs1 1400.0 58000.0\n",
         }
         a = tmp_path / "a.tim"
@@ -1097,9 +1216,9 @@ class TestTraversalSwitches:
         child.write_text(f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8")
         unbalanced = tmp_path / "unbalanced.tim"
         unbalanced.write_text(
-            "FORMAT 1\nTIME -1\nINCLUDE child.tim\n", encoding="utf-8"
+            "FORMAT 1\nEFAC 1.3\nINCLUDE child.tim\n", encoding="utf-8"
         )
-        cases["unbalanced_time"] = unbalanced
+        cases["unbalanced_efac"] = unbalanced
 
         for name, content in cases.items():
             if isinstance(content, Path):
