@@ -3,8 +3,9 @@
 MetaPulsar always hands its timing engines a standalone Tempo2 ``FORMAT 1``
 file carrying authoritative ``-pta``, ``-pta_dataset`` and ``-timing_package``
 flags, so the PTA identity of every TOA travels with the data instead of being
-synthesized in memory. This module owns that text transformation; it never
-changes TOA values, uncertainties, or any other flag.
+synthesized in memory. When the release par contains ``JUMP MJD`` windows this
+module also stamps combination-safe ``-mjd_jump_pta`` flags on the selected
+TOAs. It never changes TOA values, uncertainties, or any other flag.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).
@@ -14,15 +15,18 @@ from __future__ import annotations
 
 import re
 import tempfile
+from collections import defaultdict, deque
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
+import numpy as np
 from loguru import logger
 
 # Flags MetaPulsar owns. An input that already uses one of these names has it
 # renamed to ``<name>_orig`` so the release's own value stays auditable.
 CANONICAL_METADATA_FLAGS: Tuple[str, ...] = ("pta", "pta_dataset", "timing_package")
+MJD_JUMP_PTA_FLAG = "mjd_jump_pta"
 
 # tempo2 hard limits (ref-packages/tempo2/tempo2.h:96-97). Overflow makes
 # tempo2 call exit(1) (readTimfile.C:323-327), which would kill the
@@ -454,6 +458,282 @@ def _stamp_toa_line(
     return stamped
 
 
+def parse_jump_mjd_windows(
+    par_text: str,
+) -> List[Tuple[Decimal, Decimal, Tuple[str, ...]]]:
+    """Return ordered ``(t1, t2, value_tokens)`` for every active ``JUMP MJD`` line.
+
+    Skips blank/comment lines. A line is a JUMP MJD line iff, after strip+split,
+    ``tokens[0].upper() == "JUMP"`` and ``tokens[1].upper() == "MJD"`` and
+    ``len(tokens) >= 4``. ``SATJUMP`` is therefore excluded.
+    """
+    out: List[Tuple[Decimal, Decimal, Tuple[str, ...]]] = []
+    for raw in par_text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        upper = stripped.upper()
+        if upper == "C" or upper.startswith("C "):
+            continue
+        tokens = stripped.split()
+        if len(tokens) < 4:
+            continue
+        if tokens[0].upper() != "JUMP" or tokens[1].upper() != "MJD":
+            continue
+        try:
+            t1 = Decimal(tokens[2])
+            t2 = Decimal(tokens[3])
+        except InvalidOperation as exc:
+            raise TimCanonicalizationError(
+                f"Invalid JUMP MJD bounds in par line: {stripped!r}"
+            ) from exc
+        out.append((t1, t2, tuple(tokens[4:])))
+    return out
+
+
+def jump_mjd_flag_value(pta_name: str, index: int) -> str:
+    """Return the MetaPulsar ``-mjd_jump_pta`` value for window ``index`` (1-based)."""
+    value = f"{pta_name}_{index}"
+    _validate_flag_text("mjd_jump_pta value", value)
+    _validate_flag_text("name", MJD_JUMP_PTA_FLAG)
+    return value
+
+
+def _sat_in_jump_mjd_window(
+    sat_token: str,
+    t1: Decimal,
+    t2: Decimal,
+    *,
+    timing_package: str,
+    toa_line: str,
+) -> bool:
+    """Match the numeric coercion and endpoint rule of the parsing leg."""
+    try:
+        if timing_package == "tempo2":
+            # tempo2 reads SAT into longdouble, JUMP bounds with sscanf("%lf").
+            sat = np.longdouble(sat_token)
+            lower = np.float64(str(t1))
+            upper = np.float64(str(t2))
+            return bool(lower <= sat < upper)
+        if timing_package == "pint":
+            # PINT's FORMAT 1 parser splits integer/fractional MJD, converts
+            # the fraction to float, then exposes mjd_float as float64.
+            if "." in sat_token:
+                day_text, fraction_text = sat_token.split(".", 1)
+                sat = np.float64(int(day_text) + float(f"0.{fraction_text}"))
+            else:
+                sat = np.float64(int(sat_token))
+            lower = np.float64(str(t1))
+            upper = np.float64(str(t2))
+            return bool(lower <= sat <= upper)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TimCanonicalizationError(
+            f"Invalid TOA SAT for {timing_package} JUMP MJD selection: "
+            f"{toa_line.strip()!r}"
+        ) from exc
+    raise TimCanonicalizationError(
+        f"Unsupported timing package for JUMP MJD selection: {timing_package!r}"
+    )
+
+
+def _stamp_mjd_jump_toa_line(
+    line: str,
+    *,
+    expected_flag_value: Optional[str],
+    implicit_flag_count: int = 0,
+) -> str:
+    """Apply ownership rename / exact-own-pair preserve for one TOA line."""
+    spans = [(m.start(), m.end()) for m in _TOKEN_RE.finditer(line)]
+    tokens = [line[start:end] for start, end in spans]
+    key_indices = _flag_key_indices(len(tokens))
+    present: Dict[str, List[int]] = {}
+    for index in key_indices:
+        token = tokens[index]
+        if not token.startswith("-"):
+            continue
+        name = token.lstrip("-").lower()
+        present.setdefault(name, []).append(index)
+
+    occurrences = present.get(MJD_JUMP_PTA_FLAG, [])
+    exact_own = (
+        expected_flag_value is not None
+        and len(occurrences) == 1
+        and tokens[occurrences[0]] == f"-{MJD_JUMP_PTA_FLAG}"
+        and tokens[occurrences[0] + 1] == expected_flag_value
+    )
+
+    renames: List[Tuple[int, int, str]] = []
+    to_append: List[str] = []
+    if exact_own:
+        pass
+    else:
+        if occurrences:
+            if f"{MJD_JUMP_PTA_FLAG}_orig" in present:
+                raise TimCanonicalizationError(
+                    f"Cannot preserve existing -{MJD_JUMP_PTA_FLAG} as "
+                    f"-{MJD_JUMP_PTA_FLAG}_orig because "
+                    f"-{MJD_JUMP_PTA_FLAG}_orig is already present on TOA line: "
+                    f"{line.strip()!r}"
+                )
+            for index in occurrences:
+                start, end = spans[index]
+                renames.append((start, end, f"-{MJD_JUMP_PTA_FLAG}_orig"))
+        if expected_flag_value is not None:
+            to_append.append(f" -{MJD_JUMP_PTA_FLAG} {expected_flag_value}")
+
+    n_flags = len(key_indices) + len(to_append) + implicit_flag_count
+    if n_flags >= TEMPO2_MAX_FLAGS:
+        raise TimCanonicalizationError(
+            f"Stamping MetaPulsar flags would give this TOA {n_flags} flags, "
+            f"reaching tempo2's fatal MAX_FLAGS={TEMPO2_MAX_FLAGS}: "
+            f"{line.strip()!r}"
+        )
+
+    stamped = line
+    for start, end, replacement in reversed(renames):
+        stamped = stamped[:start] + replacement + stamped[end:]
+    stamped = stamped.rstrip("\r") + "".join(to_append)
+    line_bytes = len(stamped.encode("utf-8"))
+    if line_bytes > TEMPO2_MAX_TIM_LINE_BYTES:
+        raise TimCanonicalizationError(
+            f"Stamped TOA line is {line_bytes} bytes; tempo2 can safely read at "
+            f"most {TEMPO2_MAX_TIM_LINE_BYTES} bytes before the newline: "
+            f"{stamped.strip()!r}"
+        )
+    return stamped
+
+
+def stamp_mjd_jump_pta_flags(
+    tim_text: str,
+    *,
+    pta_name: str,
+    windows: Sequence[Tuple[Decimal, Decimal]],
+    timing_package: str,
+) -> str:
+    """Append ``-mjd_jump_pta {pta_name}_{k}`` on TOAs selected by each window.
+
+    ``windows[i]`` corresponds to flag value ``f"{pta_name}_{i+1}"``. Selection
+    follows the parsing leg: tempo2 ``[t1, t2)``, PINT ``[t1, t2]``. Empty
+    ``windows`` returns ``tim_text`` unchanged (still ends with a newline).
+    """
+    if not windows:
+        return tim_text if tim_text.endswith("\n") else tim_text + "\n"
+
+    flag_values = [
+        jump_mjd_flag_value(pta_name, index) for index in range(1, len(windows) + 1)
+    ]
+
+    out: List[str] = []
+    tempo2_info_active = False
+    tempo2_skipping = False
+    for line in tim_text.splitlines():
+        kind, tokens = _classify(line)
+        if timing_package == "tempo2" and kind == "directive":
+            directive = tokens[0].upper()
+            if directive == "SKIP":
+                tempo2_skipping = True
+            elif directive == "NOSKIP":
+                tempo2_skipping = False
+            elif directive == "INFO" and not tempo2_skipping:
+                tempo2_info_active = len(tokens) >= 2 and tokens[1] != "-1"
+        if kind != "data" or len(tokens) < 5:
+            out.append(line)
+            continue
+
+        matches = [
+            i
+            for i, (t1, t2) in enumerate(windows)
+            if _sat_in_jump_mjd_window(
+                tokens[2],
+                t1,
+                t2,
+                timing_package=timing_package,
+                toa_line=line,
+            )
+        ]
+        if len(matches) > 1:
+            matched_values = [flag_values[i] for i in matches]
+            raise TimCanonicalizationError(
+                f"overlapping JUMP MJD windows select the same TOA "
+                f"(flag values {matched_values}): {line.strip()!r}. "
+                f"Native JUMP MJD overlaps are additive, but converting them to "
+                f"repeated -{MJD_JUMP_PTA_FLAG} keys is lossy under PINT, so "
+                f"MetaPulsar rejects multi-window TOAs for a uniform contract."
+            )
+        expected = flag_values[matches[0]] if matches else None
+        out.append(
+            _stamp_mjd_jump_toa_line(
+                line,
+                expected_flag_value=expected,
+                implicit_flag_count=int(tempo2_info_active),
+            )
+        )
+    return "\n".join(out) + "\n"
+
+
+def convert_jump_mjd_par_text(
+    engine_par_text: str,
+    *,
+    pta_name: str,
+    release_windows: Sequence[Tuple[Decimal, Decimal, Tuple[str, ...]]],
+) -> str:
+    """Replace engine-par ``JUMP MJD`` lines with flagged ``JUMP -mjd_jump_pta``.
+
+    ``release_windows`` is the output of :func:`parse_jump_mjd_windows` on the
+    release par (assigns ``{pta}_{k}``). Engine lines are matched by equal
+    ``(t1, t2)`` Decimal values, consuming identical windows in document order.
+    Trailing value/fit/err tokens come from the **engine** line.
+    """
+    queues: dict[Tuple[Decimal, Decimal], deque[int]] = defaultdict(deque)
+    for i, (t1, t2, _vals) in enumerate(release_windows):
+        queues[(t1, t2)].append(i)
+
+    out_lines: List[str] = []
+    for raw in engine_par_text.splitlines():
+        stripped = raw.strip()
+        tokens = stripped.split() if stripped else []
+        is_jump_mjd = (
+            len(tokens) >= 4
+            and tokens[0].upper() == "JUMP"
+            and tokens[1].upper() == "MJD"
+            and not stripped.startswith("#")
+            and stripped.upper() != "C"
+            and not stripped.upper().startswith("C ")
+        )
+        if not is_jump_mjd:
+            out_lines.append(raw)
+            continue
+        try:
+            t1 = Decimal(tokens[2])
+            t2 = Decimal(tokens[3])
+        except InvalidOperation as exc:
+            raise TimCanonicalizationError(
+                f"Invalid JUMP MJD bounds in engine par line: {stripped!r}"
+            ) from exc
+        key = (t1, t2)
+        if not queues[key]:
+            raise TimCanonicalizationError(
+                f"Engine par has JUMP MJD {t1} {t2} with no matching release "
+                f"window for PTA {pta_name!r}: {stripped!r}"
+            )
+        i = queues[key].popleft()
+        flag = jump_mjd_flag_value(pta_name, i + 1)
+        trailing = (" " + " ".join(tokens[4:])) if len(tokens) > 4 else ""
+        out_lines.append(f"JUMP -{MJD_JUMP_PTA_FLAG} {flag}{trailing}")
+
+    leftovers = [(t1, t2) for (t1, t2), q in queues.items() for _ in q]
+    if leftovers:
+        raise TimCanonicalizationError(
+            f"Release JUMP MJD windows missing from engine par for PTA "
+            f"{pta_name!r}: {leftovers}"
+        )
+
+    text = "\n".join(out_lines)
+    if engine_par_text.endswith("\n"):
+        text += "\n"
+    return text
+
+
 def convert_legacy_tim_to_format1(
     par_text: str,
     tim_path: Path,
@@ -514,7 +794,8 @@ def write_canonical_tim(
         pta_name: MetaPulsar's PTA key, stamped as ``-pta`` and ``-pta_dataset``.
         timing_package: ``"pint"`` or ``"tempo2"``, stamped as ``-timing_package``.
         out_path: Destination path.
-        par_text: Par content, required only to convert legacy-format input.
+        par_text: Par content. Required to convert legacy-format input, and used
+            as the source of ``JUMP MJD`` windows for ``-mjd_jump_pta`` stamping.
 
     Returns:
         ``out_path``.
@@ -542,5 +823,14 @@ def write_canonical_tim(
             text = flatten_tim(converted, timing_package=package)
 
     text = stamp_metadata_flags(text, pta_name=pta_name, timing_package=timing_package)
+    if par_text is not None:
+        raw_windows = parse_jump_mjd_windows(par_text)
+        if raw_windows:
+            text = stamp_mjd_jump_pta_flags(
+                text,
+                pta_name=pta_name,
+                windows=[(t1, t2) for t1, t2, _ in raw_windows],
+                timing_package=timing_package,
+            )
     out_path.write_text(text, encoding="utf-8")
     return out_path

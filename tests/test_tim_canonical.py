@@ -1,13 +1,18 @@
 """Tests for the canonical .tim writer (flattening + metadata stamping)."""
 
+from decimal import Decimal
+
 import pytest
 
 from metapulsar.tim_canonical import (
     TimCanonicalizationError,
     TimIncludeScopeError,
     TimLegacyFormatError,
+    convert_jump_mjd_par_text,
     flatten_tim,
+    parse_jump_mjd_windows,
     stamp_metadata_flags,
+    stamp_mjd_jump_pta_flags,
     write_canonical_tim,
 )
 from metapulsar.tim_file_analyzer import TimFileAnalyzer
@@ -426,6 +431,30 @@ class TestWriteCanonicalTim:
 
         assert twice.read_text(encoding="utf-8") == once.read_text(encoding="utf-8")
 
+    def test_is_idempotent_with_jump_mjd_par_text(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(58000.0)}\n{_toa(58500.0)}\n", encoding="utf-8"
+        )
+        par_text = "PSRJ J0000+0000\nJUMP MJD 57900 59000 -1e-7 1\n"
+        once = write_canonical_tim(
+            root,
+            pta_name="EPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "once.tim",
+            par_text=par_text,
+        )
+        twice = write_canonical_tim(
+            once,
+            pta_name="EPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "twice.tim",
+            par_text=par_text,
+        )
+
+        assert twice.read_text(encoding="utf-8") == once.read_text(encoding="utf-8")
+        assert once.read_text(encoding="utf-8").count("-mjd_jump_pta EPTA_1") == 2
+
     def test_restamping_under_a_new_pta_name_preserves_the_old_one(self, tmp_path):
         root = tmp_path / "root.tim"
         root.write_text(f"FORMAT 1\n{_toa(58000.0)}\n", encoding="utf-8")
@@ -447,3 +476,196 @@ class TestWriteCanonicalTim:
         assert "-pta pta2" in text
         assert "-pta_dataset_orig pta1" in text
         assert "-timing_package_orig pint" in text
+
+
+class TestJumpMjd:
+    def test_parse_order_skips_comments_and_flag_jumps(self):
+        par = (
+            "PSRJ J0000+0000\n"
+            "JUMP MJD 55000 56000 0 0\n"
+            "# JUMP MJD 57000 58000 1 0\n"
+            "JUMP -f foo -1e-6 1\n"
+            "JUMP MJD 56000 57000 1e-7 1\n"
+        )
+
+        windows = parse_jump_mjd_windows(par)
+
+        assert windows == [
+            (Decimal("55000"), Decimal("56000"), ("0", "0")),
+            (Decimal("56000"), Decimal("57000"), ("1e-7", "1")),
+        ]
+
+    def test_tempo2_selection_is_half_open(self):
+        text = (
+            "FORMAT 1\n"
+            f"{_toa(57999.9)}\n"
+            f"{_toa(58000.0)}\n"
+            f"{_toa(58999.999)}\n"
+            f"{_toa(59000.0)}\n"
+        )
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="PPTA",
+            windows=[(Decimal("58000"), Decimal("59000"))],
+            timing_package="tempo2",
+        )
+        lines = [line for line in out.splitlines() if line.startswith(" ")]
+        assert "-mjd_jump_pta" not in lines[0]
+        assert "-mjd_jump_pta PPTA_1" in lines[1]
+        assert "-mjd_jump_pta PPTA_1" in lines[2]
+        assert "-mjd_jump_pta" not in lines[3]
+
+    def test_pint_selection_is_closed(self):
+        text = (
+            "FORMAT 1\n"
+            f"{_toa(57999.9)}\n"
+            f"{_toa(58000.0)}\n"
+            f"{_toa(58999.999)}\n"
+            f"{_toa(59000.0)}\n"
+        )
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="PPTA",
+            windows=[(Decimal("58000"), Decimal("59000"))],
+            timing_package="pint",
+        )
+        lines = [line for line in out.splitlines() if line.startswith(" ")]
+        assert "-mjd_jump_pta" not in lines[0]
+        assert "-mjd_jump_pta PPTA_1" in lines[1]
+        assert "-mjd_jump_pta PPTA_1" in lines[2]
+        assert "-mjd_jump_pta PPTA_1" in lines[3]
+
+    def test_values_use_pta_name_and_one_based_index(self):
+        text = f"FORMAT 1\n{_toa(55500.0)}\n{_toa(56500.0)}\n"
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="EPTA",
+            windows=[
+                (Decimal("55000"), Decimal("56000")),
+                (Decimal("56000"), Decimal("57000")),
+            ],
+            timing_package="tempo2",
+        )
+        assert "-mjd_jump_pta EPTA_1" in out
+        assert "-mjd_jump_pta EPTA_2" in out
+
+    def test_unaffected_toas_have_no_flag(self):
+        text = f"FORMAT 1\n{_toa(50000.0)}\n"
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="EPTA",
+            windows=[(Decimal("55000"), Decimal("56000"))],
+            timing_package="tempo2",
+        )
+        assert "-mjd_jump_pta" not in out
+
+    def test_stamping_runs_after_metadata_flags(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{_toa(58000.0)}\n", encoding="utf-8")
+        out = write_canonical_tim(
+            root,
+            pta_name="EPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "out.tim",
+            par_text="JUMP MJD 57000 59000 -2e-7 1\n",
+        )
+        line = next(
+            line
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if " -pta " in line
+        )
+        assert "-pta EPTA" in line
+        assert "-pta_dataset EPTA" in line
+        assert "-timing_package tempo2" in line
+        assert "-mjd_jump_pta EPTA_1" in line
+
+    def test_overlapping_windows_raise(self):
+        text = f"FORMAT 1\n{_toa(58500.0)}\n"
+        with pytest.raises(TimCanonicalizationError, match="overlapping JUMP MJD"):
+            stamp_mjd_jump_pta_flags(
+                text,
+                pta_name="EPTA",
+                windows=[
+                    (Decimal("58000"), Decimal("59000")),
+                    (Decimal("58400"), Decimal("58600")),
+                ],
+                timing_package="tempo2",
+            )
+
+    def test_adjacent_boundary_differs_by_package(self):
+        text = f"FORMAT 1\n{_toa(59000.0)}\n"
+        windows = [
+            (Decimal("58000"), Decimal("59000")),
+            (Decimal("59000"), Decimal("60000")),
+        ]
+        with pytest.raises(TimCanonicalizationError, match="overlapping JUMP MJD"):
+            stamp_mjd_jump_pta_flags(
+                text,
+                pta_name="NG",
+                windows=windows,
+                timing_package="pint",
+            )
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="NG",
+            windows=windows,
+            timing_package="tempo2",
+        )
+        assert "-mjd_jump_pta NG_2" in out
+        assert "-mjd_jump_pta NG_1" not in out
+
+    def test_renames_existing_release_flag(self):
+        text = "FORMAT 1\n" + _toa(58000.0, " -mjd_jump_pta releaseval") + "\n"
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="EPTA",
+            windows=[(Decimal("57000"), Decimal("59000"))],
+            timing_package="tempo2",
+        )
+        assert "-mjd_jump_pta_orig releaseval" in out
+        assert "-mjd_jump_pta EPTA_1" in out
+
+    def test_convert_jump_mjd_par_text(self):
+        release = parse_jump_mjd_windows(
+            "JUMP MJD 58925 65000 -2e-7 1\nJUMP -f keep 0 1\n"
+        )
+        engine = (
+            "PSRJ J0613-0200\n" "JUMP -f keep 0 1\n" "JUMP MJD 58925 65000 -2e-7 1\n"
+        )
+        out = convert_jump_mjd_par_text(
+            engine, pta_name="PPTA", release_windows=release
+        )
+        assert "JUMP -mjd_jump_pta PPTA_1 -2e-7 1" in out
+        assert "JUMP MJD" not in out
+        assert "JUMP -f keep 0 1" in out
+
+    def test_convert_raises_on_missing_engine_window(self):
+        release = parse_jump_mjd_windows("JUMP MJD 58925 65000 -2e-7 1\n")
+        with pytest.raises(TimCanonicalizationError, match="missing from engine"):
+            convert_jump_mjd_par_text(
+                "PSRJ J0000+0000\n",
+                pta_name="PPTA",
+                release_windows=release,
+            )
+
+    def test_convert_raises_on_extra_engine_window(self):
+        release = parse_jump_mjd_windows("JUMP MJD 58925 65000 -2e-7 1\n")
+        with pytest.raises(TimCanonicalizationError, match="no matching release"):
+            convert_jump_mjd_par_text(
+                "JUMP MJD 58925 65000 -2e-7 1\nJUMP MJD 10000 20000 0 0\n",
+                pta_name="PPTA",
+                release_windows=release,
+            )
+
+    def test_flag_budget_includes_mjd_jump(self):
+        # 36 existing + 3 metadata already stamped would leave room for one more;
+        # start from a line that already has 39 flags so one more hits MAX_FLAGS.
+        many = "".join(f" -f{i} v{i}" for i in range(39))
+        text = "FORMAT 1\n" + _toa(58000.0, many) + "\n"
+        with pytest.raises(TimCanonicalizationError, match="MAX_FLAGS"):
+            stamp_mjd_jump_pta_flags(
+                text,
+                pta_name="x",
+                windows=[(Decimal("57000"), Decimal("59000"))],
+                timing_package="pint",
+            )

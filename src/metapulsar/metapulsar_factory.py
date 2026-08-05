@@ -29,7 +29,11 @@ except ImportError:
 # Import sandbox for robust libstempo usage
 from .sandbox_tempo2 import tempopulsar
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
-from .tim_canonical import write_canonical_tim
+from .tim_canonical import (
+    convert_jump_mjd_par_text,
+    parse_jump_mjd_windows,
+    write_canonical_tim,
+)
 from .pint_helpers import (
     Ell1hShapiroMode,
     PulseNumberMode,
@@ -204,6 +208,7 @@ class MetaPulsarFactory:
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -249,6 +254,10 @@ class MetaPulsarFactory:
                 controlling the multi-PTA common profile (``unsupported="strip"``
                 by default, plus optional ``ephem``/``clock``/``bipm_version``/
                 ``ne_sw`` pins). Only valid for the ``"shared"`` strategy.
+            convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
+                line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
+                ``{pta}_{k}`` values stamped on the canonical tim. Default False
+                (tim flags are still stamped).
 
         Returns:
             MetaPulsar object
@@ -339,6 +348,17 @@ class MetaPulsarFactory:
                 # "original" dump remains the data release's own bytes.
                 self._write_original_parfiles(
                     single_file_data, parfile_output_dir, pulsar_name
+                )
+
+        if convert_jump_mjd:
+            engine_pars = self._apply_jump_mjd_conversion(
+                engine_pars=engine_pars,
+                file_data=single_file_data,
+                pta_file_dir=pta_file_dir,
+            )
+            if combination_strategy == "shared" and parfile_output_dir is not None:
+                self._export_converted_jump_mjd_pars(
+                    engine_pars, parfile_output_dir, pulsar_name
                 )
 
         file_pairs = {
@@ -565,6 +585,7 @@ class MetaPulsarFactory:
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all available pulsars using file data.
 
@@ -585,6 +606,10 @@ class MetaPulsarFactory:
                 not saved to disk.
             alignment_policy: Alignment policy forwarded to each
                 ``create_metapulsar`` call (``"shared"`` strategy only).
+            convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
+                line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
+                ``{pta}_{k}`` values stamped on the canonical tim. Default False
+                (tim flags are still stamped).
 
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
@@ -631,6 +656,7 @@ class MetaPulsarFactory:
                     use_pulse_numbers=pulse_mode,
                     clock_dir=clock_dir,
                     alignment_policy=alignment_policy,
+                    convert_jump_mjd=convert_jump_mjd,
                 )
 
                 # Canonical name is automatically calculated from pulsar data
@@ -1018,6 +1044,49 @@ class MetaPulsarFactory:
                     f"No par_content found for {pta_name}, skipping original par file write"
                 )
 
+    def _apply_jump_mjd_conversion(
+        self,
+        *,
+        engine_pars: Dict[str, Path],
+        file_data: Dict[str, Dict[str, Any]],
+        pta_file_dir: Path,
+    ) -> Dict[str, Path]:
+        """Rewrite JUMP MJD in engine pars to flagged JUMP; never mutate release paths."""
+        updated = dict(engine_pars)
+        pta_file_dir.mkdir(parents=True, exist_ok=True)
+        for pta_name, engine_path in engine_pars.items():
+            release_windows = parse_jump_mjd_windows(file_data[pta_name]["par_content"])
+            if not release_windows:
+                continue
+            engine_text = Path(engine_path).read_text(encoding="utf-8")
+            new_text = convert_jump_mjd_par_text(
+                engine_text,
+                pta_name=pta_name,
+                release_windows=release_windows,
+            )
+            if new_text == engine_text:
+                continue
+            out_path = pta_file_dir / f"{_safe_pta_filename(pta_name)}.jumpmjd.par"
+            out_path.write_text(new_text, encoding="utf-8")
+            updated[pta_name] = out_path
+            self.logger.debug(
+                f"Converted JUMP MJD to -mjd_jump_pta for {pta_name}: {out_path}"
+            )
+        return updated
+
+    def _export_converted_jump_mjd_pars(
+        self,
+        engine_pars: Dict[str, Path],
+        parfile_output_dir: Path,
+        pulsar_name: str,
+    ) -> None:
+        """Overwrite shared parfile_output_dir exports with converted engine pars."""
+        for pta_name, engine_path in engine_pars.items():
+            # Match ParameterManager._get_output_filename(..., tag="shared").
+            dst = parfile_output_dir / f"{pulsar_name}_shared_{pta_name}.par"
+            shutil.copy2(Path(engine_path), dst)
+            self.logger.debug(f"Exported JUMP-MJD-converted shared par: {dst}")
+
 
 def reorder_ptas_for_pulsar(
     pulsar_file_data: Dict[str, List[Dict[str, Any]]], reference_pta: str
@@ -1052,6 +1121,7 @@ def create_metapulsar(
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -1081,6 +1151,10 @@ def create_metapulsar(
             controlling the multi-PTA common profile. ``None`` means
             ``AlignmentPolicy()``. Passing a policy with ``"per_pta"`` raises
             ``ValueError``.
+        convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
+            line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
+            ``{pta}_{k}`` values stamped on the canonical tim. Default False
+            (tim flags are still stamped).
 
     Returns:
         MetaPulsar object
@@ -1102,6 +1176,7 @@ def create_metapulsar(
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
         alignment_policy=alignment_policy,
+        convert_jump_mjd=convert_jump_mjd,
     )
 
 
@@ -1117,6 +1192,7 @@ def create_all_metapulsars(
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all available pulsars using file data.
 
@@ -1138,6 +1214,10 @@ def create_all_metapulsars(
             (``"no"``, ``"yes"``, ``"reuse"``, or ``"overwrite"``; default ``"yes"``).
         alignment_policy: Alignment policy forwarded to each ``create_metapulsar``
             call (``"shared"`` strategy only).
+        convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
+            line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
+            ``{pta}_{k}`` values stamped on the canonical tim. Default False
+            (tim flags are still stamped).
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
@@ -1155,6 +1235,7 @@ def create_all_metapulsars(
         use_pulse_numbers=use_pulse_numbers,
         clock_dir=clock_dir,
         alignment_policy=alignment_policy,
+        convert_jump_mjd=convert_jump_mjd,
     )
 
 

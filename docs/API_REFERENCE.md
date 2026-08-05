@@ -121,9 +121,10 @@ class MetaPulsarFactory:
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy."""
-    
+
     def create_all_metapulsars(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
@@ -137,6 +138,7 @@ class MetaPulsarFactory:
         use_pulse_numbers: str = "yes",
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all pulsars in file_data."""
 ```
@@ -160,6 +162,7 @@ def create_metapulsar(
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -178,8 +181,9 @@ def create_metapulsar(
             If None, par files are not saved to disk.
         timfile_output_dir: Directory to save the canonical .tim files the engines
             consumed, as {pulsar}_{pta}.tim. These are standalone Tempo2 FORMAT 1
-            files (INCLUDEs flattened) carrying -pta, -pta_dataset and
-            -timing_package flags, so they can be reused directly. If None, they
+            files (INCLUDEs flattened) carrying -pta, -pta_dataset,
+            -timing_package, and (when the release par has JUMP MJD windows)
+            -mjd_jump_pta flags, so they can be reused directly. If None, they
             are not saved to disk.
         use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
             The .tim is always rewritten; this only controls pulse numbers.
@@ -187,6 +191,9 @@ def create_metapulsar(
         alignment_policy: AlignmentPolicy for the multi-PTA common profile.
             None means AlignmentPolicy(). Passing a policy together with
             combination_strategy="per_pta" raises ValueError.
+        convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
+            JUMP -mjd_jump_pta {pta}_{k} ... using the same values stamped on
+            the canonical tim. Default False (tim flags are still stamped).
 
     Returns:
         MetaPulsar object
@@ -214,6 +221,7 @@ def create_all_metapulsars(
     use_pulse_numbers: str = "yes",
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all pulsars in file_data.
 
@@ -231,6 +239,8 @@ def create_all_metapulsars(
         use_pulse_numbers: Pulse-number tracking mode.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: Alignment policy for the shared strategy.
+        convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
+            JUMP -mjd_jump_pta {pta}_{k} ... Default False (tim flags still stamped).
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
