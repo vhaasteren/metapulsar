@@ -355,30 +355,31 @@ class TestMetaPulsarFactory:
             ]
         }
 
-        # Mock the pulsar creation and MetaPulsar creation to avoid complex setup
-        with patch.object(
-            self.factory, "_create_pulsar_objects"
-        ) as mock_create_pulsars:
-            with patch(
-                "metapulsar.metapulsar_factory.MetaPulsar"
-            ) as mock_metapulsar_class:
-                mock_metapulsar = Mock()
-                mock_metapulsar_class.return_value = mock_metapulsar
-                mock_create_pulsars.return_value = {"epta_dr2": Mock()}
+        # Mock pulsar creation / MODE transfer / MetaPulsar — fixtures use
+        # placeholder .tim paths that are not on disk.
+        with (
+            patch.object(self.factory, "_create_pulsar_objects") as mock_create_pulsars,
+            patch.object(
+                self.factory,
+                "_apply_tim_mode_transfer",
+                side_effect=lambda **kw: (kw["engine_pars"], set()),
+            ),
+            patch("metapulsar.metapulsar_factory.MetaPulsar") as mock_metapulsar_class,
+        ):
+            mock_metapulsar = Mock()
+            mock_metapulsar_class.return_value = mock_metapulsar
+            mock_create_pulsars.return_value = {"epta_dr2": Mock()}
 
-                # Test the ParameterManager integration
-                result = self.factory.create_metapulsar(
-                    file_data,
-                    combination_strategy="shared",
-                    combine_components=["astrometry", "spindown"],
-                )
+            result = self.factory.create_metapulsar(
+                file_data,
+                combination_strategy="shared",
+                combine_components=["astrometry", "spindown"],
+            )
 
-                mock_param_manager.assert_called_once()
-                call_args = mock_param_manager.call_args
-                assert call_args[1]["combine_components"] == ["astrometry", "spindown"]
-
-                # Verify the result
-                assert result == mock_metapulsar
+            mock_param_manager.assert_called_once()
+            call_args = mock_param_manager.call_args
+            assert call_args[1]["combine_components"] == ["astrometry", "spindown"]
+            assert result == mock_metapulsar
 
     @staticmethod
     def _write_session_inputs(tmp_path, timing_package):
@@ -1000,6 +1001,11 @@ class TestSinglePtaSharedDmxWarning:
             patch.object(
                 factory, "_create_pulsar_objects", return_value={"ng12": Mock()}
             ),
+            patch.object(
+                factory,
+                "_apply_tim_mode_transfer",
+                side_effect=lambda **kw: (kw["engine_pars"], set()),
+            ),
             patch("metapulsar.metapulsar_factory.MetaPulsar") as mock_mp,
         ):
             mock_mp.return_value = Mock()
@@ -1103,6 +1109,11 @@ class TestAlignmentPolicyForwarding:
     def test_per_pta_strategy_without_policy_is_accepted(self):
         with (
             patch.object(self.factory, "_create_pulsar_objects") as mock_create,
+            patch.object(
+                self.factory,
+                "_apply_tim_mode_transfer",
+                side_effect=lambda **kw: (kw["engine_pars"], set()),
+            ),
             patch("metapulsar.metapulsar_factory.MetaPulsar"),
         ):
             mock_create.return_value = {"pta0": Mock()}

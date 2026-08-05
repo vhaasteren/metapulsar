@@ -6,7 +6,7 @@ building per-PTA timing objects, and wrapping them with metadata.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 from contextlib import nullcontext
 from pathlib import Path
 import shutil
@@ -31,6 +31,8 @@ from .sandbox_tempo2 import tempopulsar
 from .tim_file_analyzer import TimFileAnalyzer, TimMetadata
 from .tim_canonical import (
     convert_jump_mjd_par_text,
+    discover_effective_tim_mode,
+    ensure_par_mode,
     parse_jump_mjd_windows,
     write_canonical_tim,
 )
@@ -353,15 +355,26 @@ class MetaPulsarFactory:
                 )
 
         if convert_jump_mjd:
-            engine_pars = self._apply_jump_mjd_conversion(
+            engine_pars, jump_changed = self._apply_jump_mjd_conversion(
                 engine_pars=engine_pars,
                 file_data=single_file_data,
                 pta_file_dir=pta_file_dir,
             )
             if combination_strategy == "shared" and parfile_output_dir is not None:
-                self._export_converted_jump_mjd_pars(
-                    engine_pars, parfile_output_dir, pulsar_name
+                self._export_engine_pars(
+                    engine_pars, parfile_output_dir, pulsar_name, only=jump_changed
                 )
+
+        # Release-tim MODE → engine par (before PN rewrite, which drops MODE).
+        engine_pars, mode_changed = self._apply_tim_mode_transfer(
+            engine_pars=engine_pars,
+            file_data=single_file_data,
+            pta_file_dir=pta_file_dir,
+        )
+        if combination_strategy == "shared" and parfile_output_dir is not None:
+            self._export_engine_pars(
+                engine_pars, parfile_output_dir, pulsar_name, only=mode_changed
+            )
 
         file_pairs = {
             pta: (engine_pars[pta], single_file_data[pta]["tim"])
@@ -842,13 +855,14 @@ class MetaPulsarFactory:
                     derive_backend=derive_backend,
                     tim_metadata=tim_metadata,
                 ) as resolved_tim:
-                    canonical_tim = write_canonical_tim(
+                    canonical = write_canonical_tim(
                         Path(resolved_tim),
                         pta_name=pta_name,
                         timing_package=timing_package,
                         out_path=pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim",
                         par_text=original_par_text,
                     )
+                    canonical_tim = canonical.path
 
                 if timing_package == "pint":
                     if get_model_and_toas is None:
@@ -1052,9 +1066,10 @@ class MetaPulsarFactory:
         engine_pars: Dict[str, Path],
         file_data: Dict[str, Dict[str, Any]],
         pta_file_dir: Path,
-    ) -> Dict[str, Path]:
+    ) -> Tuple[Dict[str, Path], Set[str]]:
         """Rewrite JUMP MJD in engine pars to flagged JUMP; never mutate release paths."""
         updated = dict(engine_pars)
+        changed: Set[str] = set()
         pta_file_dir.mkdir(parents=True, exist_ok=True)
         for pta_name, engine_path in engine_pars.items():
             release_windows = parse_jump_mjd_windows(file_data[pta_name]["par_content"])
@@ -1071,23 +1086,69 @@ class MetaPulsarFactory:
             out_path = pta_file_dir / f"{_safe_pta_filename(pta_name)}.jumpmjd.par"
             out_path.write_text(new_text, encoding="utf-8")
             updated[pta_name] = out_path
+            changed.add(pta_name)
             self.logger.debug(
                 f"Converted JUMP MJD to -mjd_jump_pta for {pta_name}: {out_path}"
             )
-        return updated
+        return updated, changed
 
-    def _export_converted_jump_mjd_pars(
+    def _apply_tim_mode_transfer(
+        self,
+        *,
+        engine_pars: Dict[str, Path],
+        file_data: Dict[str, Dict[str, Any]],
+        pta_file_dir: Path,
+    ) -> Tuple[Dict[str, Path], Set[str]]:
+        """Move release-tim MODE onto engine pars; never mutate release paths."""
+        updated = dict(engine_pars)
+        changed: Set[str] = set()
+        pta_file_dir.mkdir(parents=True, exist_ok=True)
+        for pta_name, engine_path in engine_pars.items():
+            package = (
+                "pint" if file_data[pta_name]["timing_package"] == "pint" else "tempo2"
+            )
+            mode = discover_effective_tim_mode(
+                Path(file_data[pta_name]["tim"]), timing_package=package
+            )
+            if mode is None:
+                continue  # no tim override: keep the par's own mode
+            engine_text = Path(engine_path).read_text(encoding="utf-8")
+            new_text = ensure_par_mode(engine_text, mode)
+            if new_text == engine_text:
+                continue
+            out_path = pta_file_dir / f"{_safe_pta_filename(pta_name)}.mode.par"
+            out_path.write_text(new_text, encoding="utf-8")
+            updated[pta_name] = out_path
+            changed.add(pta_name)
+            self.logger.debug(
+                f"Transferred release-tim MODE {mode} onto engine par for "
+                f"{pta_name}: {out_path}"
+            )
+        return updated, changed
+
+    def _export_engine_pars(
         self,
         engine_pars: Dict[str, Path],
         parfile_output_dir: Path,
         pulsar_name: str,
+        *,
+        only: Optional[Set[str]] = None,
     ) -> None:
-        """Overwrite shared parfile_output_dir exports with converted engine pars."""
+        """Copy engine pars over the shared exports, skipping no-op self-copies."""
         for pta_name, engine_path in engine_pars.items():
+            if only is not None and pta_name not in only:
+                continue
+            src = Path(engine_path).resolve()
             # Match ParameterManager._get_output_filename(..., tag="shared").
-            dst = parfile_output_dir / f"{pulsar_name}_shared_{pta_name}.par"
-            shutil.copy2(Path(engine_path), dst)
-            self.logger.debug(f"Exported JUMP-MJD-converted shared par: {dst}")
+            dst = (
+                parfile_output_dir / f"{pulsar_name}_shared_{pta_name}.par"
+            ).resolve()
+            if src == dst:
+                continue
+            if dst.exists() and src.samefile(dst):
+                continue  # hard links resolve to distinct paths
+            shutil.copy2(src, dst)
+            self.logger.debug(f"Exported engine par for {pta_name}: {dst}")
 
 
 def reorder_ptas_for_pulsar(

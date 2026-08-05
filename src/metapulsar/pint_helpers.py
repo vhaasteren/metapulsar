@@ -815,9 +815,10 @@ def resolved_tim_for_pulse_numbers(
 def _write_pn_tim_libstempo(psr, out_path: Path) -> None:
     """Write a Tempo2-format .tim with -pn flags from a libstempo tempopulsar.
 
-    Writes FORMAT 1, MODE 1, then one line per observation with name, freq, MJD,
+    Writes FORMAT 1, then one line per observation with name, freq, MJD,
     error, type 'g', all flags, and -pn <pulse_number>. Pulse numbers must already
-    be filled (e.g. by calling psr.pulsenumbers()).
+    be filled (e.g. by calling psr.pulsenumbers()). MODE is omitted; fit-mode
+    lives on the engine-facing .par after release-tim MODE transfer.
     """
     out_path = Path(out_path)
     # Compute pulse numbers (fills obsn[].pulseN and returns array)
@@ -827,7 +828,7 @@ def _write_pn_tim_libstempo(psr, out_path: Path) -> None:
     stoas = psr.stoas
     errs = psr.toaerrs
     flag_names = psr.flags()
-    lines = ["FORMAT 1\n", "MODE 1\n"]
+    lines = ["FORMAT 1\n"]
     for i in range(psr.nobs):
         # name freq mjd error type
         # Keep TOA MJD in longdouble precision; do not downcast to float64.

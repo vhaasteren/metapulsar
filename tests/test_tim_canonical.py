@@ -1,6 +1,9 @@
 """Tests for the canonical .tim writer (flattening + metadata stamping)."""
 
+import re
 from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -8,7 +11,13 @@ from metapulsar.tim_canonical import (
     TimCanonicalizationError,
     TimIncludeScopeError,
     TimLegacyFormatError,
+    _TimeAccum,
+    _bake_mjd_token,
+    _format_fraction,
+    _pint_legacy_heuristic_hit,
     convert_jump_mjd_par_text,
+    discover_effective_tim_mode,
+    ensure_par_mode,
     flatten_tim,
     parse_jump_mjd_windows,
     stamp_metadata_flags,
@@ -20,6 +29,18 @@ from metapulsar.tim_file_analyzer import TimFileAnalyzer
 
 def _toa(mjd, flags=""):
     return f" obs1 1400.0 {mjd} 1.0 g{flags}"
+
+
+def _toa_lines(text: str):
+    return [
+        line
+        for line in text.splitlines()
+        if line.startswith(" ") and len(line.split()) >= 5
+    ]
+
+
+def _oracle_baked(mjd_token: str, total_seconds: Fraction) -> str:
+    return _bake_mjd_token(mjd_token, _TimeAccum(total=total_seconds))
 
 
 class TestFlatten:
@@ -34,17 +55,22 @@ class TestFlatten:
             encoding="utf-8",
         )
 
-        lines = flatten_tim(root).splitlines()
+        lines = flatten_tim(root).text.splitlines()
 
         assert lines[0] == "FORMAT 1"
         assert "INCLUDE tims/chunk.tim" not in lines
-        assert [line.split()[2] for line in lines[1:]] == [
+        assert [line.split()[2] for line in _toa_lines("\n".join(lines))] == [
             "58000.0",
             "58001.0",
             "58002.0",
         ]
+        assert [line.split()[0] for line in _toa_lines("\n".join(lines))] == [
+            "toa00001",
+            "toa00002",
+            "toa00003",
+        ]
 
-    def test_preserves_comments_and_directives(self, tmp_path):
+    def test_preserves_comments_and_drops_mode(self, tmp_path):
         root = tmp_path / "root.tim"
         root.write_text(
             f"FORMAT 1\nMODE 1\nC commented out TOA\n# hash comment\n"
@@ -52,12 +78,13 @@ class TestFlatten:
             encoding="utf-8",
         )
 
-        text = flatten_tim(root)
+        result = flatten_tim(root)
 
-        assert "MODE 1" in text
-        assert "C commented out TOA" in text
-        assert "# hash comment" in text
-        assert "T2EFAC -sys foo 1.2" in text
+        assert "MODE 1" not in result.text
+        assert result.effective_mode == 1
+        assert "C commented out TOA" in result.text
+        assert "# hash comment" in result.text
+        assert "T2EFAC -sys foo 1.2" in result.text
 
     def test_nested_and_repeated_includes(self, tmp_path):
         (tmp_path / "inner.tim").write_text(
@@ -71,16 +98,20 @@ class TestFlatten:
             "FORMAT 1\nINCLUDE outer.tim\nINCLUDE outer.tim\n", encoding="utf-8"
         )
 
-        mjds = [line.split()[2] for line in flatten_tim(root).splitlines()[1:]]
+        mjds = [line.split()[2] for line in _toa_lines(flatten_tim(root).text)]
 
         assert mjds == ["58001.0", "58002.0", "58001.0", "58002.0"]
 
-    def test_preserves_toa_lines_verbatim(self, tmp_path):
+    def test_rebuilds_toa_layout_with_safe_name(self, tmp_path):
         raw = " obs1  1400.00000   58000.1234567890123456   0.997  g  -sys x"
         root = tmp_path / "root.tim"
         root.write_text(f"FORMAT 1\n{raw}\n", encoding="utf-8")
 
-        assert raw in flatten_tim(root).splitlines()
+        line = _toa_lines(flatten_tim(root).text)[0]
+        assert line.split()[0] == "toa00001"
+        assert line.split()[2] == "58000.1234567890123456"
+        assert "-sys x" in line
+        assert not _pint_legacy_heuristic_hit(line)
 
     def test_missing_include_raises(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -123,7 +154,7 @@ class TestFlatten:
             encoding="utf-8",
         )
 
-        text = flatten_tim(root, timing_package="tempo2")
+        text = flatten_tim(root, timing_package="tempo2").text
 
         assert "END" not in text
         assert "58001.0" in text
@@ -140,7 +171,7 @@ class TestFlatten:
             encoding="utf-8",
         )
 
-        text = flatten_tim(root, timing_package="pint")
+        text = flatten_tim(root, timing_package="pint").text
 
         assert "END" in text
         assert "58001.0" in text
@@ -148,12 +179,9 @@ class TestFlatten:
 
 
 class TestIncludeScopeGuard:
-    """tempo2 scopes stateful directives per included file; PINT leaks them.
+    """tempo2 scopes stateful directives per included file; PINT leaks them."""
 
-    Flattening imposes PINT's semantics, so unbalanced state must be refused.
-    """
-
-    def test_balanced_time_inside_include_flattens(self, tmp_path):
+    def test_balanced_time_inside_include_bakes(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
             f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\nTIME 1\n", encoding="utf-8"
         )
@@ -162,13 +190,12 @@ class TestIncludeScopeGuard:
             f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
         )
 
-        text = flatten_tim(root)
+        text = flatten_tim(root).text
+        lines = _toa_lines(text)
 
-        assert "TIME -1" in text and "TIME 1" in text
-        assert [line.split()[2] for line in text.splitlines() if "obs1" in line] == [
-            "58001.0",
-            "58002.0",
-        ]
+        assert "TIME" not in text
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
+        assert lines[1].split()[2] == "58002.0"
 
     def test_unbalanced_time_in_include_raises(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
@@ -210,7 +237,7 @@ class TestIncludeScopeGuard:
         root = tmp_path / "root.tim"
         root.write_text("FORMAT 1\nINCLUDE chunk.tim\n", encoding="utf-8")
 
-        assert "EFAC 1.3" in flatten_tim(root, timing_package="tempo2")
+        assert "EFAC 1.3" in flatten_tim(root, timing_package="tempo2").text
 
     @pytest.mark.parametrize("directive", ["ESET 2.5", "PROFILE_DIR profiles"])
     def test_other_tempo2_local_state_in_include_raises(self, tmp_path, directive):
@@ -230,23 +257,45 @@ class TestIncludeScopeGuard:
         root = tmp_path / "root.tim"
         root.write_text("FORMAT 1\nJUMP\nINCLUDE chunk.tim\nJUMP\n", encoding="utf-8")
 
-        assert "INCLUDE" not in flatten_tim(root, timing_package="tempo2")
+        assert "INCLUDE" not in flatten_tim(root, timing_package="tempo2").text
 
-    def test_pint_shared_state_can_cross_include(self, tmp_path):
+    def test_pint_shared_time_leaks_across_include(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
             f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8"
         )
         root = tmp_path / "root.tim"
-        root.write_text("FORMAT 1\nTIME -1\nINCLUDE chunk.tim\n", encoding="utf-8")
+        root.write_text(
+            f"FORMAT 1\nTIME -1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n",
+            encoding="utf-8",
+        )
 
-        assert "TIME -1" in flatten_tim(root, timing_package="pint")
+        text = flatten_tim(root, timing_package="pint").text
+        lines = _toa_lines(text)
+        assert "TIME" not in text
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
+        assert lines[1].split()[2] == _oracle_baked("58002.0", Fraction(-1))
 
-    def test_unbalanced_time_without_include_is_allowed(self, tmp_path):
+    def test_tempo2_time_is_file_local(self, tmp_path):
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME -1\n{_toa(58001.0)}\nTIME 1\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
+        )
+
+        lines = _toa_lines(flatten_tim(root, timing_package="tempo2").text)
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(-1))
+        assert lines[1].split()[2] == "58002.0"
+
+    def test_unbalanced_time_without_include_bakes(self, tmp_path):
         """A single-file tim has no boundary to cross, so no guard applies."""
         root = tmp_path / "root.tim"
         root.write_text(f"FORMAT 1\nTIME -1\n{_toa(58000.0)}\n", encoding="utf-8")
 
-        assert "TIME -1" in flatten_tim(root)
+        text = flatten_tim(root).text
+        assert "TIME" not in text
+        assert _toa_lines(text)[0].split()[2] == _oracle_baked("58000.0", Fraction(-1))
 
 
 class TestStamping:
@@ -385,10 +434,11 @@ class TestWriteCanonicalTim:
             out_path=tmp_path / "out" / "epta_dr2.tim",
         )
 
-        text = out.read_text(encoding="utf-8")
+        text = out.path.read_text(encoding="utf-8")
         assert "INCLUDE" not in text
         assert "-pta_orig EPTA" in text
         assert "-pta epta_dr2" in text
+        assert "toa00001" in text
 
     def test_toa_count_survives_canonicalization(self, tmp_path):
         (tmp_path / "chunk.tim").write_text(
@@ -406,7 +456,7 @@ class TestWriteCanonicalTim:
             timing_package="pint",
             out_path=tmp_path / "canon.tim",
         )
-        after = TimFileAnalyzer().get_tim_metadata(out)
+        after = TimFileAnalyzer().get_tim_metadata(out.path)
 
         assert after.toa_count == before.toa_count == 3
         assert after.mjd_min == before.mjd_min
@@ -423,13 +473,15 @@ class TestWriteCanonicalTim:
             out_path=tmp_path / "once.tim",
         )
         twice = write_canonical_tim(
-            once,
+            once.path,
             pta_name="pta1",
             timing_package="pint",
             out_path=tmp_path / "twice.tim",
         )
 
-        assert twice.read_text(encoding="utf-8") == once.read_text(encoding="utf-8")
+        assert twice.path.read_text(encoding="utf-8") == once.path.read_text(
+            encoding="utf-8"
+        )
 
     def test_is_idempotent_with_jump_mjd_par_text(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -445,15 +497,17 @@ class TestWriteCanonicalTim:
             par_text=par_text,
         )
         twice = write_canonical_tim(
-            once,
+            once.path,
             pta_name="EPTA",
             timing_package="tempo2",
             out_path=tmp_path / "twice.tim",
             par_text=par_text,
         )
 
-        assert twice.read_text(encoding="utf-8") == once.read_text(encoding="utf-8")
-        assert once.read_text(encoding="utf-8").count("-mjd_jump_pta EPTA_1") == 2
+        assert twice.path.read_text(encoding="utf-8") == once.path.read_text(
+            encoding="utf-8"
+        )
+        assert once.path.read_text(encoding="utf-8").count("-mjd_jump_pta EPTA_1") == 2
 
     def test_restamping_under_a_new_pta_name_preserves_the_old_one(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -465,13 +519,13 @@ class TestWriteCanonicalTim:
             out_path=tmp_path / "once.tim",
         )
         twice = write_canonical_tim(
-            once,
+            once.path,
             pta_name="pta2",
             timing_package="pint",
             out_path=tmp_path / "twice.tim",
         )
 
-        text = twice.read_text(encoding="utf-8")
+        text = twice.path.read_text(encoding="utf-8")
         assert "-pta_orig pta1" in text
         assert "-pta pta2" in text
         assert "-pta_dataset_orig pta1" in text
@@ -571,7 +625,7 @@ class TestJumpMjd:
         )
         line = next(
             line
-            for line in out.read_text(encoding="utf-8").splitlines()
+            for line in out.path.read_text(encoding="utf-8").splitlines()
             if " -pta " in line
         )
         assert "-pta EPTA" in line
@@ -669,3 +723,398 @@ class TestJumpMjd:
                 windows=[(Decimal("57000"), Decimal("59000"))],
                 timing_package="pint",
             )
+
+
+class TestExactTimeArithmetic:
+    """§6.1 Exact, bounded TIME arithmetic."""
+
+    def test_time_86400_adds_one_day(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME 86400\n{_toa(58000.0)}\n", encoding="utf-8")
+        mjd = _toa_lines(flatten_tim(root).text)[0].split()[2]
+        assert mjd == _oracle_baked("58000.0", Fraction(86400))
+        assert Fraction(mjd) == Fraction("58001")
+
+    def test_cumulative_offsets_within_one_file(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nTIME 1\nTIME 2\n{_toa(58000.0)}\nTIME -3\n{_toa(58001.0)}\n",
+            encoding="utf-8",
+        )
+        lines = _toa_lines(flatten_tim(root).text)
+        assert lines[0].split()[2] == _oracle_baked("58000.0", Fraction(3))
+        assert lines[1].split()[2] == "58001.0"
+
+    def test_exact_sum_across_magnitudes(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nTIME 1e9\nTIME 1\nTIME -1e9\n{_toa(58000.0)}\n",
+            encoding="utf-8",
+        )
+        mjd = _toa_lines(flatten_tim(root).text)[0].split()[2]
+        assert mjd == _oracle_baked("58000.0", Fraction(1))
+
+    def test_exponent_span_cancellation_keeps_time_live(self, tmp_path):
+        # Exact total 1e-30 s; a digit-budgeted Decimal collapses to 0E-18.
+        (tmp_path / "child.tim").write_text(
+            f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\nTIME 1e9\nTIME 1e-30\nTIME -1e9\nINCLUDE child.tim\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(TimIncludeScopeError, match="INCLUDE with TIME"):
+            flatten_tim(root, timing_package="tempo2")
+
+    def test_true_cancellation_balances_include_boundary(self, tmp_path):
+        (tmp_path / "child.tim").write_text(
+            f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\nTIME 1e9\nTIME -1e9\nINCLUDE child.tim\n", encoding="utf-8"
+        )
+        text = flatten_tim(root, timing_package="tempo2").text
+        assert _toa_lines(text)[0].split()[2] == "58001.0"
+
+    def test_forty_digit_fractional_delta(self, tmp_path):
+        delta = "0." + ("0" * 39) + "1"
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME {delta}\n{_toa(58000.0)}\n", encoding="utf-8")
+        mjd = _toa_lines(flatten_tim(root).text)[0].split()[2]
+        assert mjd == _oracle_baked("58000.0", Fraction(delta))
+
+    def test_half_even_rounding_at_output_scale(self):
+        # Exactly halfway between two 17-digit fixed-point values rounds to even.
+        half = Fraction(1, 2 * 10**17)
+        assert _format_fraction(Fraction(58000) + half, 17) == (
+            "58000.00000000000000000"
+        )
+        # Last digit of the lower neighbour is odd (…00001); half rounds up to …2.
+        odd_base = Fraction(58000) + Fraction(1, 10**17)
+        assert _format_fraction(odd_base + half, 17) == "58000.00000000000000002"
+
+    def test_zero_and_cancelling_time_preserves_mjd_token(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nTIME 0\n{_toa('58000.12345678901234567')}\n"
+            f"TIME 5\nTIME -5\n{_toa('58001.5')}\n",
+            encoding="utf-8",
+        )
+        lines = _toa_lines(flatten_tim(root).text)
+        assert lines[0].split()[2] == "58000.12345678901234567"
+        assert lines[1].split()[2] == "58001.5"
+
+    @pytest.mark.parametrize("token", ["nope", "NaN", "Infinity", "-Infinity"])
+    def test_invalid_time_raises(self, tmp_path, token):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME {token}\n{_toa(58000.0)}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError):
+            flatten_tim(root)
+
+    def test_time_missing_argument_raises(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME\n{_toa(58000.0)}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError, match="TIME without offset"):
+            flatten_tim(root)
+
+    def test_bounded_decimal_rejects_amplifying_exponents(self, tmp_path):
+        for directive in (
+            "TIME 1e999999999",
+            "TIME 1e-999999999",
+        ):
+            root = tmp_path / "root.tim"
+            root.write_text(
+                f"FORMAT 1\n{directive}\n{_toa(58000.0)}\n", encoding="utf-8"
+            )
+            with pytest.raises(TimCanonicalizationError):
+                flatten_tim(root)
+
+        for mjd in ("1e999999999", "1e-999999999"):
+            root = tmp_path / "root.tim"
+            root.write_text(f"FORMAT 1\n{_toa(mjd)}\n", encoding="utf-8")
+            with pytest.raises(TimCanonicalizationError):
+                flatten_tim(root)
+
+    def test_scientific_notation_mjd_uses_min_seventeen_digits(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME 1\n{_toa('5.8e4')}\n", encoding="utf-8")
+        mjd = _toa_lines(flatten_tim(root).text)[0].split()[2]
+        assert "." in mjd
+        assert len(mjd.split(".")[1]) >= 17
+        assert mjd == _oracle_baked("5.8e4", Fraction(1))
+
+
+class TestMjdValidation:
+    """§6.2 MJD validation, input and output."""
+
+    @pytest.mark.parametrize("mjd", ["NaN", "Infinity", "nope", "-1", "1000001"])
+    def test_zero_time_still_validates_mjd(self, tmp_path, mjd):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{_toa(mjd)}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError):
+            flatten_tim(root)
+        assert not (tmp_path / "out.tim").exists()
+
+    @pytest.mark.parametrize("mjd", ["NaN", "Infinity", "nope", "-1", "1000001"])
+    def test_live_time_still_validates_mjd(self, tmp_path, mjd):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME 1\n{_toa(mjd)}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError):
+            flatten_tim(root)
+
+    def test_baked_mjd_range_quotes_exact_fraction(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME -1e9\n{_toa(0.5)}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError, match=r"-624973/54") as exc:
+            flatten_tim(root)
+        assert "0.5" in str(exc.value)
+
+    def test_near_boundary_acceptance_and_rejection(self, tmp_path):
+        # 999999.9 + small TIME stays <= 1e6
+        root = tmp_path / "ok.tim"
+        root.write_text(f"FORMAT 1\nTIME 1\n{_toa('999999.9')}\n", encoding="utf-8")
+        assert _toa_lines(flatten_tim(root).text)
+
+        # Crossing 1e6 raises
+        root = tmp_path / "bad.tim"
+        root.write_text(f"FORMAT 1\nTIME 86400\n{_toa('999999.9')}\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError, match="Baked TOA MJD"):
+            flatten_tim(root)
+
+
+class TestTraversalSwitches:
+    """§6.3 Single traversal, two switches, legacy policy."""
+
+    def test_discover_returns_last_mode(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nMODE 0\n{_toa(58000.0)}\nMODE 1\n{_toa(58001.0)}\n",
+            encoding="utf-8",
+        )
+        assert discover_effective_tim_mode(root) == 1
+
+    def test_mode_only_inside_tempo2_skip_is_none(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nSKIP\nMODE 1\n{_toa(58000.0)}\nNOSKIP\n{_toa(58001.0)}\n",
+            encoding="utf-8",
+        )
+        assert discover_effective_tim_mode(root, timing_package="tempo2") is None
+        result = flatten_tim(root, timing_package="tempo2")
+        assert result.effective_mode is None
+        assert "MODE" not in result.text
+        assert "TIME" not in result.text
+
+    def test_structural_parity_format1_matrix(self, tmp_path):
+        cases = {
+            "missing_include": "FORMAT 1\nINCLUDE nope.tim\n",
+            "circular": None,  # built below
+            "format_no_arg": "FORMAT\n",
+            "bad_time": f"FORMAT 1\nTIME nope\n{_toa(58000.0)}\n",
+            "bad_mode": f"FORMAT 1\nMODE nope\n{_toa(58000.0)}\n",
+            "unbalanced_time": None,
+            "short_toa": "FORMAT 1\n obs1 1400.0 58000.0\n",
+        }
+        a = tmp_path / "a.tim"
+        b = tmp_path / "b.tim"
+        a.write_text("FORMAT 1\nINCLUDE b.tim\n", encoding="utf-8")
+        b.write_text("FORMAT 1\nINCLUDE a.tim\n", encoding="utf-8")
+        cases["circular"] = a
+        child = tmp_path / "child.tim"
+        child.write_text(f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8")
+        unbalanced = tmp_path / "unbalanced.tim"
+        unbalanced.write_text(
+            "FORMAT 1\nTIME -1\nINCLUDE child.tim\n", encoding="utf-8"
+        )
+        cases["unbalanced_time"] = unbalanced
+
+        for name, content in cases.items():
+            if isinstance(content, Path):
+                path = content
+            else:
+                path = tmp_path / f"{name}.tim"
+                path.write_text(content, encoding="utf-8")
+            with pytest.raises(Exception) as flat_exc:
+                flatten_tim(path, timing_package="tempo2")
+            with pytest.raises(Exception) as disc_exc:
+                discover_effective_tim_mode(path, timing_package="tempo2")
+            assert type(flat_exc.value) is type(disc_exc.value), name
+
+    @pytest.mark.parametrize("fmt", ["0", "2", "tempo1"])
+    def test_explicit_legacy_format_discovery(self, tmp_path, fmt):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT {fmt}\nMODE 1\n name 1400.0 58000.0 1.0\n", encoding="utf-8"
+        )
+        assert discover_effective_tim_mode(root) == 1
+        with pytest.raises(TimLegacyFormatError):
+            flatten_tim(root)
+
+    def test_untagged_legacy_tolerated_by_discovery(self, tmp_path):
+        root = tmp_path / "legacy.tim"
+        root.write_text("MODE 1\n name 1400.0 58000.0 1.0\n", encoding="utf-8")
+        assert discover_effective_tim_mode(root) == 1
+        with pytest.raises(TimLegacyFormatError):
+            flatten_tim(root)
+
+    def test_untagged_legacy_write_canonical_converts(self, tmp_path):
+        """§6.3.20: write_canonical_tim converts untagged Princeton via PINT."""
+        root = tmp_path / "legacy.tim"
+        root.write_text(
+            "MODE 1\n"
+            "1               1400.000 54510.2858714192189    1.50\n"
+            "1               1400.000 54520.2767051885166    1.50\n",
+            encoding="utf-8",
+        )
+        par = (
+            Path(__file__).parent / "fixtures" / "sample_parfiles" / "simple.par"
+        ).read_text(encoding="utf-8")
+        with pytest.raises(TimLegacyFormatError):
+            flatten_tim(root)
+        assert discover_effective_tim_mode(root, timing_package="pint") == 1
+        out = write_canonical_tim(
+            root,
+            pta_name="EPTA",
+            timing_package="pint",
+            out_path=tmp_path / "out.tim",
+            par_text=par,
+        )
+        text = out.path.read_text(encoding="utf-8")
+        assert text.startswith("FORMAT 1\n")
+        assert len(_toa_lines(text)) == 2
+
+    def test_legacy_include_descent_finds_mode(self, tmp_path):
+        child = tmp_path / "child.tim"
+        child.write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+        root = tmp_path / "root.tim"
+        root.write_text("FORMAT 0\nINCLUDE child.tim\n", encoding="utf-8")
+        assert discover_effective_tim_mode(root) == 1
+
+        # Included FORMAT 1 child of a legacy parent is still tokenized.
+        child.write_text(f"FORMAT 1\n{_toa(58001.0)}\n", encoding="utf-8")
+        root.write_text(
+            "FORMAT 0\nMODE 1\nINCLUDE child.tim\n name 1400.0 58000.0 1.0\n",
+            encoding="utf-8",
+        )
+        assert discover_effective_tim_mode(root) == 1
+
+    def test_argumentless_format_is_policy_error_not_legacy(self, tmp_path):
+        # §1.4.1: MetaPulsar policy — bare FORMAT is TimCanonicalizationError,
+        # not TimLegacyFormatError, so write_canonical_tim does not convert.
+        root = tmp_path / "root.tim"
+        root.write_text("FORMAT\nMODE 1\n", encoding="utf-8")
+        with pytest.raises(TimCanonicalizationError, match="FORMAT without a value"):
+            flatten_tim(root)
+        with pytest.raises(TimCanonicalizationError, match="FORMAT without a value"):
+            discover_effective_tim_mode(root)
+        with pytest.raises(TimCanonicalizationError, match="FORMAT without a value"):
+            write_canonical_tim(
+                root,
+                pta_name="EPTA",
+                timing_package="pint",
+                out_path=tmp_path / "out.tim",
+                par_text="PSRJ J0000+0000\n",
+            )
+
+    def test_parity_on_acceptance(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nMODE 1\n{_toa(58000.0)}\n", encoding="utf-8")
+        assert discover_effective_tim_mode(root) == flatten_tim(root).effective_mode
+
+    def test_tempo2_skip_omits_time_and_mode(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nSKIP\nTIME nope\nMODE 1\nNOSKIP\n{_toa(58000.0)}\n",
+            encoding="utf-8",
+        )
+        result = flatten_tim(root, timing_package="tempo2")
+        assert "TIME" not in result.text
+        assert "MODE" not in result.text
+        assert result.effective_mode is None
+        assert _toa_lines(result.text)[0].split()[2] == "58000.0"
+
+    def test_pint_child_to_parent_time_leak(self, tmp_path):
+        (tmp_path / "chunk.tim").write_text(
+            f"FORMAT 1\nTIME 1\n{_toa(58001.0)}\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\nINCLUDE chunk.tim\n{_toa(58002.0)}\n", encoding="utf-8"
+        )
+        lines = _toa_lines(flatten_tim(root, timing_package="pint").text)
+        assert lines[0].split()[2] == _oracle_baked("58001.0", Fraction(1))
+        assert lines[1].split()[2] == _oracle_baked("58002.0", Fraction(1))
+
+
+class TestNamesArtifactAndHelpers:
+    """§6.4 names, ensure_par_mode, JUMP on baked MJD, flatten idempotency."""
+
+    def test_names_are_toa_digits_and_avoid_heuristics(self, tmp_path):
+        # Princeton-style one-char name and a long Parkes-like name both rewrite.
+        root = tmp_path / "root.tim"
+        long_name = "a" * 27
+        root.write_text(
+            f"FORMAT 1\n a 1400.0 58000.0 1.0 g\n"
+            f" {long_name} 1400.0 58001.0 1.0 g\n",
+            encoding="utf-8",
+        )
+        lines = _toa_lines(flatten_tim(root).text)
+        for line in lines:
+            assert re.fullmatch(r"toa\d{5}", line.split()[0])
+            assert not _pint_legacy_heuristic_hit(line)
+
+    def test_flatten_idempotent(self, tmp_path):
+        # Artifact has no MODE/TIME; re-flattening a MODE-free file is stable.
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME 1\n{_toa(58000.0)}\n", encoding="utf-8")
+        once = flatten_tim(root)
+        twice_path = tmp_path / "once.tim"
+        twice_path.write_text(once.text, encoding="utf-8")
+        twice = flatten_tim(twice_path)
+        assert twice.text == once.text
+        assert twice.effective_mode == once.effective_mode is None
+
+    def test_comments_and_existing_to_flag_preserved(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n# note\n{_toa(58000.0, ' -to -0.9e-6')}\n",
+            encoding="utf-8",
+        )
+        text = flatten_tim(root).text
+        assert "# note" in text
+        assert "-to -0.9e-6" in text
+
+    def test_jump_mjd_follows_baked_mjd(self, tmp_path):
+        # Source MJD 57999.5 with TIME +86400 → 58000.5, inside [58000, 59000).
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nTIME 86400\n{_toa(57999.5)}\n", encoding="utf-8")
+        out = write_canonical_tim(
+            root,
+            pta_name="EPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "out.tim",
+            par_text="JUMP MJD 58000 59000 -1e-7 1\n",
+        )
+        assert "-mjd_jump_pta EPTA_1" in out.path.read_text(encoding="utf-8")
+
+    def test_ensure_par_mode_drops_weight_appends_last(self):
+        par = "PSRJ J0000+0000\nWEIGHT 1\nF0 1\nMODE 0\nF1 -1e-15\n"
+        out = ensure_par_mode(par, 1)
+        lines = out.splitlines()
+        assert lines[-1] == "MODE 1"
+        assert (
+            sum(1 for line in lines if line.split() and line.split()[0] == "MODE") == 1
+        )
+        assert not any(line.split() and line.split()[0] == "WEIGHT" for line in lines)
+        assert ensure_par_mode(out, 1) == out
+        assert out.endswith("\n") == par.endswith("\n")
+
+    def test_write_pn_tim_libstempo_omits_mode(self):
+        """§6.4.30: ancillary PN writer must not emit MODE."""
+        import inspect
+
+        from metapulsar.pint_helpers import _write_pn_tim_libstempo
+
+        assert "MODE 1" not in inspect.getsource(_write_pn_tim_libstempo)

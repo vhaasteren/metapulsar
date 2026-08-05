@@ -1,11 +1,16 @@
-"""Canonical .tim writer: flatten INCLUDEs and stamp MetaPulsar metadata flags.
+"""Canonical .tim writer: flatten INCLUDEs, bake TIME, and stamp metadata flags.
 
 MetaPulsar always hands its timing engines a standalone Tempo2 ``FORMAT 1``
 file carrying authoritative ``-pta``, ``-pta_dataset`` and ``-timing_package``
 flags, so the PTA identity of every TOA travels with the data instead of being
-synthesized in memory. When the release par contains ``JUMP MJD`` windows this
-module also stamps combination-safe ``-mjd_jump_pta`` flags on the selected
-TOAs. It never changes TOA values, uncertainties, or any other flag.
+synthesized in memory. Cumulative ``TIME`` offsets are baked into TOA MJDs with
+exact decimal arithmetic (``sat += TIME / 86400``, rounded once at output — not
+Tempo2 ``double``/``longdouble`` bit-equivalence). ``TIME`` and ``MODE`` lines
+are omitted from the artifact; effective ``MODE`` is discovered from the release
+tim tree and transferred onto the engine-facing ``.par``. Every TOA name is
+rewritten to a safe ``toaNNNNN`` token. When the release par contains
+``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
+flags on the selected (post-bake) TOAs.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).
@@ -16,7 +21,9 @@ from __future__ import annotations
 import re
 import tempfile
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
@@ -36,6 +43,18 @@ TEMPO2_MAX_FLAG_LEN = 32
 # readTimfile.C reads with fgets(line, 1000): 998 content bytes plus newline is
 # the longest complete line it can consume in one call.
 TEMPO2_MAX_TIM_LINE_BYTES = 998
+
+_SECDAY = Fraction(86400)
+_MIN_MJD_FRAC_DIGITS = 17
+_MAX_FRAC_DIGITS = 40
+_MAX_TIME_ABS_SECONDS = Decimal("1e9")
+_MIN_MJD = Decimal(0)
+_MAX_MJD = Decimal("1e6")
+_MIN_MJD_EXACT = Fraction(_MIN_MJD)
+_MAX_MJD_EXACT = Fraction(_MAX_MJD)
+_PAR_MODE_ALIASES = frozenset({"MODE", "WEIGHT"})
+_PRINCETON_RE = re.compile(r"[0-9a-z@] ")
+_TWO_NONSPACE_RE = re.compile(r"\S\S")
 
 _DIRECTIVE_NAMES = frozenset(
     {
@@ -111,24 +130,47 @@ class TimIncludeScopeError(TimCanonicalizationError):
     """
 
 
+@dataclass(frozen=True)
+class FlattenTimResult:
+    """Standalone FORMAT 1 text plus the last observed ``MODE`` in the tree."""
+
+    text: str
+    effective_mode: Optional[int]
+
+
+@dataclass(frozen=True)
+class CanonicalTimResult:
+    """Path of a written canonical ``.tim`` plus diagnostic ``MODE`` from that file."""
+
+    path: Path
+    effective_mode: Optional[int]
+
+
+@dataclass
+class _TimeAccum:
+    """Exact cumulative TIME offset in seconds."""
+
+    total: Fraction = Fraction(0)
+
+    def add(self, delta: Fraction) -> None:
+        self.total += delta
+
+
 class _ScopeState:
-    """Tracks stateful tim directives so INCLUDE boundaries can be validated."""
+    """Tracks stateful tim directives so INCLUDE boundaries can be validated.
+
+    ``TIME`` liveness is supplied by the walker's exact accumulator, not stored
+    here.
+    """
 
     def __init__(self) -> None:
-        self.time = Decimal("0")
         self.assignments = dict(_TEMPO2_ASSIGNING_DEFAULTS)
         self.invalid: set[str] = set()
         self.profile_dir: Optional[str] = None
         self.skipping = False
 
     def observe(self, directive: str, tokens: List[str]) -> None:
-        if directive == "TIME":
-            if len(tokens) >= 2:
-                try:
-                    self.time += Decimal(tokens[1])
-                except InvalidOperation:
-                    self.invalid.add(directive)
-        elif directive in _TEMPO2_ASSIGNING_DEFAULTS:
+        if directive in _TEMPO2_ASSIGNING_DEFAULTS:
             if len(tokens) >= 2:
                 try:
                     self.assignments[directive] = Decimal(tokens[1])
@@ -142,9 +184,9 @@ class _ScopeState:
         elif directive == "NOSKIP":
             self.skipping = False
 
-    def live_directives(self) -> List[str]:
+    def live_directives(self, *, time_live: bool) -> List[str]:
         """Return directives whose state would leak across an INCLUDE boundary."""
-        live = ["TIME"] if self.time != 0 else []
+        live = ["TIME"] if time_live else []
         live.extend(
             name
             for name, default in _TEMPO2_ASSIGNING_DEFAULTS.items()
@@ -183,140 +225,350 @@ def _classify(line: str) -> Tuple[str, List[str]]:
     return "data", tokens
 
 
+def _parse_bounded_decimal(
+    token: str, *, what: str, minimum: Decimal, maximum: Decimal
+) -> Fraction:
+    """Parse a finite, in-range decimal literal into an exact Fraction.
+
+    Bounds are checked on the Decimal *before* Fraction conversion: a compact
+    token such as ``1e999999999`` is finite but would materialize a ~10**9-digit
+    integer. Decimal comparisons at those exponents are cheap and do not expand.
+    """
+    try:
+        value = Decimal(token)
+    except InvalidOperation as exc:
+        raise TimCanonicalizationError(f"Invalid {what}: {token!r}") from exc
+    if not value.is_finite():
+        raise TimCanonicalizationError(f"Non-finite {what}: {token!r}")
+    if not (minimum <= value <= maximum):
+        raise TimCanonicalizationError(
+            f"{what} out of range [{minimum}, {maximum}]: {token!r}"
+        )
+    exponent = value.as_tuple().exponent
+    # A tiny magnitude passes the range check, so guard the exponent floor too.
+    if isinstance(exponent, int) and exponent < -_MAX_FRAC_DIGITS:
+        raise TimCanonicalizationError(
+            f"{what} needs more than {_MAX_FRAC_DIGITS} fractional digits: {token!r}"
+        )
+    return Fraction(value)
+
+
+def _parse_time_offset(token: str) -> Fraction:
+    return _parse_bounded_decimal(
+        token,
+        what="TIME offset",
+        minimum=-_MAX_TIME_ABS_SECONDS,
+        maximum=_MAX_TIME_ABS_SECONDS,
+    )
+
+
+def _frac_digits_for_mjd_token(token: str) -> int:
+    """Digits to emit, from the Decimal exponent (never str.split('.'))."""
+    exponent = Decimal(token).as_tuple().exponent
+    explicit = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return min(max(explicit, _MIN_MJD_FRAC_DIGITS), _MAX_FRAC_DIGITS)
+
+
+def _format_fraction(value: Fraction, digits: int) -> str:
+    """Render an exact Fraction in fixed point with one half-even rounding."""
+    if digits > _MAX_FRAC_DIGITS:
+        raise TimCanonicalizationError(
+            f"Refusing to format {digits} fractional digits (max {_MAX_FRAC_DIGITS})"
+        )
+    scale = 10**digits
+    scaled = value * scale
+    quotient, remainder = divmod(scaled.numerator, scaled.denominator)
+    twice = 2 * remainder
+    if twice > scaled.denominator or (
+        twice == scaled.denominator and quotient % 2 == 1
+    ):
+        quotient += 1
+    sign = "-" if quotient < 0 else ""
+    quotient = abs(quotient)
+    integral, fractional = divmod(quotient, scale)
+    if digits == 0:
+        return f"{sign}{integral}"
+    return f"{sign}{integral}.{str(fractional).zfill(digits)}"
+
+
+def _bake_mjd_token(mjd_token: str, accum: _TimeAccum) -> str:
+    mjd = _parse_bounded_decimal(
+        mjd_token, what="TOA MJD token", minimum=_MIN_MJD, maximum=_MAX_MJD
+    )
+    if accum.total == 0:
+        return mjd_token  # validated above; preserve exact source bytes
+    baked = mjd + accum.total / _SECDAY
+    # In-range tokens can still bake out of range (e.g. MJD 0.5 with TIME -1e9).
+    if not (_MIN_MJD_EXACT <= baked <= _MAX_MJD_EXACT):
+        raise TimCanonicalizationError(
+            f"Baked TOA MJD {baked} out of range [{_MIN_MJD}, {_MAX_MJD}], "
+            f"from source {mjd_token!r} and cumulative TIME {accum.total} s"
+        )
+    return _format_fraction(baked, _frac_digits_for_mjd_token(mjd_token))
+
+
+def _pint_legacy_heuristic_hit(line: str) -> bool:
+    """True if PINT's _toa_format would classify this Princeton/Parkes/ITOA."""
+    if _PRINCETON_RE.match(line):
+        return True
+    if line.startswith(" ") and len(line) > 41 and line[41] == ".":
+        return True
+    if _TWO_NONSPACE_RE.match(line) and len(line) > 14 and line[14] == ".":
+        return True
+    return False
+
+
+def _render_canonical_toa_line(
+    line: str, *, tokens: List[str], accum: _TimeAccum, name_counter: List[int]
+) -> str:
+    if len(tokens) < 5:
+        raise TimCanonicalizationError(
+            f"FORMAT 1 TOA line has too few tokens: {line.strip()!r}"
+        )
+    name_counter[0] += 1
+    name = f"toa{name_counter[0]:05d}"
+    mjd = _bake_mjd_token(tokens[2], accum)
+    flags = (" " + " ".join(tokens[5:])) if len(tokens) > 5 else ""
+    rebuilt = f" {name} {tokens[1]} {mjd} {tokens[3]} {tokens[4]}{flags}"
+    if _pint_legacy_heuristic_hit(rebuilt):
+        raise TimCanonicalizationError(
+            f"Canonical TOA line still hits a PINT legacy heuristic: {rebuilt!r}"
+        )
+    return rebuilt
+
+
+class _TimWalker:
+    """The one traversal used by both flatten and mode discovery.
+
+    ``emit=False`` discards rendered lines but performs identical parsing,
+    validation and state transitions. ``on_legacy_toa="skip"`` tolerates legacy
+    input -- both an explicit non-``1`` ``FORMAT`` declaration and untagged TOA
+    lines -- which ``write_canonical_tim`` supports by converting through the
+    owning engine; directive processing (MODE, TIME, INCLUDE) continues so
+    release metadata is still discovered.
+    """
+
+    def __init__(
+        self,
+        *,
+        timing_package: Literal["pint", "tempo2"],
+        emit: bool,
+        on_legacy_toa: Literal["raise", "skip"] = "raise",
+    ):
+        self.timing_package = timing_package
+        self.emit = emit
+        self.on_legacy_toa = on_legacy_toa
+        self.out: List[str] = ["FORMAT 1"] if emit else []
+        self.name_counter: List[int] = [0]
+        self.effective_mode: Optional[int] = None
+        self.shared_time = _TimeAccum()  # PINT shares; tempo2 is file-local
+
+    def _write(self, line: str) -> None:
+        if self.emit:
+            self.out.append(line)
+
+    def walk(self, path: Path, stack: List[Path]) -> bool:
+        """Walk one file. Returns True when a top-level END stops everything."""
+        if path in stack:
+            chain = " -> ".join(str(p) for p in [*stack, path])
+            raise TimCanonicalizationError(f"Circular INCLUDE detected: {chain}")
+
+        stack.append(path)
+        tokenized = False
+        scope = _ScopeState()
+        accum = self.shared_time if self.timing_package == "pint" else _TimeAccum()
+        try:
+            for line in _read_lines(path):
+                kind, tokens = _classify(line)
+
+                if kind in ("blank", "comment"):
+                    self._write(line)
+                    continue
+
+                if kind == "data":
+                    if not tokenized:
+                        if self.on_legacy_toa == "skip":
+                            continue  # converter will handle this file
+                        raise TimLegacyFormatError(
+                            f"{path} holds TOAs without 'FORMAT 1' in effect; per-TOA "
+                            f"flags require Tempo2 FORMAT 1. Convert this file with its "
+                            f"own timing package first. Offending line: {line.strip()!r}"
+                        )
+                    self._write(
+                        _render_canonical_toa_line(
+                            line,
+                            tokens=tokens,
+                            accum=accum,
+                            name_counter=self.name_counter,
+                        )
+                    )
+                    continue
+
+                directive = tokens[0].upper()
+
+                if (
+                    self.timing_package == "tempo2"
+                    and scope.skipping
+                    and directive != "NOSKIP"
+                ):
+                    if directive not in ("INCLUDE", "TIME", "MODE"):
+                        self._write(line)
+                    continue
+
+                if directive == "FORMAT":
+                    # A FORMAT line with no argument is malformed, not legacy:
+                    # it is never convertible, so both entry points reject it.
+                    if len(tokens) < 2:
+                        raise TimCanonicalizationError(
+                            f"FORMAT without a value in {path}: {line.strip()!r}"
+                        )
+                    tokenized = tokens[1] == "1"
+                    if not tokenized:
+                        # Any other value is a legacy declaration (tempo2 never
+                        # reads the value; PINT honors only "1"). Route it
+                        # through the same switch as untagged TOA lines so
+                        # discovery does not preempt engine conversion.
+                        if self.on_legacy_toa == "raise":
+                            raise TimLegacyFormatError(
+                                f"{path} declares unsupported {' '.join(tokens)!r}; "
+                                f"only 'FORMAT 1' can carry per-TOA flags."
+                            )
+                    continue
+
+                if directive == "END":
+                    if self.timing_package == "tempo2" and len(stack) > 1:
+                        live = scope.live_directives(time_live=accum.total != 0)
+                        if live:
+                            raise TimIncludeScopeError(
+                                f"Included file {path} reaches END with "
+                                f"{', '.join(live)} still active. Flattening would "
+                                f"leak that tempo2 file-local state into the parent."
+                            )
+                        return False
+                    self._write(line)
+                    return True
+
+                if directive == "INCLUDE":
+                    if len(tokens) < 2:
+                        raise TimCanonicalizationError(
+                            f"INCLUDE without a filename in {path}"
+                        )
+                    live = scope.live_directives(time_live=accum.total != 0)
+                    if self.timing_package == "tempo2" and live:
+                        raise TimIncludeScopeError(
+                            f"{path} reaches an INCLUDE with {', '.join(live)} still "
+                            f"active. tempo2 scopes these per included file while PINT "
+                            f"leaks them into it, so flattening would change which TOAs "
+                            f"they apply to. Balance the directive around the INCLUDE."
+                        )
+                    include_path = (path.parent / tokens[1]).resolve()
+                    if not include_path.is_file():
+                        raise TimCanonicalizationError(
+                            f"INCLUDE file not found: {include_path} (from {path})"
+                        )
+                    logger.debug(f"Flattening included TOA file {include_path}")
+                    if self.walk(include_path, stack):
+                        return True
+                    continue
+
+                if directive == "TIME":
+                    if len(tokens) < 2:
+                        raise TimCanonicalizationError(
+                            f"TIME without offset in {path}: {line.strip()!r}"
+                        )
+                    accum.add(_parse_time_offset(tokens[1]))
+                    continue  # never emit
+
+                if directive == "MODE":
+                    if len(tokens) < 2:
+                        raise TimCanonicalizationError(
+                            f"MODE without value in {path}: {line.strip()!r}"
+                        )
+                    try:
+                        self.effective_mode = int(tokens[1], 10)
+                    except ValueError as exc:
+                        raise TimCanonicalizationError(
+                            f"Invalid MODE value in {path}: {line.strip()!r}"
+                        ) from exc
+                    continue  # never emit
+
+                scope.observe(directive, tokens)
+                self._write(line)
+
+            live = scope.live_directives(time_live=accum.total != 0)
+            if self.timing_package == "tempo2" and live and len(stack) > 1:
+                raise TimIncludeScopeError(
+                    f"Included file {path} ends with {', '.join(live)} still active. "
+                    f"tempo2 drops this state at the end of the file while flattening "
+                    f"would carry it into the parent's following TOAs. Balance the "
+                    f"directive inside the included file."
+                )
+            return False
+        finally:
+            stack.pop()
+
+
 def flatten_tim(
     tim_path: Path, *, timing_package: Literal["pint", "tempo2"] = "tempo2"
-) -> str:
+) -> FlattenTimResult:
     """Return standalone Tempo2 FORMAT 1 text for ``tim_path``.
 
-    INCLUDE directives are inlined in place so line order, repeated includes,
-    comments, and every other directive survive unchanged. TOA lines are copied
-    verbatim, preserving their exact MJD strings.
+    INCLUDE directives are inlined in place. Cumulative ``TIME`` offsets are
+    baked into TOA MJDs with exact decimal arithmetic and omitted from the
+    output; ``MODE`` lines are omitted (their value is returned as
+    ``effective_mode``). Every TOA name is rewritten to ``toaNNNNN``.
 
     Raises:
-        TimLegacyFormatError: A TOA appears without ``FORMAT 1`` in effect.
+        TimLegacyFormatError: A TOA appears without ``FORMAT 1`` in effect, or a
+            non-``1`` ``FORMAT`` declaration is present.
         TimIncludeScopeError: A stateful directive is live across an INCLUDE.
-        TimCanonicalizationError: Missing or circular INCLUDE, or unreadable file.
+        TimCanonicalizationError: Missing or circular INCLUDE, unreadable file,
+            or invalid observed ``TIME``/``MODE``/MJD.
     """
-    root = Path(tim_path).resolve()
-    out: List[str] = ["FORMAT 1"]
-    _flatten_into(root, out=out, stack=[], timing_package=timing_package)
-    return "\n".join(out) + "\n"
+    walker = _TimWalker(timing_package=timing_package, emit=True, on_legacy_toa="raise")
+    walker.walk(Path(tim_path).resolve(), [])
+    return FlattenTimResult(
+        text="\n".join(walker.out) + "\n", effective_mode=walker.effective_mode
+    )
 
 
-def _flatten_into(
-    path: Path,
-    *,
-    out: List[str],
-    stack: List[Path],
-    timing_package: Literal["pint", "tempo2"],
-) -> bool:
-    if path in stack:
-        chain = " -> ".join(str(p) for p in [*stack, path])
-        raise TimCanonicalizationError(f"Circular INCLUDE detected: {chain}")
+def discover_effective_tim_mode(
+    tim_path: Path, *, timing_package: Literal["pint", "tempo2"] = "tempo2"
+) -> Optional[int]:
+    """Last observed .tim MODE, using the same traversal as canonicalization.
 
-    stack.append(path)
-    # Both PINT and tempo2 start each included file with its own FORMAT and
-    # directive state, so we do the same rather than inheriting the parent's.
-    tokenized = False
-    scope = _ScopeState()
-    try:
-        for line in _read_lines(path):
-            kind, tokens = _classify(line)
+    Runs the same structural directive traversal as :func:`flatten_tim` --
+    INCLUDE resolution and circularity, SKIP/END semantics, TIME parsing and
+    tempo2 scope guards, FORMAT 1 TOA validation -- and raises the same errors
+    for FORMAT 1 input. Legacy input (a non-``1`` ``FORMAT`` declaration, or TOAs
+    with no ``FORMAT 1`` in effect) is tolerated rather than rejected, because
+    ``write_canonical_tim`` supports it by converting through the owning engine;
+    directives are still processed so release MODE is discovered before any lossy
+    conversion or pulse-number rewrite. Success here does *not* imply that the
+    later conversion will succeed.
 
-            if kind in ("blank", "comment"):
-                out.append(line)
-                continue
+    Returns ``None`` when the tim tree asserts no MODE, meaning "keep whatever
+    mode the engine par implies" -- not "mode 0".
+    """
+    walker = _TimWalker(timing_package=timing_package, emit=False, on_legacy_toa="skip")
+    walker.walk(Path(tim_path).resolve(), [])
+    return walker.effective_mode
 
-            if kind == "data":
-                if not tokenized:
-                    raise TimLegacyFormatError(
-                        f"{path} holds TOAs without 'FORMAT 1' in effect; per-TOA "
-                        f"flags require Tempo2 FORMAT 1. Convert this file with its "
-                        f"own timing package first. Offending line: {line.strip()!r}"
-                    )
-                out.append(line)
-                continue
 
-            directive = tokens[0].upper()
+def ensure_par_mode(par_text: str, mode: int) -> str:
+    """Return par text whose only fit-mode assignment is ``MODE {mode}``.
 
-            # Tempo2 ignores every directive except NOSKIP while skipping. In
-            # particular, an unreachable INCLUDE must not be opened and an END
-            # must not terminate the file. PINT intentionally processes command
-            # lines before applying SKIP, so this is engine-specific.
-            if timing_package == "tempo2" and scope.skipping and directive != "NOSKIP":
-                if directive != "INCLUDE":
-                    out.append(line)
-                continue
-
-            if directive == "FORMAT":
-                # The flattened file declares FORMAT 1 once, in its header.
-                tokenized = len(tokens) >= 2 and tokens[1] == "1"
-                if not tokenized:
-                    raise TimLegacyFormatError(
-                        f"{path} declares unsupported {' '.join(tokens)!r}; only "
-                        f"'FORMAT 1' can carry per-TOA flags."
-                    )
-                continue
-
-            if directive == "END":
-                # Tempo2's END is local to each recursive readTim() call. PINT
-                # shares END through its command dictionary, so an included END
-                # terminates the whole top-level read there.
-                if timing_package == "tempo2" and len(stack) > 1:
-                    live = scope.live_directives()
-                    if live:
-                        raise TimIncludeScopeError(
-                            f"Included file {path} reaches END with "
-                            f"{', '.join(live)} still active. Flattening would "
-                            f"leak that tempo2 file-local state into the parent."
-                        )
-                    return False
-                out.append(line)
-                return True
-
-            if directive == "INCLUDE":
-                if len(tokens) < 2:
-                    raise TimCanonicalizationError(
-                        f"INCLUDE without a filename in {path}"
-                    )
-                live = scope.live_directives()
-                if timing_package == "tempo2" and live:
-                    raise TimIncludeScopeError(
-                        f"{path} reaches an INCLUDE with {', '.join(live)} still "
-                        f"active. tempo2 scopes these per included file while PINT "
-                        f"leaks them into it, so flattening would change which TOAs "
-                        f"they apply to. Balance the directive around the INCLUDE."
-                    )
-                include_path = (path.parent / tokens[1]).resolve()
-                if not include_path.is_file():
-                    raise TimCanonicalizationError(
-                        f"INCLUDE file not found: {include_path} (from {path})"
-                    )
-                logger.debug(f"Flattening included TOA file {include_path}")
-                stop_all = _flatten_into(
-                    include_path,
-                    out=out,
-                    stack=stack,
-                    timing_package=timing_package,
-                )
-                if stop_all:
-                    return True
-                continue
-
-            scope.observe(directive, tokens)
-            out.append(line)
-
-        live = scope.live_directives()
-        if timing_package == "tempo2" and live and len(stack) > 1:
-            raise TimIncludeScopeError(
-                f"Included file {path} ends with {', '.join(live)} still active. "
-                f"tempo2 drops this state at the end of the file while flattening "
-                f"would carry it into the parent's following TOAs. Balance the "
-                f"directive inside the included file."
-            )
-        return False
-    finally:
-        stack.pop()
+    ``WEIGHT`` is a tempo2 alias for the same ``fitMode`` slot
+    (``readParfile.C``), and tempo2 applies assignments in file order, so every
+    alias line is dropped and the canonical line is appended last.
+    """
+    out = [
+        raw
+        for raw in par_text.splitlines()
+        if not (raw.split() and raw.split()[0].upper() in _PAR_MODE_ALIASES)
+    ]
+    out.append(f"MODE {mode}")
+    return "\n".join(out) + ("\n" if par_text.endswith("\n") else "")
 
 
 def _flag_key_indices(n_tokens: int) -> List[int]:
@@ -786,7 +1038,7 @@ def write_canonical_tim(
     timing_package: str,
     out_path: Path,
     par_text: Optional[str] = None,
-) -> Path:
+) -> CanonicalTimResult:
     """Write the canonical standalone FORMAT 1 .tim MetaPulsar hands its engines.
 
     Args:
@@ -798,7 +1050,10 @@ def write_canonical_tim(
             as the source of ``JUMP MJD`` windows for ``-mjd_jump_pta`` stamping.
 
     Returns:
-        ``out_path``.
+        :class:`CanonicalTimResult` with the written path. ``effective_mode``
+        reflects the *converted/flattened* file and is diagnostic only; the
+        factory discovers MODE from the release path via
+        :func:`discover_effective_tim_mode`.
     """
     tim_path = Path(tim_path)
     out_path = Path(out_path)
@@ -808,7 +1063,7 @@ def write_canonical_tim(
         "pint" if timing_package == "pint" else "tempo2"
     )
     try:
-        text = flatten_tim(tim_path, timing_package=package)
+        flattened = flatten_tim(tim_path, timing_package=package)
     except TimLegacyFormatError:
         if par_text is None:
             raise
@@ -820,9 +1075,11 @@ def write_canonical_tim(
                 timing_package=timing_package,
                 out_path=converted,
             )
-            text = flatten_tim(converted, timing_package=package)
+            flattened = flatten_tim(converted, timing_package=package)
 
-    text = stamp_metadata_flags(text, pta_name=pta_name, timing_package=timing_package)
+    text = stamp_metadata_flags(
+        flattened.text, pta_name=pta_name, timing_package=timing_package
+    )
     if par_text is not None:
         raw_windows = parse_jump_mjd_windows(par_text)
         if raw_windows:
@@ -833,4 +1090,4 @@ def write_canonical_tim(
                 timing_package=timing_package,
             )
     out_path.write_text(text, encoding="utf-8")
-    return out_path
+    return CanonicalTimResult(path=out_path, effective_mode=flattened.effective_mode)

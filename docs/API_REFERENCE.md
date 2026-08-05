@@ -181,10 +181,12 @@ def create_metapulsar(
             If None, par files are not saved to disk.
         timfile_output_dir: Directory to save the canonical .tim files the engines
             consumed, as {pulsar}_{pta}.tim. These are standalone Tempo2 FORMAT 1
-            files (INCLUDEs flattened) carrying -pta, -pta_dataset,
+            files (INCLUDEs flattened; TIME baked into MJDs; TIME/MODE omitted;
+            TOA names rewritten to toaNNNNN) carrying -pta, -pta_dataset,
             -timing_package, and (when the release par has JUMP MJD windows)
-            -mjd_jump_pta flags, so they can be reused directly. If None, they
-            are not saved to disk.
+            -mjd_jump_pta flags on post-bake SATs, so they can be reused directly.
+            Release-tim MODE is transferred onto the engine .par (absent MODE =
+            no override). If None, they are not saved to disk.
         use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
             The .tim is always rewritten; this only controls pulse numbers.
         clock_dir: Optional directory containing local clock-correction files.

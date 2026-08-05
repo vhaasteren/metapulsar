@@ -120,3 +120,187 @@ def test_create_all_metapulsars_forwards_convert_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(MetaPulsarFactory, "create_metapulsar", _capture)
     create_all_metapulsars(file_data=file_data, convert_jump_mjd=True)
     assert seen["convert_jump_mjd"] is True
+
+
+def _single_pta_file_data(
+    tmp_path: Path,
+    *,
+    pta: str = "EPTA",
+    par_extra: str = "",
+    tim_text: str,
+    timing_package: str = "pint",
+) -> dict:
+    par = FIXTURE_PAR.read_text(encoding="utf-8") + par_extra
+    par_path = tmp_path / f"{pta}.par"
+    tim_path = tmp_path / f"{pta}.tim"
+    par_path.write_text(par, encoding="utf-8")
+    tim_path.write_text(tim_text, encoding="utf-8")
+    return {
+        pta: [
+            {
+                "par": par_path,
+                "tim": tim_path,
+                "par_content": par,
+                "timing_package": timing_package,
+            }
+        ]
+    }
+
+
+@pytest.mark.unit
+def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
+    """§6.4.32: PN rewrite drops MODE from the tim; engine/retained par keep it."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        tim_text=(
+            "FORMAT 1\nMODE 1\n"
+            "test1 1400.0 54510.0 1.5 g -sys TEST\n"
+            "test2 1400.0 54520.0 1.5 g -sys TEST\n"
+        ),
+    )
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="per_pta",
+        use_pulse_numbers="yes",
+    )
+    retained = mp._pta_files["EPTA"]
+    tim_text = retained.tim_path.read_text(encoding="utf-8")
+    par_text = retained.par_path.read_text(encoding="utf-8")
+    assert not any(
+        line.split() and line.split()[0].upper() == "MODE"
+        for line in tim_text.splitlines()
+    )
+    assert "MODE 1" in par_text
+    mode_par = retained.par_path.with_name("EPTA.mode.par")
+    assert mode_par.is_file()
+    assert "MODE 1" in mode_par.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_absent_tim_mode_preserves_par_mode(tmp_path):
+    """§6.4.33 / §1.4.4: None means no override — do not write MODE 0."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        par_extra="MODE 1\n",
+        tim_text="FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
+    )
+    factory = MetaPulsarFactory()
+    # Exercise the transfer helper directly to assert changed-set semantics.
+    engine_pars = {"EPTA": file_data["EPTA"][0]["par"]}
+    single = {pta: entries[0] for pta, entries in file_data.items()}
+    updated, changed = factory._apply_tim_mode_transfer(
+        engine_pars=engine_pars,
+        file_data=single,
+        pta_file_dir=tmp_path / "session",
+    )
+    assert changed == set()
+    assert updated["EPTA"] == engine_pars["EPTA"]
+    assert not (tmp_path / "session" / "EPTA.mode.par").exists()
+
+    mp = factory.create_metapulsar(
+        file_data=file_data,
+        combination_strategy="per_pta",
+        use_pulse_numbers="no",
+    )
+    assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_legacy_untagged_release_mode_survives_factory_conversion(tmp_path):
+    """§6.4.34: untagged Princeton TOAs convert via PINT; MODE transfers."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        timing_package="pint",
+        tim_text=(
+            "MODE 1\n"
+            "1               1400.000 54510.2858714192189    1.50\n"
+            "1               1400.000 54520.2767051885166    1.50\n"
+        ),
+    )
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="per_pta",
+        use_pulse_numbers="no",
+    )
+    assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
+    assert mp._pta_files["EPTA"].tim_path.is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.requires_libstempo
+def test_legacy_format0_release_mode_survives_factory_conversion(tmp_path):
+    """§6.4.34: explicit FORMAT 0 (reference-data shape) via tempo2."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        timing_package="tempo2",
+        tim_text=(
+            "FORMAT 0\nMODE 1\n"
+            " test1 1400.0 54510.0 1.5 g\n"
+            " test2 1400.0 54520.0 1.5 g\n"
+        ),
+    )
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="per_pta",
+        use_pulse_numbers="no",
+    )
+    assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
+    assert mp._pta_files["EPTA"].tim_path.is_file()
+
+
+@pytest.mark.unit
+def test_shared_export_skips_self_copy_without_mode(tmp_path):
+    """§6.4.35: unchanged engine par is already the shared export destination."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        tim_text="FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="shared",
+        parfile_output_dir=export_dir,
+        use_pulse_numbers="no",
+    )
+    assert mp is not None
+    exports = list(export_dir.glob("*_shared_EPTA.par"))
+    assert exports
+
+
+@pytest.mark.unit
+def test_shared_export_skips_self_copy_without_jump_mjd(tmp_path):
+    """§6.4.36: convert_jump_mjd with no JUMP MJD must not SameFileError."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        tim_text="FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="shared",
+        parfile_output_dir=export_dir,
+        use_pulse_numbers="no",
+        convert_jump_mjd=True,
+    )
+    assert mp is not None
+
+
+@pytest.mark.unit
+def test_shared_export_contains_transferred_mode(tmp_path):
+    """§6.4.37: changed PTA's shared export carries MODE 1."""
+    file_data = _single_pta_file_data(
+        tmp_path,
+        tim_text=("FORMAT 1\nMODE 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n"),
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    mp = MetaPulsarFactory().create_metapulsar(
+        file_data=file_data,
+        combination_strategy="shared",
+        parfile_output_dir=export_dir,
+        use_pulse_numbers="no",
+    )
+    exported = export_dir / f"{mp.name}_shared_EPTA.par"
+    assert "MODE 1" in exported.read_text(encoding="utf-8")

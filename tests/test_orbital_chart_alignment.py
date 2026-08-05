@@ -447,22 +447,42 @@ def test_every_case_from_the_failure_map_now_builds(ptas, strategy, reference):
         assert 0.1 < rms_us < 1000.0
 
 
+def _without_mode_aliases(lines):
+    """Drop MODE/WEIGHT so MODE normalization does not cascade zip-diffs."""
+    return [
+        line
+        for line in lines
+        if not (line.split() and line.split()[0].upper() in ("MODE", "WEIGHT"))
+    ]
+
+
+def _assert_normalized_final_mode(par_text: str, mode: int = 1) -> None:
+    lines = [line for line in par_text.splitlines() if line.split()]
+    mode_lines = [
+        line for line in lines if line.split()[0].upper() in ("MODE", "WEIGHT")
+    ]
+    assert mode_lines == [f"MODE {mode}"]
+    assert lines[-1] == f"MODE {mode}"
+
+
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_per_pta_engine_par_differs_only_in_the_pb_line():
-    """Invariants 1 and 5: no unit conversion, no sharing, one line changed."""
+    """Invariants 1 and 5: no unit conversion, no sharing; PB→FB0 plus MODE norm."""
     _require(*[DATA / "PPTA_DR3" / f"J2241-5236.{e}" for e in ("par", "tim")])
     par = DATA / "PPTA_DR3" / "J2241-5236.par"
     mp = _build({"PPTA": [_entry(*SRC["PPTA"])]}, "per_pta")
 
-    source = par.read_text().splitlines()
-    consumed = mp._parfile_content_for_pta("PPTA").splitlines()
+    source = _without_mode_aliases(par.read_text().splitlines())
+    consumed_text = mp._parfile_content_for_pta("PPTA")
+    consumed = _without_mode_aliases(consumed_text.splitlines())
     assert len(source) == len(consumed)
     differing = [i for i, (a, b) in enumerate(zip(source, consumed)) if a != b]
     assert len(differing) == 1
     assert source[differing[0]].split()[0] == "PB"
     assert consumed[differing[0]].split()[0] == "FB0"
     assert any(line.split()[:2] == ["UNITS", "TCB"] for line in consumed)
+    _assert_normalized_final_mode(consumed_text)
 
 
 @pytest.mark.requires_libstempo
@@ -481,8 +501,7 @@ def test_nonlinear_timing_is_available():
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_j1825_mpta_tempo2_unaffected():
-    """No FB terms: untouched end to end, and the engine consumes the original
-    file (invariant 5)."""
+    """No FB terms: orbital content untouched; MODE may be normalized last."""
     par = DATA / "MPTA_DR2" / "J1825-0319.par"
     tim = DATA / "MPTA_DR2" / "J1825-0319.tim"
     _require(par, tim)
@@ -491,7 +510,11 @@ def test_j1825_mpta_tempo2_unaffected():
     assert mp.name
     assert np.isfinite(mp._residuals).all()
     assert not any(p == "FB0" or p.startswith("FB0_") for p in mp.fitpars)
-    assert mp._parfile_content_for_pta("MPTA") == par.read_text()
+    consumed = mp._parfile_content_for_pta("MPTA")
+    assert _without_mode_aliases(consumed.splitlines()) == _without_mode_aliases(
+        par.read_text().splitlines()
+    )
+    _assert_normalized_final_mode(consumed)
 
 
 @pytest.mark.requires_libstempo

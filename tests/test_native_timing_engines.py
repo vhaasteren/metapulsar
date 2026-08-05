@@ -128,9 +128,9 @@ def test_canonical_tim_flattens_included_files(tmp_path):
         out_path=tmp_path / "retained" / "epta.tim",
     )
 
-    text = out.read_text(encoding="utf-8")
+    text = out.path.read_text(encoding="utf-8")
     assert "INCLUDE" not in text
-    assert " obs 1400.0 55000.0 1.0 site -pta epta" in text
+    assert " toa00001 1400.0 55000.0 1.0 site -pta epta" in text
     assert "-timing_package tempo2" in text
     assert main.read_text(encoding="utf-8") == "FORMAT 1\nINCLUDE tims/chunk.tim\n"
 

@@ -319,20 +319,22 @@ MetaPulsar concatenates the per‑PTA arrays into combined vectors:
 * TOAs, residuals, TOA errors, SSB frequencies, telescope codes, etc.
 * Flags include `pta`, `pta_dataset`, and `timing_package` tags for each TOA, and may also include `mjd_jump_pta` when the release par has `JUMP MJD` windows. These are read back from the `.tim` files, not synthesized here: MetaPulsar always hands its timing engines a canonical `.tim` in which those flags are stamped (see “Canonical `.tim` artifacts” below).
 
-Again, **no TOA value is altered**; this is a pure concatenation with bookkeeping.
+Concatenation itself does not alter TOA values; any `TIME` baking already happened when each leg’s canonical `.tim` was written.
 
 ### Canonical `.tim` artifacts
 
-Every PTA leg is loaded from a rewritten `.tim` rather than the release file, so the PTA identity of a TOA travels with the data instead of living only in memory. The rewrite is text surgery on `FORMAT 1` lines and changes no TOA value, uncertainty, or pre-existing flag:
+Every PTA leg is loaded from a rewritten standalone Tempo2 `FORMAT 1` `.tim` rather than the release file, so the PTA identity of a TOA travels with the data instead of living only in memory. The rewrite is dual-engine-reloadable:
 
-* `INCLUDE` directives are inlined in place, producing one standalone file. Comments and other directives (`MODE`, `T2EFAC`, …) are preserved verbatim.
+* `INCLUDE` directives are inlined in place. Cumulative `TIME` offsets are baked into TOA MJDs with exact decimal arithmetic — MetaPulsar applies Tempo2’s mathematical rule `sat += TIME / 86400`, evaluated exactly and rounded once to the emitted MJD token. It does **not** reproduce Tempo2’s intermediate `double`/`longdouble` rounding. `TIME` and `MODE` lines are never emitted. TOA names are rewritten to safe `toaNNNNN` tokens so PINT cannot classify lines as Princeton/Parkes/ITOA. Other directives (`T2EFAC`, …) and comments are preserved; existing flag pairs (including `-to`) are kept.
+* Effective `MODE` is discovered from the **release** tim tree (including legacy `FORMAT 0` / untagged releases) before pulse-number rewriting, and transferred onto the engine-facing `.par` as a single appended `MODE` line that supersedes any `MODE`/`WEIGHT`. An absent tim `MODE` means no override: the engine par’s own mode is left unchanged.
+* Source MJD tokens and baked epochs are range-checked (`[0, 1e6]`); `TIME` offsets are bounded at `|Δ| ≤ 1e9` s with an exponent floor that blocks memory-amplifying literals.
 * `-pta`, `-pta_dataset`, and `-timing_package` are appended to every TOA. `-pta` and `-pta_dataset` carry the PTA key MetaPulsar knows the dataset by; `-timing_package` records which engine loaded it.
-* When the release `.par` contains `JUMP MJD t1 t2 …` lines, selected TOAs also receive `-mjd_jump_pta {pta}_{k}` (one-based index of that PTA’s `JUMP MJD` lines). Selection follows the parsing leg on the raw FORMAT 1 MJD token: tempo2 half-open `[t1, t2)`, PINT closed `[t1, t2]`. Stamping uses that raw SAT string, not PINT’s clock-corrected `mjd_float`, so it can disagree with native PINT `JUMP MJD` only for TOAs extremely close to a bound; known consumers of these lines are tempo2/PPTA. Overlapping windows that select the same TOA are refused.
+* When the release `.par` contains `JUMP MJD t1 t2 …` lines, selected TOAs also receive `-mjd_jump_pta {pta}_{k}` (one-based index of that PTA’s `JUMP MJD` lines). Selection follows the parsing leg on the **post-bake** FORMAT 1 MJD token: tempo2 half-open `[t1, t2)`, PINT closed `[t1, t2]`. Overlapping windows that select the same TOA are refused.
 * A release that already uses one of those MetaPulsar-owned flag names (PPTA DR1/DR2 ships `-pta`) has its own value preserved as `-<name>_orig`.
 * `-pn` pulse numbers are present when `use_pulse_numbers` asks for them; the rewrite itself is unconditional.
 * `convert_jump_mjd=False` (default) leaves engine-par `JUMP MJD` lines intact while still stamping the tim flags. `convert_jump_mjd=True` rewrites each engine-par line to `JUMP -mjd_jump_pta {pta}_{k} …` with the same values; release `.par` files on disk are never mutated.
 
-Because `TIME`/`EFAC`-style directives are scoped per included file by Tempo2 but leak across `INCLUDE` boundaries in PINT, flattening is refused (with an error, never a silent shift) if such state is live at an `INCLUDE` boundary. Passing `timfile_output_dir` exports the exact files the engines consumed, so a combination can be reproduced or handed to other tooling directly.
+`TIME` ownership matches the parsing leg: tempo2 is file-local per `INCLUDE`; PINT shares one accumulator across includes. Flattening is refused (with an error, never a silent shift) if tempo2 stateful directives are live at an `INCLUDE` boundary. Passing `timfile_output_dir` exports the exact files the engines consumed, so a combination can be reproduced or handed to other tooling directly.
 
 ### Step 7: Construct the combined design matrix
 
@@ -380,7 +382,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 ### What this method does **not** do
 
-* It **does not** change TOAs, TOA uncertainties, or backend flags. The canonical `.tim` rewrite adds `-pta`/`-pta_dataset`/`-timing_package` (and `-pn` when requested), may add `-mjd_jump_pta` for `JUMP MJD` windows, and renames a colliding MetaPulsar-owned release flag to `-<name>_orig`; every other flag and value is copied verbatim.
+* It **does not** invent TOA uncertainties or backend flags. The canonical `.tim` rewrite bakes release `TIME` into MJDs, drops `TIME`/`MODE`, renames TOA filename tokens to `toaNNNNN`, adds `-pta`/`-pta_dataset`/`-timing_package` (and `-pn` when requested), may add `-mjd_jump_pta` for `JUMP MJD` windows, and renames a colliding MetaPulsar-owned release flag to `-<name>_orig`; every other flag is copied.
 * It **does not** decide noise hyperparameters; EFAC/EQUAD/ECORR and the red/DM noise models are inferred in the usual way in Enterprise/Discovery after the metapulsar is constructed.
 * It **does not** convert `DMMODEL` grids to DMX or to a Taylor expansion.
   Binary-family conversion is gated and limited to the supported ELL1/ELL1H

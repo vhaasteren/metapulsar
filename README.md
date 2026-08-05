@@ -124,15 +124,29 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 ### Canonical `.tim` files (`timfile_output_dir`)
 
 MetaPulsar never loads a release `.tim` directly. Every PTA leg is rewritten into
-a standalone Tempo2 `FORMAT 1` file: `INCLUDE`s are flattened into one file, and
-`-pta`, `-pta_dataset`, and `-timing_package` are stamped on every TOA so a TOA's
-PTA identity lives in the data instead of only in memory. When a release `.par`
-contains `JUMP MJD` windows, selected TOAs also get `-mjd_jump_pta {pta}_{k}`
-(tempo2 half-open / PINT closed on the raw FORMAT 1 MJD token). TOA values,
-uncertainties, and existing flags are copied verbatim; if a release already uses
-one of those MetaPulsar-owned flag names (PPTA DR1/DR2 ships `-pta`), its value
-is preserved as `-<name>_orig`. Pulse numbers are included when
-`use_pulse_numbers` asks for them, but the rewrite itself always happens.
+a standalone Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload:
+
+* `INCLUDE`s are flattened into one file.
+* Cumulative `TIME` offsets are baked into TOA MJDs with exact decimal arithmetic
+  (`sat += TIME / 86400`, rounded once at output — not Tempo2 `double` bit
+  equivalence). `TIME` and `MODE` lines are omitted from the artifact.
+* Every TOA name is rewritten to a safe `toaNNNNN` token so PINT cannot classify
+  lines as Princeton/Parkes/ITOA. Uncertainties and existing flag pairs (including
+  `-to`) are preserved.
+* Source MJDs and baked epochs are range-checked (`[0, 1e6]`); `TIME` offsets are
+  bounded at `|Δ| ≤ 1e9` s.
+* `-pta`, `-pta_dataset`, and `-timing_package` are stamped on every TOA. When a
+  release `.par` contains `JUMP MJD` windows, selected TOAs also get
+  `-mjd_jump_pta {pta}_{k}` (tempo2 half-open / PINT closed on the **post-bake**
+  FORMAT 1 MJD token). If a release already uses one of those MetaPulsar-owned
+  flag names (PPTA DR1/DR2 ships `-pta`), its value is preserved as `-<name>_orig`.
+* Effective `MODE` is discovered from the **release** tim tree (including legacy
+  `FORMAT 0` / untagged inputs) before pulse-number rewriting and transferred onto
+  the engine-facing `.par` as a single final `MODE` line (superseding any
+  `MODE`/`WEIGHT`). An absent tim `MODE` means no override.
+
+Pulse numbers are included when `use_pulse_numbers` asks for them, but the rewrite
+itself always happens.
 
 By default (`convert_jump_mjd=False`) engine pars keep native `JUMP MJD` lines
 while the tim flags are still stamped. Pass `convert_jump_mjd=True` to rewrite

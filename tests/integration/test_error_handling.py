@@ -41,28 +41,33 @@ DM 13.299 1 0.001
             with open(temp_par, "w") as f:
                 f.write(malformed_parfile_content)
 
-                # Create a temporary PTA data release pointing to malformed file
-                data_release = PTA_DATA_RELEASES["epta_dr1_v2_2"].copy()
-                data_release["base_dir"] = str(temp_dir)
-                data_release["par_pattern"] = "J0030+0451.par"
+            # MODE transfer reads the release tim before engine load; give it a
+            # minimal readable FORMAT 1 file so the failure is the malformed par.
+            temp_tim = Path(temp_dir) / "J0030+0451.tim"
+            temp_tim.write_text(
+                "FORMAT 1\n" " test1 1400.0 54510.0 1.5 g -sys TEST\n",
+                encoding="utf-8",
+            )
 
-                # This should raise RuntimeError because the parfile is malformed (missing timfile)
-                with pytest.raises(RuntimeError):
-                    # Create file_data format for the test (list format)
-                    file_data = {
-                        "epta_dr1_v2_2": [
-                            {
-                                "par": Path(temp_dir) / "J0030+0451.par",
-                                "tim": Path(temp_dir) / "J0030+0451.tim",
-                                "par_content": malformed_parfile_content,
-                                "timing_package": "tempo2",
-                                "tim_metadata": make_tim_metadata(timespan_days=1000.0),
-                            }
-                        ]
-                    }
-                    MetaPulsarFactory().create_metapulsar(
-                        file_data, use_pulse_numbers="no"
-                    )
+            # Create a temporary PTA data release pointing to malformed file
+            data_release = PTA_DATA_RELEASES["epta_dr1_v2_2"].copy()
+            data_release["base_dir"] = str(temp_dir)
+            data_release["par_pattern"] = "J0030+0451.par"
+
+            # This should raise RuntimeError because the parfile is malformed
+            with pytest.raises(RuntimeError):
+                file_data = {
+                    "epta_dr1_v2_2": [
+                        {
+                            "par": temp_par,
+                            "tim": temp_tim,
+                            "par_content": malformed_parfile_content,
+                            "timing_package": "tempo2",
+                            "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                        }
+                    ]
+                }
+                MetaPulsarFactory().create_metapulsar(file_data, use_pulse_numbers="no")
 
     def test_malformed_tim_file(self, available_data_sets):
         """Test handling of malformed tim files."""
