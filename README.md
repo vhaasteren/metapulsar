@@ -342,7 +342,7 @@ Long-term plan:
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
 - **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
-- **pint-pulsar** with [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` → free `FB0`; pinned in `pyproject.toml` / `requirements.txt` until that lands in a release). Dev checkouts: `pip install -e ref-packages/PINT`. Diagnose installs with `pathlib.Path(pint.__file__).resolve()` and `hasattr(PulsarBinary, "_bridge_pb_to_fb0")` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
+- **pint-pulsar** ([nanograv/PINT](https://github.com/nanograv/PINT/tree/main)). Dev checkouts: `pip install -e ref-packages/PINT`. Diagnose installs with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
 - **nltiming** (protocols, engine selection, nonlinear timing math)
 
 Optional extras:

@@ -31,8 +31,9 @@ dependencies = [
     "numpy>=1.20.0",
     "astropy>=5.0.0",
     "scipy>=1.7.0",
-    # nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Unpin to a release once merged.
-    "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@5e9a68df4fdfaf9394b2fc2cb3515d0a50848292",
+    # nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Temporarily track tip of
+    # vhaasteren/PINT@metapulsar while that PR is in flux; unpin to a release once merged.
+    "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar",
     "ephem>=4.1",
     "loguru>=0.7.3",
     "nltiming",

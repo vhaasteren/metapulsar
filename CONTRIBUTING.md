@@ -17,9 +17,8 @@ We welcome contributions to MetaPulsar! This document provides guidelines for co
    pip install -e ".[dev,libstempo]"
    ```
 
-   MetaPulsar currently requires a PINT build with
-   [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid
-   `PB + FBn` → free `FB0`). Prefer the editable checkout:
+   Prefer an editable [nanograv/PINT](https://github.com/nanograv/PINT/tree/main)
+   checkout when developing against PINT:
 
    ```bash
    pip install -e ref-packages/PINT --no-deps
@@ -28,8 +27,8 @@ We welcome contributions to MetaPulsar! This document provides guidelines for co
    A stale non-editable `pint` under `~/.local/lib/.../site-packages` can shadow
    that install: user site precedes the editable finder on `sys.path`, and
    `pip show` still reports the *correct version from the wrong metadata*.
-   Diagnose with `pathlib.Path(pint.__file__).resolve()` and
-   `hasattr(PulsarBinary, "_bridge_pb_to_fb0")`, never with `pip show` alone.
+   Diagnose with `pathlib.Path(pint.__file__).resolve()`, never with `pip show`
+   alone.
 
 3. **Install Pre-commit Hooks**
    ```bash
