@@ -2557,6 +2557,28 @@ class TestReferenceConventionResolution:
         assert "CLOCK" not in parfile_dicts["EPTA"]
         assert "CLOCK" not in parfile_dicts["NG"]
 
+    def test_flag_selected_noise_keywords_get_portable_spelling(self):
+        """PINT-flavoured EFAC/EQUAD/ECORR lines are unreadable to Tempo2.
+
+        Tempo2 parses bare ``EFAC`` as a global scalar, so it reads the flag name
+        as the value, every uncertainty becomes NaN and the whole residual series
+        follows. A bare global ``EFAC`` is Tempo2's own grammar and stays put.
+        """
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        parfile_dicts = pm._parse_parfiles()
+        parfile_dicts["NG"]["EFAC"] = ["-f 430_ASP 1.116", "1.5"]
+        parfile_dicts["NG"]["EQUAD"] = ["-f 430_ASP 0.027"]
+        parfile_dicts["NG"]["ECORR"] = ["-f 430_ASP 0.159"]
+
+        align_conventions(pm, parfile_dicts, parfile_dicts["EPTA"])
+
+        assert parfile_dicts["NG"]["T2EFAC"] == ["-f 430_ASP 1.116"]
+        assert parfile_dicts["NG"]["EFAC"] == ["1.5"]
+        assert parfile_dicts["NG"]["T2EQUAD"] == ["-f 430_ASP 0.027"]
+        assert "EQUAD" not in parfile_dicts["NG"]
+        assert parfile_dicts["NG"]["TNECORR"] == ["-f 430_ASP 0.159"]
+        assert "ECORR" not in parfile_dicts["NG"]
+
     def test_bare_bipm_without_version_raises(self):
         pm = ParameterManager(
             file_data=_cross_engine_file_data(reference_extra="", body=EQUATORIAL_BODY)

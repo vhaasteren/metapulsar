@@ -31,18 +31,43 @@ _DIRECTIVE_PREFIXES = frozenset(
 
 
 def is_tim_comment_line(line: str) -> bool:
-    """True when a .tim line is a comment to both PINT and tempo2.
+    """True when a .tim line is a comment to tempo2 and/or PINT.
 
-    Tempo2 comments out any FORMAT 1 line whose first character is ``C``; PINT
-    honors ``C ``, ``c ``, ``CC `` and ``#``. The two-character ``CC`` marker
-    matters: EPTA Effelsberg files reject TOAs with it, and a walker that only
-    knows ``C `` reads those lines as data and shifts every field left by one.
+    Tempo2's FORMAT 1 free-format reader (``readTimfile.C``, ``format==0``)
+    ignores any line whose first character is uppercase ``C`` or ``#`` — no
+    space required. That covers EPTA reject markers such as ``C?``, ``CC?``,
+    ``C????``, ``Cc…``, and prose like ``CTHE 2007 TOAS…``. PINT is stricter
+    (``C `` / ``CC `` / ``c `` / ``#`` at column 0) and also treats bare
+    lowercase ``c``/``cc`` markers as comments; we recognize the union so a
+    walker neither emits a phantom TOA nor drops a line either engine ignores.
+
+    Leading whitespace is stripped before the check: indented ``C …`` is still
+    a comment for MetaPulsar (tempo2 would not see column-0 ``C`` there), and
+    the canonical writer re-emits it at column 0 in a PINT-safe shape.
+    Lowercase archive names such as ``c055446…`` are live TOAs — tempo2 is
+    case-sensitive on the leading ``C``, and we keep that distinction.
     """
     stripped = line.strip()
-    if stripped.startswith("#"):
+    if not stripped:
+        return False
+    if stripped.startswith("#") or stripped[0] == "C":
         return True
-    upper = stripped.upper()
-    return upper in ("C", "CC") or upper.startswith(("C ", "CC "))
+    # PINT-only lowercase markers (tempo2 does not comment a leading 'c').
+    lower = stripped.lower()
+    return lower in ("c", "cc") or lower.startswith(("c ", "cc "))
+
+
+def read_tim_text_lines(path: Path) -> List[str]:
+    """Read a .tim file into logical lines.
+
+    DOS ``\\r\\n`` becomes a single newline. A bare carriage return mid-record
+    (EPTA Jodrell Bank files embed one before ``-padd``) is treated as
+    whitespace, not a record separator: Python's universal-newlines mode and
+    ``str.splitlines`` would otherwise invent a phantom TOA line.
+    """
+    with path.open(encoding="utf-8", errors="replace", newline="") as fh:
+        text = fh.read()
+    return text.replace("\r\n", "\n").replace("\r", " ").splitlines()
 
 
 @dataclass(frozen=True)
@@ -196,19 +221,18 @@ class TimFileAnalyzer:
 
         active.add(tim_file_path)
         try:
-            with open(tim_file_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    acc.lines_seen += 1
-                    format_tokenized = self._process_line(
-                        stripped,
-                        tim_file_path,
-                        format_tokenized=format_tokenized,
-                        acc=acc,
-                        active=active,
-                    )
+            for line in read_tim_text_lines(tim_file_path):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                acc.lines_seen += 1
+                format_tokenized = self._process_line(
+                    stripped,
+                    tim_file_path,
+                    format_tokenized=format_tokenized,
+                    acc=acc,
+                    active=active,
+                )
         except OSError as e:
             msg = f"Error reading TIM file {tim_file_path}: {e}"
             self.logger.error(msg)

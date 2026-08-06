@@ -63,6 +63,25 @@ PTA_DATA_RELEASES = {
         "timing_package": "tempo2",
         "description": "MPTA Data Release 1",
     },
+    "mpta_dr2": {
+        # Flat release: one <PSR>.par and one <PSR>.tim per pulsar.
+        "base_dir": "MPTA_DR2/",
+        "par_pattern": r"MPTA_DR2/([BJ]\d{4}[+-]\d{2,4})\.par$",
+        "tim_pattern": r"MPTA_DR2/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+        "timing_package": "tempo2",
+        "description": "MPTA Data Release 2",
+    },
+    "ppta_dr3": {
+        # Flat release. The plain <PSR>.par is the Tempo2 solution; the release
+        # also ships a derived <PSR>_pint.par, and working subdirectories
+        # (dr2/, uwl/, temp/) that repeat the pulsar names, so both patterns are
+        # anchored to a file sitting directly in PPTA_DR3/.
+        "base_dir": "PPTA_DR3/",
+        "par_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4})\.par$",
+        "tim_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+        "timing_package": "tempo2",
+        "description": "PPTA Data Release 3",
+    },
     "nanograv_12y": {
         "base_dir": "NANOGrav_12y/",
         "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})(?!.*\.t2)_NANOGrav_12yv2\.gls\.par",

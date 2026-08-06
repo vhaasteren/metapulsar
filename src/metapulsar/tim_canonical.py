@@ -35,7 +35,12 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import numpy as np
 from loguru import logger
 
-from .tim_file_analyzer import TimFileAnalyzer, TimMetadata, is_tim_comment_line
+from .tim_file_analyzer import (
+    TimFileAnalyzer,
+    TimMetadata,
+    is_tim_comment_line,
+    read_tim_text_lines,
+)
 
 # Flags MetaPulsar owns. An input that already uses one of these names has it
 # renamed to ``<name>_orig`` so the release's own value stays auditable.
@@ -268,22 +273,20 @@ class _ScopeState:
 
 def _read_lines(path: Path) -> List[str]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        return read_tim_text_lines(path)
     except OSError as exc:
         raise TimCanonicalizationError(f"Cannot read .tim file {path}: {exc}") from exc
-    return text.splitlines()
 
 
 def _canonical_comment_line(line: str) -> str:
     """Render a source comment so both engines re-read it as a comment.
 
-    PINT honors a comment marker only at column 0, uppercase, and followed by
-    text: it sniffs lowercase ``c `` as Princeton format and indexes past the
-    end of the field list on a bare ``C``/``CC``, so an indented, lowercase or
-    bare marker becomes a TOA parse error in a FORMAT 1 file. Tempo2 accepts
-    all of those, so anything outside the shape PINT shares is re-marked with
-    ``#`` — the one introducer both packages honor unconditionally — keeping
-    the original text as comment payload.
+    Tempo2 comments any leading uppercase ``C`` (including ``C?`` / ``CC?`` /
+    glued ``Cc…``). PINT only honors ``C `` / ``CC `` / ``#`` at column 0 with
+    text after the marker, and sniffs lowercase ``c `` as Princeton format, so
+    anything outside the shape PINT shares is re-marked with ``#`` — the one
+    introducer both packages honor unconditionally — keeping the original text
+    as comment payload.
     """
     stripped = line.strip()
     if stripped.startswith("#") or _PINT_SAFE_COMMENT_RE.match(stripped):

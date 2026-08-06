@@ -265,6 +265,10 @@ JUMP 55000 55001
         """A ``CC`` line read as data records a phantom TOA at its freq token."""
         content = f"""FORMAT 1
 CC ?c062776.align.pazr.30min 1345.999 56522.2190165978952 4.381 g -group EFF
+CC? c062799.align.pazr.30min 1354.224 56522.287303339192132 1.275 g
+C? TIME -1
+Cc055877.align.pazr.30min 2625.499 55995.8838774191826 5.166 g
+CTHE 2007 TOAS may be wrong - the settings were not correct
    C indented comment
 cc lowercase two-char marker
 {_tempo2_line(55087.1109722889085)}
@@ -273,6 +277,18 @@ cc lowercase two-char marker
         tim_file = self._create_test_tim_file("cc_comments.tim", content)
         meta = self.analyzer.get_tim_metadata(tim_file)
         assert meta.toa_count == 2
+        assert meta.mjd_min == pytest.approx(55087.1109722889085)
+
+    def test_bare_cr_mid_record_does_not_invent_a_toa(self, tmp_path):
+        body = (
+            b"FORMAT 1\n"
+            + _tempo2_line(55087.1109722889085).encode()
+            + b" -padd 0.1\r -group WSRT\n"
+        )
+        tim_file = tmp_path / "cr_mid.tim"
+        tim_file.write_bytes(body)
+        meta = self.analyzer.get_tim_metadata(tim_file)
+        assert meta.toa_count == 1
         assert meta.mjd_min == pytest.approx(55087.1109722889085)
 
     def test_cache_hit_behavior(self):

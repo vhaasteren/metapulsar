@@ -210,6 +210,43 @@ class TestFileDiscovery:
         with pytest.raises(ValueError, match="Missing required keys"):
             service.add_data_release("test_data_release", invalid_config)
 
+    def test_flat_dr3_layouts_select_the_native_pair(self, tmp_path):
+        """MPTA DR2 and PPTA DR3 are flat releases with look-alike neighbours.
+
+        PPTA DR3 ships a derived ``<PSR>_pint.par`` beside the Tempo2 solution
+        and keeps working subdirectories that repeat the pulsar names, and both
+        releases carry editor and tooling leftovers (``.par~``, ``.tim.bak``).
+        Only the pulsar's own pair directly under the release root may match.
+        """
+        mpta = tmp_path / "MPTA_DR2"
+        mpta.mkdir()
+        for name in ("J1909-3744.par", "J1909-3744.tim", "J1909-3744.tim.bak"):
+            (mpta / name).write_text("PSR J1909-3744\n", encoding="utf-8")
+
+        ppta = tmp_path / "PPTA_DR3"
+        (ppta / "uwl").mkdir(parents=True)
+        (ppta / "J1909-3744.par").write_text("PSR J1909-3744\n", encoding="utf-8")
+        (ppta / "J1909-3744.tim").write_text("FORMAT 1\n", encoding="utf-8")
+        (ppta / "J1909-3744_pint.par").write_text("PSR J1909-3744\n", encoding="utf-8")
+        (ppta / "J1909-3744.par~").write_text("PSR J1909-3744\n", encoding="utf-8")
+        (ppta / "uwl" / "J1909-3744.par").write_text(
+            "PSR J1909-3744\n", encoding="utf-8"
+        )
+        (ppta / "uwl" / "J1909-3744.tim").write_text("FORMAT 1\n", encoding="utf-8")
+
+        service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
+        found = service.discover_files(["mpta_dr2", "ppta_dr3"])
+
+        assert [e["par"] for e in found["mpta_dr2"]] == [mpta / "J1909-3744.par"]
+        assert [e["tim"] for e in found["mpta_dr2"]] == [mpta / "J1909-3744.tim"]
+        assert [e["par"] for e in found["ppta_dr3"]] == [ppta / "J1909-3744.par"]
+        assert [e["tim"] for e in found["ppta_dr3"]] == [ppta / "J1909-3744.tim"]
+        assert all(
+            entry["timing_package"] == "tempo2"
+            for entries in found.values()
+            for entry in entries
+        )
+
     def test_validate_config_success(self):
         """Test validating valid configuration."""
         service = FileDiscovery()

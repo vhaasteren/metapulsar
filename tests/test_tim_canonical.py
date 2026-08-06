@@ -113,6 +113,72 @@ class TestFlatten:
         assert rejected in result.text  # kept as a comment, not dropped
         assert "C RFI ??c059607" in result.text
 
+    def test_tempo2_leading_c_reject_markers_are_comments(self, tmp_path):
+        """Tempo2 comments any leading uppercase C; no space required.
+
+        EPTA releases use ``C?`` / ``CC?`` / ``C????`` / glued ``Cc…`` and
+        prose ``CTHE …``; treating those as TOAs put the archive name in the
+        frequency column (PINT float error) or prose tokens in the MJD field.
+        """
+        rejected = [
+            "C? TIME -1",
+            "C? c030680.pazr.iter.30min 1409.252 54182.2281713759008 0.027 g",
+            "CC? c062799.align.pazr.30min 1354.224 56522.287303339192132 1.275 g",
+            "C???? c015621.align.pazr.30min 1419.557 51849.5401158655181 0.252 g",
+            "Cc055877.align.pazr.30min 2625.499 55995.8838774191826 5.166 g",
+            "CTHE 2007 TOAS may be wrong - the settings were not correct",
+            "Clow S/N, no pulse c056508.align.pazr.30min 2625.499 56031.9 64.959 g",
+        ]
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\n" + "\n".join(rejected) + f"\n{_toa(58000.0)}\n",
+            encoding="utf-8",
+        )
+
+        result = flatten_tim(root)
+
+        assert [line.split()[0] for line in _toa_lines(result.text)] == ["toa00001"]
+        for line in rejected:
+            assert f"# {line}" in result.text.splitlines()
+
+    def test_lowercase_c_archive_name_remains_a_toa(self, tmp_path):
+        """Leading lowercase c is a live Effelsberg name, not a comment."""
+        live = (
+            "c055446.align.pazr.30min 2625.499 55961.1689989786605 1.716 g"
+            " -group EFF.EBPP.2639"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{live}\n", encoding="utf-8")
+
+        result = flatten_tim(root)
+
+        assert len(_toa_lines(result.text)) == 1
+        assert _toa_lines(result.text)[0].split()[2] == "55961.1689989786605"
+
+    def test_bare_cr_mid_record_is_whitespace_not_a_line_break(self, tmp_path):
+        """EPTA JBO files embed a lone CR before ``-padd``."""
+        # Binary write so universal newlines cannot rewrite the CR first.
+        body = (
+            b"FORMAT 1\n"
+            b"obs1 1520.0 56427.902533854616534 24.153 jb"
+            b" -group JBO.DFB.1520 -sys JBO.DFB.1520\r -padd 0.497259\n"
+            b"CJ130515_212931.NEFTp 1520.0 56427.9 24.153 jb"
+            b" -sys JBO.DFB.1520\r -padd 0.497259\n"
+        )
+        root = tmp_path / "root.tim"
+        root.write_bytes(body)
+
+        result = flatten_tim(root)
+
+        assert [line.split()[0] for line in _toa_lines(result.text)] == ["toa00001"]
+        toa_line = _toa_lines(result.text)[0]
+        assert "-padd" in toa_line and "0.497259" in toa_line
+        assert "-padd 0.497259" not in result.text.splitlines()
+        assert any(
+            line.startswith("# CJ130515_212931.NEFTp")
+            for line in result.text.splitlines()
+        )
+
     @pytest.mark.parametrize(
         "source,expected",
         [
@@ -125,6 +191,19 @@ class TestFlatten:
             ("cc lowercase two", "# cc lowercase two"),
             ("C", "# C"),
             ("CC", "# CC"),
+            ("C? TIME -1", "# C? TIME -1"),
+            (
+                "CC? c062799.align.pazr.30min 1354.224",
+                "# CC? c062799.align.pazr.30min 1354.224",
+            ),
+            (
+                "Cc055877.align.pazr.30min 2625.499",
+                "# Cc055877.align.pazr.30min 2625.499",
+            ),
+            (
+                "CTHE 2007 TOAS may be wrong - the settings were not correct",
+                "# CTHE 2007 TOAS may be wrong - the settings were not correct",
+            ),
         ],
     )
     def test_comments_are_emitted_in_a_pint_safe_shape(
@@ -147,6 +226,8 @@ class TestFlatten:
         comments = "\n".join(
             [
                 "CC ?c062776.align.pazr.30min 1345.999 56522.2190165978952 4.381 g",
+                "CC? c062799.align.pazr.30min 1354.224 56522.287303339192132 1.275 g",
+                "C? TIME -1",
                 "C Er. c038950",
                 "   C indented",
                 "c lowercase",

@@ -182,6 +182,26 @@ def resolve_ell1h_shapiro_mode(
     return "absorbed" if {"pint", "tempo2"}.issubset(packages) else "full"
 
 
+#: Flag-selected white-noise keywords whose bare spelling is not portable.
+#: Tempo2 declares ``EFAC`` and ``EQUAD`` as global scalars, so a PINT-flavoured
+#: ``EFAC -f <flagval> <value>`` line makes it read the flag name as the value
+#: and every TOA uncertainty becomes NaN, which silently NaNs the whole residual
+#: series. PINT declares the tempo2 spellings as aliases of its own parameters,
+#: so those are the portable pin -- the same argument that picks ``CLK`` over
+#: ``CLOCK``.
+PORTABLE_NOISE_KEYWORDS: Dict[str, str] = {
+    "EFAC": "T2EFAC",
+    "EQUAD": "T2EQUAD",
+    "ECORR": "TNECORR",
+}
+
+
+def _is_flag_selector(entry: str) -> bool:
+    """True when a par entry starts with a Tempo2 flag (``-f``), not a number."""
+    token = entry.split()[0] if entry.split() else ""
+    return len(token) > 1 and token[0] == "-" and not token[1].isdigit()
+
+
 # ===== TEMPO1 AGGREGATE MODE =====
 
 #: The six explicit states Tempo2's aggregate ``TEMPO1`` switch selects at once.
@@ -1291,6 +1311,35 @@ class ParameterManager:
             parfile_dict.pop(alias, None)
         parfile_dict["CLK"] = [value]
 
+    def _set_portable_noise_keywords(
+        self,
+        pta_name: str,
+        parfile_dict: Dict[str, List[str]],
+    ) -> None:
+        """Rewrite flag-selected white-noise keywords to their portable spelling.
+
+        Only entries that carry a flag selector are moved: a bare ``EFAC 1.5``
+        is Tempo2's global scalar and stays where it is. See
+        ``PORTABLE_NOISE_KEYWORDS``.
+        """
+        for source, target in PORTABLE_NOISE_KEYWORDS.items():
+            entries = parfile_dict.get(source)
+            if not entries:
+                continue
+            moved = [entry for entry in entries if _is_flag_selector(entry)]
+            if not moved:
+                continue
+            kept = [entry for entry in entries if not _is_flag_selector(entry)]
+            if kept:
+                parfile_dict[source] = kept
+            else:
+                parfile_dict.pop(source)
+            parfile_dict[target] = parfile_dict.get(target, []) + moved
+            self.logger.info(
+                f"PTA {pta_name}: rewrote {len(moved)} {source} line(s) as "
+                f"{target} (portable spelling)"
+            )
+
     def _align_reference_conventions(
         self,
         parfile_dicts: Dict[str, Dict[str, List[str]]],
@@ -1301,6 +1350,7 @@ class ParameterManager:
         for pta_name, parfile_dict in parfile_dicts.items():
             self._set_aliased_value(parfile_dict, ["EPHEM"], ephem)
             self._set_engine_clock_value(parfile_dict, clock)
+            self._set_portable_noise_keywords(pta_name, parfile_dict)
 
     def _apply_cross_engine_rules(
         self,
