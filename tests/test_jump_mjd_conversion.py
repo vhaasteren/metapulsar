@@ -43,6 +43,7 @@ def test_default_stamps_tim_but_keeps_jump_mjd_in_engine_par(tmp_path):
         combination_strategy="per_pta",
         use_pulse_numbers="no",
         convert_jump_mjd=False,
+        canonicalize_tim=True,
     )
 
     tim_text = mp._pta_files["PPTA"].tim_path.read_text(encoding="utf-8")
@@ -65,6 +66,7 @@ def test_convert_jump_mjd_rewrites_engine_par(tmp_path):
         combination_strategy="per_pta",
         use_pulse_numbers="no",
         convert_jump_mjd=True,
+        canonicalize_tim=True,
     )
 
     tim_text = mp._pta_files["PPTA"].tim_path.read_text(encoding="utf-8")
@@ -101,6 +103,7 @@ def test_no_jump_mjd_is_noop(tmp_path):
         combination_strategy="per_pta",
         use_pulse_numbers="no",
         convert_jump_mjd=True,
+        canonicalize_tim=True,
     )
     tim_text = mp._pta_files["EPTA"].tim_path.read_text(encoding="utf-8")
     par_text = mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
@@ -119,7 +122,11 @@ def test_create_all_metapulsars_forwards_convert_flag(tmp_path, monkeypatch):
         return original(self, **{**kwargs, "convert_jump_mjd": False})
 
     monkeypatch.setattr(MetaPulsarFactory, "create_metapulsar", _capture)
-    create_all_metapulsars(file_data=file_data, convert_jump_mjd=True)
+    create_all_metapulsars(
+        file_data=file_data,
+        convert_jump_mjd=True,
+        canonicalize_tim=True,
+    )
     assert seen["convert_jump_mjd"] is True
 
 
@@ -163,6 +170,7 @@ def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
         file_data=file_data,
         combination_strategy="per_pta",
         use_pulse_numbers="yes",
+        canonicalize_tim=True,
     )
     retained = mp._pta_files["EPTA"]
     tim_text = retained.tim_path.read_text(encoding="utf-8")
@@ -205,6 +213,7 @@ def test_absent_tim_mode_preserves_par_mode(tmp_path):
         file_data=file_data,
         combination_strategy="per_pta",
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
     assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
 
@@ -225,6 +234,7 @@ def test_legacy_untagged_release_mode_survives_factory_conversion(tmp_path):
         file_data=file_data,
         combination_strategy="per_pta",
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
     assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
     assert mp._pta_files["EPTA"].tim_path.is_file()
@@ -247,6 +257,7 @@ def test_legacy_format0_release_mode_survives_factory_conversion(tmp_path):
         file_data=file_data,
         combination_strategy="per_pta",
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
     assert "MODE 1" in mp._pta_files["EPTA"].par_path.read_text(encoding="utf-8")
     assert mp._pta_files["EPTA"].tim_path.is_file()
@@ -266,6 +277,7 @@ def test_shared_export_skips_self_copy_without_mode(tmp_path):
         combination_strategy="shared",
         parfile_output_dir=export_dir,
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
     assert mp is not None
     exports = list(export_dir.glob("*_shared_EPTA.par"))
@@ -287,6 +299,7 @@ def test_shared_export_skips_self_copy_without_jump_mjd(tmp_path):
         parfile_output_dir=export_dir,
         use_pulse_numbers="no",
         convert_jump_mjd=True,
+        canonicalize_tim=True,
     )
     assert mp is not None
 
@@ -305,6 +318,7 @@ def test_shared_export_contains_transferred_mode(tmp_path):
         combination_strategy="shared",
         parfile_output_dir=export_dir,
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
     exported = export_dir / f"{mp.name}_shared_EPTA.par"
     assert "MODE 1" in exported.read_text(encoding="utf-8")

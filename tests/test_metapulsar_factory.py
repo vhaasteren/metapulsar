@@ -420,6 +420,7 @@ class TestMetaPulsarFactory:
                 file_data,
                 use_pulse_numbers="no",
                 pta_file_dir=session_dir,
+                canonicalize_tim=True,
             )
 
         canonical = session_dir / "epta_dr2.tim"
@@ -455,6 +456,7 @@ class TestMetaPulsarFactory:
                 file_data,
                 use_pulse_numbers="no",
                 pta_file_dir=session_dir,
+                canonicalize_tim=True,
             )
 
         canonical = session_dir / "epta_dr2.tim"
@@ -483,6 +485,7 @@ class TestMetaPulsarFactory:
                 use_pulse_numbers="no",
                 pta_file_dir=session_dir,
                 return_pta_files=True,
+                canonicalize_tim=True,
             )
 
         self.factory._write_canonical_timfiles(pta_files, export_dir, "J1857+0943")
@@ -536,6 +539,7 @@ class TestMetaPulsarFactory:
                 file_data,
                 use_pulse_numbers="yes",
                 pta_file_dir=session_dir,
+                canonicalize_tim=True,
             )
 
             mock_track_par.assert_called_once()

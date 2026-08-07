@@ -1,6 +1,6 @@
 """End-to-end contract for the canonical .tim artifacts on real release data.
 
-With ``canonicalize_tim=True`` (factory default) MetaPulsar hands its engines a
+With ``canonicalize_tim=True`` (opt-in; factory default is False) MetaPulsar hands its engines a
 rewritten standalone FORMAT 1 .tim that carries the PTA identity as real flags.
 These tests pin that the rewrite is data-preserving and that the exported
 artifact is the file the engine consumed.
@@ -43,6 +43,7 @@ def built(tmp_path_factory):
         combination_strategy="per_pta",
         timfile_output_dir=export_dir,
         use_pulse_numbers="yes",
+        canonicalize_tim=True,
     )
     return mp, export_dir
 
@@ -138,6 +139,7 @@ def test_pint_leg_reads_metadata_flags_back_from_the_tim(tmp_path):
         combination_strategy="per_pta",
         timfile_output_dir=export_dir,
         use_pulse_numbers="yes",
+        canonicalize_tim=True,
     )
 
     pint_rows = mp.flags["pta"] == "nanograv_9y"
@@ -168,6 +170,7 @@ def test_rewrite_alone_preserves_toas_exactly(tmp_path):
         combination_strategy="per_pta",
         timfile_output_dir=export_dir,
         use_pulse_numbers="no",
+        canonicalize_tim=True,
     )
 
     assert len(sorted(export_dir.glob("*.tim"))) == len(mp._pta_data)

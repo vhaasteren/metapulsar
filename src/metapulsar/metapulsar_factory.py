@@ -212,7 +212,7 @@ class MetaPulsarFactory:
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
-        canonicalize_tim: bool = True,
+        canonicalize_tim: bool = False,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -237,7 +237,7 @@ class MetaPulsarFactory:
                 If None, par files are not saved to disk.
             timfile_output_dir: Directory to save the ``.tim`` files the engines
                 actually consumed, as ``{pulsar}_{pta}.tim``. With
-                ``canonicalize_tim=True`` (default) these are standalone Tempo2
+                ``canonicalize_tim=True`` these are standalone Tempo2
                 FORMAT 1 files (INCLUDEs flattened) carrying ``-pta``,
                 ``-pta_dataset`` and ``-timing_package`` flags, plus ``-pn`` when
                 ``use_pulse_numbers`` asks for it. If None, they are not saved.
@@ -265,13 +265,13 @@ class MetaPulsarFactory:
                 ``{pta}_{k}`` values stamped on the canonical tim. Default False
                 (tim flags are still stamped when ``canonicalize_tim=True``).
                 Requires ``canonicalize_tim=True``.
-            canonicalize_tim: If True (default), rewrite every release ``.tim`` into
-                a dual-engine-reloadable canonical artifact before load (INCLUDE
-                flatten, ``TIME`` bake, safe TOA names, PTA / jump flags). If
-                False, engines load the release ``.tim`` tree (plus optional ``-pn``
+            canonicalize_tim: If True, rewrite every release ``.tim`` into a
+                dual-engine-reloadable canonical artifact before load (INCLUDE
+                flatten, ``TIME`` bake, safe TOA names, PTA / jump flags). Default
+                False: engines load the release ``.tim`` tree (plus optional ``-pn``
                 derivation); cross-engine ``TIME``/``INCLUDE`` parity and
-                ``-mjd_jump_pta`` stamping are not provided. Use as an escape
-                hatch when canonicalization refuses a published release.
+                ``-mjd_jump_pta`` stamping are not provided. Opt in explicitly
+                (AEI-DR2/DR3 rebuild scripts do).
 
         Returns:
             MetaPulsar object
@@ -617,7 +617,7 @@ class MetaPulsarFactory:
         clock_dir: Path | str | None = None,
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
-        canonicalize_tim: bool = True,
+        canonicalize_tim: bool = False,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all available pulsars using file data.
 
@@ -643,7 +643,7 @@ class MetaPulsarFactory:
                 ``{pta}_{k}`` values stamped on the canonical tim. Default False.
                 Requires ``canonicalize_tim=True``.
             canonicalize_tim: Forwarded to each ``create_metapulsar`` call.
-                Default True; see that method for the off-path contract.
+                Default False; see that method for the opt-in contract.
 
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
@@ -836,7 +836,7 @@ class MetaPulsarFactory:
         pta_file_dir: Path | None = None,
         return_pta_files: bool = False,
         ell1h_shapiro: Ell1hShapiroMode = "full",
-        canonicalize_tim: bool = True,
+        canonicalize_tim: bool = False,
     ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
         """Create PINT/Tempo2 objects from file pairs using file data.
 
@@ -848,9 +848,9 @@ class MetaPulsarFactory:
             ell1h_shapiro: ELL1H orthometric Shapiro convention for PINT loads.
                 ``"absorbed"`` on mixed-engine shared stacks, ``"full"``
                 (PINT's default) otherwise.
-            canonicalize_tim: When True (default), rewrite each release ``.tim``
-                via :func:`~metapulsar.tim_canonical.write_canonical_tim` before
-                load. When False, load the release tree (plus optional ``-pn``
+            canonicalize_tim: When True, rewrite each release ``.tim`` via
+                :func:`~metapulsar.tim_canonical.write_canonical_tim` before
+                load. Default False: load the release tree (plus optional ``-pn``
                 derivation) without TIME bake / flag stamps / name rewrite.
 
         Returns:
@@ -864,11 +864,16 @@ class MetaPulsarFactory:
                 tempfile.mkdtemp(prefix="metapulsar_pta_files_")
             ).resolve()
         pta_file_dir.mkdir(parents=True, exist_ok=True)
-        if not canonicalize_tim:
-            self.logger.warning(
-                "canonicalize_tim=False: engines load release .tim files without "
-                "TIME bake, safe TOA-name rewrite, or -mjd_jump_pta stamps. "
-                "Cross-engine INCLUDE/TIME parity is not guaranteed."
+        if canonicalize_tim:
+            self.logger.info(
+                "canonicalize_tim=True: rewriting release .tim files via the "
+                "dual-engine canonical writer before load"
+            )
+        else:
+            self.logger.debug(
+                "canonicalize_tim=False (default): engines load release .tim "
+                "files without TIME bake, safe TOA-name rewrite, or "
+                "-mjd_jump_pta stamps"
             )
 
         for pta_name, (parfile, timfile) in file_pairs.items():
@@ -1241,7 +1246,7 @@ def create_metapulsar(
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
-    canonicalize_tim: bool = True,
+    canonicalize_tim: bool = False,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -1276,10 +1281,10 @@ def create_metapulsar(
             line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
             ``{pta}_{k}`` values stamped on the canonical tim. Default False.
             Requires ``canonicalize_tim=True``.
-        canonicalize_tim: If True (default), rewrite every release ``.tim`` into
-            a dual-engine-reloadable canonical artifact before load. If False,
-            engines load the release ``.tim`` tree (escape hatch; see
-            ``MetaPulsarFactory.create_metapulsar``).
+        canonicalize_tim: If True, rewrite every release ``.tim`` into a
+            dual-engine-reloadable canonical artifact before load. Default
+            False: engines load the release ``.tim`` tree (see
+            ``MetaPulsarFactory.create_metapulsar``). Opt in explicitly.
 
     Returns:
         MetaPulsar object
@@ -1319,7 +1324,7 @@ def create_all_metapulsars(
     clock_dir: Path | str | None = None,
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
-    canonicalize_tim: bool = True,
+    canonicalize_tim: bool = False,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all available pulsars using file data.
 
@@ -1345,7 +1350,7 @@ def create_all_metapulsars(
             line to ``JUMP -mjd_jump_pta {pta}_{k} ...`` using the same
             ``{pta}_{k}`` values stamped on the canonical tim. Default False.
             Requires ``canonicalize_tim=True``.
-        canonicalize_tim: Forwarded to each ``create_metapulsar`` call. Default True.
+        canonicalize_tim: Forwarded to each ``create_metapulsar`` call. Default False.
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects

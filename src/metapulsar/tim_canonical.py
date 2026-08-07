@@ -1,11 +1,11 @@
 """Canonical .tim writer: flatten INCLUDEs, bake TIME, and stamp metadata flags.
 
-With the factory default ``canonicalize_tim=True``, MetaPulsar hands its timing
-engines a standalone Tempo2 ``FORMAT 1`` file carrying authoritative ``-pta``,
-``-pta_dataset`` and ``-timing_package`` flags, so the PTA identity of every TOA
-travels with the data instead of being synthesized in memory. Cumulative
-``TIME`` offsets are baked into TOA MJDs with exact decimal arithmetic
-(``sat += TIME / 86400``, rounded once at output — not Tempo2
+Opt in with factory ``canonicalize_tim=True`` (default is False). MetaPulsar then
+hands its timing engines a standalone Tempo2 ``FORMAT 1`` file carrying
+authoritative ``-pta``, ``-pta_dataset`` and ``-timing_package`` flags, so the PTA
+identity of every TOA travels with the data instead of being synthesized in
+memory. Cumulative ``TIME`` offsets are baked into TOA MJDs with exact decimal
+arithmetic (``sat += TIME / 86400``, rounded once at output — not Tempo2
 ``double``/``longdouble`` bit-equivalence) under the leg's own package scoping
 rule, and a ``TIME`` left live at an ``INCLUDE`` boundary is recorded as an
 :class:`IncludeScopeResolution` rather than refused. ``TIME`` and ``MODE`` lines
@@ -16,8 +16,8 @@ dropped to match the release's own package and recorded as a
 :class:`DroppedTimLine`. Every TOA name is rewritten to a safe ``toaNNNNN``
 token. When the release par contains
 ``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
-flags on the selected (post-bake) TOAs. Pass ``canonicalize_tim=False`` on the
-factory to skip this rewrite and load the release ``.tim`` tree instead.
+flags on the selected (post-bake) TOAs. The AEI-DR2/DR3 rebuild scripts pass
+``canonicalize_tim=True`` explicitly.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).

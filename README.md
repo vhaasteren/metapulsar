@@ -123,9 +123,17 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 
 ### Canonical `.tim` files (`canonicalize_tim`, `timfile_output_dir`)
 
-By default (`canonicalize_tim=True`) MetaPulsar does not load a release `.tim`
-directly. Every PTA leg is rewritten into a standalone Tempo2 `FORMAT 1` file
-that both PINT and Tempo2 can reload:
+By default (`canonicalize_tim=False`) MetaPulsar loads each release `.tim` tree
+as-is (plus optional `-pn` derivation). Pass `canonicalize_tim=True` to opt into
+the dual-engine canonical writer: every PTA leg is rewritten into a standalone
+Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload.
+
+This opt-in is intentional while the writer is still landing on real releases.
+The AEI-DR2 / AEI-DR3 rebuild entry points turn it on explicitly
+(`data/aei-dr2/rebuild_aei_product.py`, `data/aei-dr3/rebuild_aei_product.py`,
+backed by `scripts/rebuild_aei_product.py`).
+
+With `canonicalize_tim=True`:
 
 * `INCLUDE`s are flattened into one file.
 * Cumulative `TIME` offsets are baked into TOA MJDs with exact decimal arithmetic
@@ -149,13 +157,10 @@ that both PINT and Tempo2 can reload:
 Pulse numbers are included when `use_pulse_numbers` asks for them; that setting
 is independent of whether the release `.tim` is rewritten.
 
-Pass `canonicalize_tim=False` to skip the rewrite and load the release `.tim`
-tree (plus optional `-pn` derivation). That is an escape hatch for published
-releases that refuse to flatten — for example ambiguous `TIME` scope at an
-`INCLUDE` boundary. Off-path builds do **not** get cross-engine `TIME`/`INCLUDE`
-parity, safe TOA-name rewriting, or `-mjd_jump_pta` stamps. PTA identity flags
-are still filled in memory by `MetaPulsar._combine_flags()` when missing.
-`convert_jump_mjd=True` requires `canonicalize_tim=True`.
+With the default (`canonicalize_tim=False`) builds do **not** get cross-engine
+`TIME`/`INCLUDE` parity, safe TOA-name rewriting, or `-mjd_jump_pta` stamps.
+PTA identity flags are still filled in memory by `MetaPulsar._combine_flags()`
+when missing. `convert_jump_mjd=True` requires `canonicalize_tim=True`.
 
 By default (`convert_jump_mjd=False`) engine pars keep native `JUMP MJD` lines
 while the tim flags are still stamped (when canonicalizing). Pass
@@ -166,14 +171,20 @@ Pass `timfile_output_dir` to save the exact files the timing packages consumed,
 named `{pulsar}_{pta}.tim`, for auditing or reuse:
 
 ```python
+# Default: load release .tim trees as-is
 mp = create_metapulsar(
     file_data,
     parfile_output_dir="out/par",
     timfile_output_dir="out/tim",
 )
 
-# Escape hatch when canonicalization refuses a release tim tree:
-mp = create_metapulsar(file_data, canonicalize_tim=False)
+# Opt in to the dual-engine canonical writer (AEI rebuilds do this):
+mp = create_metapulsar(
+    file_data,
+    canonicalize_tim=True,
+    parfile_output_dir="out/par",
+    timfile_output_dir="out/tim",
+)
 ```
 
 ### Nonlinear timing (`NonLinearTimingModel`)
