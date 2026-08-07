@@ -1329,6 +1329,100 @@ class TestMjdValidation:
             flatten_tim(root)
 
 
+class TestShortDataLines:
+    """Data lines with < 5 fields: tempo2 drops them, so canonicalization does.
+
+    EPTA DR2's Jodrell files continue a TOA's flags onto the next physical line
+    (``-padd <value>`` alone). Tempo2's reader leaves ``valid == 0`` for those
+    and never increments ``nobs``, and the line matches no directive keyword
+    either, so the release solution was fitted without those flags.
+    """
+
+    def test_short_line_is_dropped_not_refused(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(58000.0)}\n -padd 0.497259\n{_toa(58001.0)}\n",
+            encoding="utf-8",
+        )
+
+        result = flatten_tim(root)
+
+        assert [line.split()[2] for line in _toa_lines(result.text)] == [
+            "58000.0",
+            "58001.0",
+        ]
+        assert "padd" not in result.text
+        # Names stay dense: the dropped line never consumed a counter slot.
+        assert [line.split()[0] for line in _toa_lines(result.text)] == [
+            "toa00001",
+            "toa00002",
+        ]
+
+    def test_drop_is_recorded_with_provenance(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(58000.0)}\n -padd 0.497259\n{_toa(58001.0)}\n"
+            "-padd -0.22244\n",
+            encoding="utf-8",
+        )
+
+        dropped = flatten_tim(root).dropped_lines
+
+        assert [d.line_number for d in dropped] == [3, 5]
+        assert [d.text for d in dropped] == ["-padd 0.497259", "-padd -0.22244"]
+        assert [d.toas_emitted_before for d in dropped] == [1, 2]
+        assert {d.path for d in dropped} == {root.resolve()}
+
+    def test_drop_is_reported_from_the_file_that_held_it(self, tmp_path):
+        (tmp_path / "tims").mkdir()
+        (tmp_path / "tims" / "jbo.tim").write_text(
+            f"FORMAT 1\n{_toa(58001.0)}\n -padd 0.497259\n", encoding="utf-8"
+        )
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(58000.0)}\nINCLUDE tims/jbo.tim\n", encoding="utf-8"
+        )
+
+        dropped = flatten_tim(root).dropped_lines
+
+        assert len(dropped) == 1
+        assert dropped[0].path == (tmp_path / "tims" / "jbo.tim").resolve()
+        assert dropped[0].line_number == 3
+
+    def test_clean_tree_records_nothing(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{_toa(58000.0)}\n", encoding="utf-8")
+
+        assert flatten_tim(root).dropped_lines == ()
+
+    def test_write_canonical_tim_surfaces_the_drop(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(58000.0)}\n -padd 0.497259\n", encoding="utf-8"
+        )
+
+        result = write_canonical_tim(
+            root,
+            pta_name="EPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "out.tim",
+        )
+
+        assert len(result.dropped_lines) == 1
+        assert result.tim_metadata.toa_count == 1
+        assert "padd" not in (tmp_path / "out.tim").read_text(encoding="utf-8")
+
+    def test_directive_lines_are_untouched(self, tmp_path):
+        """A short line is only dropped when it classifies as data."""
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\nSKIP\n{_toa(58000.0)}\nNOSKIP\n", encoding="utf-8")
+
+        result = flatten_tim(root)
+
+        assert result.dropped_lines == ()
+        assert "SKIP" in result.text and "NOSKIP" in result.text
+
+
 class TestTraversalSwitches:
     """§6.3 Single traversal, two switches, legacy policy."""
 
@@ -1361,7 +1455,6 @@ class TestTraversalSwitches:
             "bad_mode": f"FORMAT 1\nMODE nope\n{_toa(58000.0)}\n",
             # TIME is baked, so only the *emitted* directives still refuse.
             "unbalanced_efac": None,
-            "short_toa": "FORMAT 1\n obs1 1400.0 58000.0\n",
         }
         a = tmp_path / "a.tim"
         b = tmp_path / "b.tim"
@@ -1387,6 +1480,16 @@ class TestTraversalSwitches:
             with pytest.raises(Exception) as disc_exc:
                 discover_effective_tim_mode(path, timing_package="tempo2")
             assert type(flat_exc.value) is type(disc_exc.value), name
+
+    def test_structural_parity_on_dropped_short_line(self, tmp_path):
+        """A short FORMAT 1 line is not an error, so parity is "both survive"."""
+        path = tmp_path / "short_toa.tim"
+        path.write_text("FORMAT 1\nMODE 1\n obs1 1400.0 58000.0\n", encoding="utf-8")
+
+        assert discover_effective_tim_mode(path, timing_package="tempo2") == 1
+        result = flatten_tim(path, timing_package="tempo2")
+        assert _toa_lines(result.text) == []
+        assert len(result.dropped_lines) == 1
 
     @pytest.mark.parametrize("fmt", ["0", "2", "tempo1"])
     def test_explicit_legacy_format_discovery(self, tmp_path, fmt):

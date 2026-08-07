@@ -10,8 +10,11 @@ travels with the data instead of being synthesized in memory. Cumulative
 rule, and a ``TIME`` left live at an ``INCLUDE`` boundary is recorded as an
 :class:`IncludeScopeResolution` rather than refused. ``TIME`` and ``MODE`` lines
 are omitted from the artifact; effective ``MODE`` is discovered from the release
-tim tree and transferred onto the engine-facing ``.par``. Every TOA name is
-rewritten to a safe ``toaNNNNN`` token. When the release par contains
+tim tree and transferred onto the engine-facing ``.par``. A data line with fewer
+than five fields — which tempo2 discards in silence and PINT raises on — is
+dropped to match the release's own package and recorded as a
+:class:`DroppedTimLine`. Every TOA name is rewritten to a safe ``toaNNNNN``
+token. When the release par contains
 ``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
 flags on the selected (post-bake) TOAs. Pass ``canonicalize_tim=False`` on the
 factory to skip this rewrite and load the release ``.tim`` tree instead.
@@ -193,6 +196,37 @@ class IncludeScopeResolution:
 
 
 @dataclass(frozen=True)
+class DroppedTimLine:
+    """One source line tempo2 reads as neither a TOA nor a directive.
+
+    Tempo2's free-format reader (``readTimfile.C``) parses a data line with
+    ``sscanf(line, "%s %lf %s %lf %s", ...)``; fewer than five fields leaves
+    ``valid == 0``, so ``psr->nobs`` is never incremented and the line matches no
+    directive keyword either -- it is discarded in silence. PINT, by contrast,
+    raises ``IndexError`` on the same line.
+
+    Released trees do contain such lines: EPTA DR2's Jodrell files continue a
+    TOA's flags onto the next physical line (``-padd <value>`` alone), so the
+    published solution was fitted *without* those flags. Canonicalization matches
+    tempo2 and drops them, and records each one here so the loss is auditable
+    rather than silent.
+
+    Attributes:
+        path: File the line came from (post-``INCLUDE`` flattening, this is the
+            file that literally held it, not the root).
+        line_number: 1-based line number within ``path``.
+        text: The offending line, stripped.
+        toas_emitted_before: TOAs already emitted when the line was reached, so
+            the drop can be located in the canonical output.
+    """
+
+    path: Path
+    line_number: int
+    text: str
+    toas_emitted_before: int
+
+
+@dataclass(frozen=True)
 class FlattenTimResult:
     """Standalone FORMAT 1 text plus the last observed ``MODE`` in the tree."""
 
@@ -200,6 +234,7 @@ class FlattenTimResult:
     effective_mode: Optional[int]
     column_dodge_count: int = 0
     include_scope_resolutions: Tuple[IncludeScopeResolution, ...] = ()
+    dropped_lines: Tuple[DroppedTimLine, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,6 +246,7 @@ class CanonicalTimResult:
     tim_metadata: TimMetadata
     column_dodge_count: int = 0
     include_scope_resolutions: Tuple[IncludeScopeResolution, ...] = ()
+    dropped_lines: Tuple[DroppedTimLine, ...] = ()
 
 
 @dataclass
@@ -410,6 +446,8 @@ def _render_canonical_toa_line(
     column_dodge_counter: List[int],
 ) -> str:
     if len(tokens) < 5:
+        # Internal invariant: the walker filters these out (see
+        # `DroppedTimLine`), so reaching here means a caller bypassed it.
         raise TimCanonicalizationError(
             f"FORMAT 1 TOA line has too few tokens: {line.strip()!r}"
         )
@@ -459,10 +497,34 @@ class _TimWalker:
         self.effective_mode: Optional[int] = None
         self.shared_time = _TimeAccum()  # PINT shares; tempo2 is file-local
         self.include_scope_resolutions: List[IncludeScopeResolution] = []
+        self.dropped_lines: List[DroppedTimLine] = []
 
     def _write(self, line: str) -> None:
         if self.emit:
             self.out.append(line)
+
+    def _record_dropped_line(self, path: Path, lineno: int, line: str) -> None:
+        """Record a data line tempo2 discards, and warn once per file."""
+        first_in_file = not any(d.path == path for d in self.dropped_lines)
+        self.dropped_lines.append(
+            DroppedTimLine(
+                path=path,
+                line_number=lineno,
+                text=line.strip(),
+                toas_emitted_before=self.name_counter[0],
+            )
+        )
+        # Discovery walks the same tree just before canonicalization, so warning
+        # on both would double every message.
+        if self.emit and first_in_file:
+            logger.warning(
+                f"{path} holds data lines with fewer than 5 fields, the first at "
+                f"line {lineno}: {line.strip()!r}. tempo2 discards these silently "
+                f"(readTimfile.C: nread < 5 leaves the observation invalid) and "
+                f"PINT raises on them, so canonicalization drops them to match the "
+                f"release's own package. Any per-TOA flags they carried are lost, "
+                f"exactly as they were for the published solution."
+            )
 
     def _record_time_scope(
         self,
@@ -525,7 +587,7 @@ class _TimWalker:
         # file's own contribution rather than its parent's.
         entry_total = accum.total
         try:
-            for line in _read_lines(path):
+            for lineno, line in enumerate(_read_lines(path), start=1):
                 kind, tokens = _classify(line)
 
                 if kind == "blank":
@@ -545,6 +607,14 @@ class _TimWalker:
                             f"flags require Tempo2 FORMAT 1. Convert this file with its "
                             f"own timing package first. Offending line: {line.strip()!r}"
                         )
+                    if len(tokens) < 5:
+                        # Neither a TOA nor a directive to tempo2's free-format
+                        # reader, which drops it without a word. Match that, but
+                        # record it. Checked only under FORMAT 1: the legacy
+                        # column formats are short by construction and belong to
+                        # the converter above, not here.
+                        self._record_dropped_line(path, lineno, line)
+                        continue
                     self._write(
                         _render_canonical_toa_line(
                             line,
@@ -709,6 +779,7 @@ def flatten_tim(
         effective_mode=walker.effective_mode,
         column_dodge_count=walker.column_dodge_counter[0],
         include_scope_resolutions=tuple(walker.include_scope_resolutions),
+        dropped_lines=tuple(walker.dropped_lines),
     )
 
 
@@ -1439,4 +1510,5 @@ def write_canonical_tim(
         tim_metadata=tim_metadata,
         column_dodge_count=flattened.column_dodge_count,
         include_scope_resolutions=flattened.include_scope_resolutions,
+        dropped_lines=flattened.dropped_lines,
     )

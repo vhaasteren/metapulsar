@@ -193,9 +193,16 @@ BINARY_OWNED_CANONICAL: frozenset[str] = frozenset(
     }
 )
 
-_ORTHOMETRIC_KEYS = frozenset(
-    {"H3", "H4", "STIG", "STIGMA", "VARSIGMA", "NHARM", "NHARMS"}
-)
+#: Keys that carry an orthometric Shapiro *amplitude*. Presence of any of these
+#: is what makes a par orthometric.
+_ORTHOMETRIC_KEYS = frozenset({"H3", "H4", "STIG", "STIGMA", "VARSIGMA"})
+
+#: Harmonic-count keys. These are a truncation knob for the H3+H4 series, inert
+#: without an amplitude — both engines evaluate zero Shapiro from ``NHARMS``
+#: alone (PINT: ``H3`` defaults to 0; tempo2 ``ELL1Hmodel.C:105-118`` takes the
+#: mode-0 branch with ``h3 = 0``). They are therefore not family markers, but
+#: they are still binary-owned and must be dropped on a DD target.
+_ORTHOMETRIC_TRUNCATION_KEYS = frozenset({"NHARM", "NHARMS"})
 
 _REMEDIATIONS = (
     'exclude "binary" from combine_components (each PTA keeps its engine-native '
@@ -303,15 +310,31 @@ def _binary_value(par: Mapping[str, Any]) -> Optional[str]:
     return None if raw is None else raw.upper()
 
 
-def _present_spellings(
-    par: Mapping[str, Any], *canonical_or_alias: str
-) -> tuple[str, ...]:
-    """Return actual keys present for the given names (preserving source spelling)."""
+def _alias_closure(*canonical_or_alias: str) -> frozenset[str]:
+    """Every accepted spelling of ``canonical_or_alias`` (§7.3 alias closure).
+
+    Naming any member of an alias group pulls in the whole group, so a lookup
+    keyed on the canonical name still finds a source that spelled it otherwise
+    (``XDOT`` for ``A1DOT``, ``STIG`` for ``STIGMA``, …).
+    """
     wanted = {n.upper() for n in canonical_or_alias}
     for canon, aliases in _CANONICAL_ALIASES.items():
         if canon in wanted or wanted.intersection(a.upper() for a in aliases):
             wanted.update(a.upper() for a in aliases)
             wanted.add(canon)
+    return frozenset(wanted)
+
+
+def _find_key_aliased(par: Mapping[str, Any], *names: str) -> Optional[str]:
+    """``_find_key`` over the §7.3 alias closure of ``names``."""
+    return _find_key(par, *_alias_closure(*names))
+
+
+def _present_spellings(
+    par: Mapping[str, Any], *canonical_or_alias: str
+) -> tuple[str, ...]:
+    """Return actual keys present for the given names (preserving source spelling)."""
+    wanted = _alias_closure(*canonical_or_alias)
     return tuple(k for k in par if k.upper() in wanted)
 
 
@@ -402,13 +425,29 @@ def _classify_t2_family(par: Mapping[str, Any]) -> Optional[str]:
     return family
 
 
+def orthometric_shapiro_absent(par: Mapping[str, Any]) -> bool:
+    """True when a par carries no orthometric Shapiro signal at all.
+
+    That is: no ratio key (``H4``/``STIGMA``/``STIG``/``VARSIGMA``) and an ``H3``
+    that is missing or exactly zero. Such a par delivers zero Shapiro delay in
+    *both* engines, so an ``ELL1H`` label on it is spelling, not physics, and the
+    §5.2 plain target (``DD``) is exact rather than approximate.
+    """
+    if _has_any(par, ("H4", "STIGMA", "STIG", "VARSIGMA")):
+        return False
+    h3 = _par_token_float(par, "H3", default=None)
+    return h3 is None or float(h3) == 0.0
+
+
 def _classify_family(par: Mapping[str, Any]) -> Optional[str]:
     binary = _binary_value(par)
     if binary is None:
         return None
     has_h = _has_any(par, _ORTHOMETRIC_KEYS)
     if binary == "ELL1H":
-        return "ELL1H"
+        # A bare ELL1H label with no amplitude is a plain ELL1 par (NANOGrav 15y
+        # J1802-2124 ships `BINARY ELL1H` + `NHARMS 7` and nothing else).
+        return "ELL1" if orthometric_shapiro_absent(par) else "ELL1H"
     if binary == "ELL1K":
         return "ELL1k"
     if binary == "ELL1":
@@ -707,8 +746,9 @@ def _classify_unsupported(
             _require_nltiming_conversion_contract()
 
     elif _is_plain_family(family):
-        if _has_any(par, _ORTHOMETRIC_KEYS):
-            # Defensive: _classify_family routes H-terms to ELL1H.
+        if _has_any(par, _ORTHOMETRIC_KEYS) and not orthometric_shapiro_absent(par):
+            # Defensive: _classify_family routes a live amplitude to ELL1H. A
+            # zero/absent one is plain by construction, so it must not trip here.
             return "ell1h_h3_only_underdetermined"
     else:  # ELL1k and anything else that reached D8
         return "ell1k_secular_terms_unvalidated"
@@ -1383,7 +1423,11 @@ def _timing_model_from_ddh_params(
     def _set(
         name: str, value: Any, fit: bool = False, unc: Optional[str] = None
     ) -> None:
-        key = _find_key(par, name) or name
+        # Alias-aware: ``source_model.as_parfile()`` re-emits the source spelling
+        # (PINT's ``use_alias``), so a par that wrote ``XDOT`` still holds that
+        # key here. A canonical-only lookup would miss it and append a second,
+        # non-repeatable ``A1DOT`` line that PINT then refuses to load.
+        key = _find_key_aliased(par, name) or name
         par[key] = [_format_line(value, fit, unc, key=name)]
 
     # Values and uncertainties both come from the §7.6 map (the absorbed gauge
@@ -1493,6 +1537,28 @@ def _ensure_uncertainties_for_convert(model: Any) -> None:
             pass
 
 
+def _plain_source_dict(reference_dict: Mapping[str, Any]) -> dict:
+    """Reference dict with a spurious ``ELL1H`` label normalized away.
+
+    Only fires when the par carries no orthometric amplitude at all
+    (`orthometric_shapiro_absent`), which `_classify_family` has already routed
+    to the plain family. Building the source model as a genuine ``ELL1`` keeps
+    ``convert_binary``'s output clean: converting *from* ``BinaryELL1H`` carries
+    a stray ``NHARMS`` into the ``DD`` model, which the C5 audit would then
+    report as an unexpected extra. Never mutates the caller's dict.
+    """
+    par = dict(reference_dict)
+    if _binary_value(par) != "ELL1H" or not orthometric_shapiro_absent(par):
+        return par
+    bin_key = _find_key(par, "BINARY")
+    if bin_key is not None:
+        par[bin_key] = ["ELL1"]
+    for name in (*_ORTHOMETRIC_KEYS, *_ORTHOMETRIC_TRUNCATION_KEYS):
+        for key in _present_spellings(par, name):
+            par.pop(key, None)
+    return par
+
+
 def _build_patch_plain(
     source_dict: Mapping[str, Any],
     converted_model: Any,
@@ -1503,6 +1569,12 @@ def _build_patch_plain(
 ) -> BinaryPatch:
     removed: list[str] = []
     for name in ("EPS1", "EPS2", "EPS1DOT", "EPS2DOT", "TASC"):
+        removed.extend(_present_spellings(source_dict, name))
+    # A spuriously ELL1H-labelled source (zero/absent amplitude, see
+    # `orthometric_shapiro_absent`) reaches the plain path carrying inert
+    # orthometric markers. DD has no use for them and §8.4 forbids them, so the
+    # patch drops every spelling that is present.
+    for name in (*_ORTHOMETRIC_KEYS, *_ORTHOMETRIC_TRUNCATION_KEYS):
         removed.extend(_present_spellings(source_dict, name))
 
     reemit_pb = _has_any(source_dict, ("PBDOT",))
@@ -2412,7 +2484,8 @@ def convert_shared_binary(
     # C1
     try:
         source_model = create_pint_model(
-            dict(reference_dict), ell1h_shapiro=ell1h_shapiro
+            _plain_source_dict(reference_dict) if plain else dict(reference_dict),
+            ell1h_shapiro=ell1h_shapiro,
         )
     except Exception as exc:
         raise BinaryConversionError(

@@ -1836,6 +1836,118 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# AEI-DR3 survey regressions (`bugs_2026-08-06_todo.md` B3 / B5)
+# ---------------------------------------------------------------------------
+
+
+def test_ddh_splice_honors_the_source_a1dot_spelling():
+    """B3: a source spelling ``XDOT`` must not gain a second ``A1DOT`` line.
+
+    ``source_model.as_parfile()`` re-emits the source spelling (PINT
+    ``use_alias``), so an alias-blind lookup in the DDH splice appends a rival
+    canonical line and PINT refuses to reload the result. MPTA DR2 J1435-6100
+    and J1525-5545 are the real cases.
+    """
+    par = _ell1_dict(
+        binary="ELL1H",
+        extra={
+            "H3": ["2.75e-6 1 5.7e-8"],
+            "STIG": ["0.87 1 0.01"],
+            "XDOT": ["1.2163770006801874e-14 1 8.46e-15"],
+        },
+    )
+    decision = _decide(par)
+    assert decision.outcome == "convert", decision.reason
+
+    patch, record = convert_shared_binary(
+        par,
+        decision,
+        pta_names=("PINT", "T2"),
+        policy=AlignmentPolicy(),
+        ell1h_shapiro="absorbed",
+    )
+    applied = copy.deepcopy(par)
+    apply_binary_patch(applied, patch, timing_package="pint")
+
+    a1dot_keys = [k for k in applied if k.upper() in ("A1DOT", "XDOT")]
+    assert len(a1dot_keys) == 1, a1dot_keys
+    # The result must survive the round trip that used to fail.
+    create_pint_model(_par_text_from_dict(applied))
+    assert record is not None
+
+
+def test_bare_ell1h_label_is_a_plain_ell1_par():
+    """B5: ``BINARY ELL1H`` with no amplitude is ELL1 with zero Shapiro.
+
+    NANOGrav 15y J1802-2124 ships ``BINARY ELL1H`` + ``NHARMS 7`` and nothing
+    else. Both engines deliver zero Shapiro delay from that, so the plain DD
+    target is exact; the orthometric gate must not claim it.
+    """
+    par = _ell1_dict(binary="ELL1H", extra={"NHARMS": ["7"]})
+
+    decision = _decide(par)
+
+    assert decision.source_family == "ELL1"
+    assert decision.outcome == "convert", decision.reason
+    assert decision.target_family == "DD"
+
+
+@pytest.mark.parametrize("h3", [None, "0.0", "0"])
+def test_bare_ell1h_label_variants(h3):
+    """Absent or explicitly-zero H3, with or without the harmonic count."""
+    extra = {"NHARMS": ["7"]}
+    if h3 is not None:
+        extra["H3"] = [h3]
+    par = _ell1_dict(binary="ELL1H", extra=extra)
+
+    assert _decide(par).source_family == "ELL1"
+
+
+def test_live_h3_still_routes_to_the_orthometric_gate():
+    """The B5 relaxation must not swallow a real H3-only par (Case D)."""
+    par = _ell1_dict(binary="ELL1H", extra={"H3": ["1.8e-7 1 5.4e-8"]})
+
+    decision = _decide(par)
+
+    assert decision.source_family == "ELL1H"
+    assert decision.outcome == "unsupported"
+    assert decision.reason == "ell1h_h3_only_underdetermined"
+
+
+def test_nharms_alone_does_not_make_a_plain_ell1_orthometric():
+    """A stray harmonic count on ``BINARY ELL1`` is inert, not an amplitude."""
+    par = _ell1_dict(binary="ELL1", extra={"NHARMS": ["7"]})
+
+    decision = _decide(par)
+
+    assert decision.source_family == "ELL1"
+    assert decision.outcome == "convert", decision.reason
+
+
+def test_bare_ell1h_conversion_drops_the_inert_markers():
+    """DD output must not keep ``NHARMS``/zero ``H3`` (§8.4 forbids them)."""
+    par = _ell1_dict(binary="ELL1H", extra={"NHARMS": ["7"], "H3": ["0.0"]})
+    decision = _decide(par)
+    assert decision.outcome == "convert", decision.reason
+
+    patch, _ = convert_shared_binary(
+        par,
+        decision,
+        pta_names=("PINT", "T2"),
+        policy=AlignmentPolicy(),
+        ell1h_shapiro="absorbed",
+    )
+    dicts = {"PINT": copy.deepcopy(par), "T2": copy.deepcopy(par)}
+    pre = {pta: _nonbinary_snapshot(d) for pta, d in dicts.items()}
+    for pkg, d in zip(("pint", "tempo2"), dicts.values()):
+        apply_binary_patch(d, patch, timing_package=pkg)
+
+    for d in dicts.values():
+        assert not [k for k in d if k.upper() in ("NHARM", "NHARMS", "H3")]
+    assert_postconditions(dicts, target_family="DD", pre_nonbinary=pre)
+
+
+# ---------------------------------------------------------------------------
 # Par-unit boundary regressions (`feature_par_units.md` §8, tests 9-15)
 # ---------------------------------------------------------------------------
 
