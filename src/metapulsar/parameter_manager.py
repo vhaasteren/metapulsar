@@ -48,6 +48,7 @@ UnsupportedPolicy = Literal["strip", "error"]
 BinaryConversionMode = Literal["auto", "off", "always"]
 UnsupportedBinaryPolicy = Literal["error", "keep"]
 H3OnlyPolicy = Literal["error", "sample_stigma"]
+MixedOrthometricSextetPolicy = Literal["warn_unfreeze", "error"]
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,12 @@ class AlignmentPolicy:
         h3_only: ELL1H H3-only handling (``error`` or ``sample_stigma``).
         stigma_central: Prior-central ς for ``h3_only='sample_stigma'``.
         stigma_provenance: Provenance string for ``stigma_central``.
+        mixed_orthometric_sextet: When an ELL1H par mixes free/frozen flags on
+            ``{A1, EPS1, EPS2, TASC, H3, ς}``, ``"warn_unfreeze"`` (default)
+            frees every present sextet member so the all-free conversion path
+            applies, and warns that the free subspace grew relative to the
+            release; ``"error"`` leaves the mixed flags and lets the §7.2 gate
+            refuse with ``unsupported_fit_pattern``.
     """
 
     unsupported: UnsupportedPolicy = "strip"
@@ -99,6 +106,7 @@ class AlignmentPolicy:
     h3_only: H3OnlyPolicy = "error"
     stigma_central: Optional[float] = None
     stigma_provenance: Optional[str] = None
+    mixed_orthometric_sextet: MixedOrthometricSextetPolicy = "warn_unfreeze"
 
     def __post_init__(self) -> None:
         if self.unsupported not in {"strip", "error"}:
@@ -159,6 +167,10 @@ class AlignmentPolicy:
         elif self.stigma_central is not None or self.stigma_provenance is not None:
             raise ValueError(
                 "stigma_central/stigma_provenance require h3_only='sample_stigma'"
+            )
+        if self.mixed_orthometric_sextet not in {"warn_unfreeze", "error"}:
+            raise ValueError(
+                "mixed_orthometric_sextet must be 'warn_unfreeze' or 'error'"
             )
 
 
@@ -1861,7 +1873,9 @@ class ParameterManager:
             assert_postconditions,
             convert_shared_binary,
             decide_binary_conversion,
+            prepare_mixed_orthometric_sextet,
             remediation_message,
+            _is_mixed_orthometric_sextet_refusal,
             _nonbinary_snapshot,
             _unsupported_message,
         )
@@ -1875,6 +1889,54 @@ class ParameterManager:
             policy=self.alignment_policy,
             span_mjd=self._tim_span_mjd(),
         )
+
+        detail = decision.warnings[0] if decision.warnings else ""
+        if _is_mixed_orthometric_sextet_refusal(decision):
+            if self.alignment_policy.mixed_orthometric_sextet == "error":
+                message = _unsupported_message(
+                    decision.reason,
+                    decision.scale,
+                    detail=detail,
+                    par=parfile_dicts[self.reference_pta],
+                    policy=self.alignment_policy,
+                )
+                # This policy is an explicit hard refusal; unlike the generic
+                # unsupported family policy, unsupported_binary="keep" must
+                # not downgrade it.
+                raise BinaryConversionError(message)
+
+            unfrozen = prepare_mixed_orthometric_sextet(
+                parfile_dicts,
+                policy=self.alignment_policy,
+                decision=decision,
+            )
+            if not unfrozen:  # pragma: no cover - decision/helper postcondition
+                raise BinaryConversionError(
+                    "mixed_orthometric_sextet preparation changed no parameters"
+                )
+            decision = decide_binary_conversion(
+                parfile_dicts,
+                reference_pta=self.reference_pta,
+                timing_packages=timing_packages,
+                combine_components=self.combine_components,
+                policy=self.alignment_policy,
+                span_mjd=self._tim_span_mjd(),
+            )
+            if decision.outcome != "convert":
+                raise BinaryConversionError(
+                    "mixed_orthometric_sextet postcondition failed: prepared "
+                    f"model resolved to {decision.outcome}/{decision.reason}"
+                )
+            self.logger.warning(
+                "Pulsar %s, reference PTA %s: mixed orthometric sextet; "
+                "unfreezing %s so ELL1H→DDH conversion can proceed. This "
+                "expands the free subspace relative to the release. Set "
+                "AlignmentPolicy(mixed_orthometric_sextet='error') to refuse "
+                "instead.",
+                self.pulsar_name or "(unknown)",
+                self.reference_pta,
+                ", ".join(unfrozen),
+            )
 
         if decision.outcome == "skip":
             self.last_binary_conversion_report = BinaryConversionReport(

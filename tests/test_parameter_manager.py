@@ -1783,10 +1783,15 @@ class TestAlignmentPolicy:
         assert policy.clock is None
         assert policy.bipm_version is None
         assert policy.ne_sw is None
+        assert policy.mixed_orthometric_sextet == "warn_unfreeze"
 
     def test_rejects_unknown_unsupported_policy(self):
         with pytest.raises(ValueError, match="strip.*error"):
             AlignmentPolicy(unsupported="keep")
+
+    def test_rejects_unknown_mixed_orthometric_sextet_policy(self):
+        with pytest.raises(ValueError, match="warn_unfreeze.*error"):
+            AlignmentPolicy(mixed_orthometric_sextet="keep")
 
     def test_rejects_negative_ne_sw(self):
         with pytest.raises(ValueError, match="finite non-negative"):

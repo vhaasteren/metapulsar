@@ -7,6 +7,7 @@ Table-driven acceptance tests T1–T21 and rev-2 T30–T45 from
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from io import StringIO
 from pathlib import Path
@@ -20,7 +21,9 @@ from metapulsar.binary_family_convert import (
     _absorbed_shapiro_to_full,
     _absorbed_to_intrinsic,
     _convert_ell1h_block,
+    _fit_flag,
     _intrinsic_dots,
+    _mixed_orthometric_sextet_detail,
     _model_value,
     _nonbinary_snapshot,
     _shapiro_present,
@@ -31,6 +34,7 @@ from metapulsar.binary_family_convert import (
     convert_shared_binary,
     decide_binary_conversion,
     metadata_from_report,
+    prepare_mixed_orthometric_sextet,
     remediation_message,
     run_fidelity_check,
 )
@@ -693,6 +697,205 @@ def test_t17_fit_patterns():
     free_dots["EPS2DOT"] = ["-2e-14 1"]
     d = _decide(free_dots)
     assert d.outcome == "convert"
+
+
+def _ppta_mixed_sextet_par():
+    """Kepler free, Shapiro frozen — PPTA DR3 J1545-4550 house style."""
+    par = _ell1_dict(
+        a1=J2145["A1"],
+        eps1=J2145["EPS1"],
+        eps2=J2145["EPS2"],
+        free=True,
+        binary="ELL1H",
+    )
+    par["H3"] = [f"{J2145['H3']} 0 1e-10"]
+    par["STIG"] = ["0.5 0 0.01"]
+    return par
+
+
+def test_mixed_orthometric_sextet_error_policy_refuses():
+    par = _ppta_mixed_sextet_par()
+    dicts, pkgs = _two_pta(par)
+    policy = AlignmentPolicy(
+        binary_conversion="always", mixed_orthometric_sextet="error"
+    )
+    d = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages=pkgs,
+        combine_components=["binary"],
+        policy=policy,
+    )
+    assert d.outcome == "unsupported"
+    assert d.reason == "unsupported_fit_pattern"
+    assert "mixed orthometric sextet" in (d.warnings[0] if d.warnings else "")
+    assert prepare_mixed_orthometric_sextet(dicts, policy=policy, decision=d) == ()
+    assert _mixed_orthometric_sextet_detail(dicts["PINT"]) is not None
+
+
+def test_mixed_orthometric_sextet_warn_unfreeze_then_converts():
+    par = _ppta_mixed_sextet_par()
+    dicts, pkgs = _two_pta(par)
+    policy = AlignmentPolicy(binary_conversion="always")
+    d = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages=pkgs,
+        combine_components=["binary"],
+        policy=policy,
+    )
+    assert d.outcome == "unsupported"
+    unfrozen = prepare_mixed_orthometric_sextet(dicts, policy=policy, decision=d)
+    assert unfrozen == ("H3", "STIGMA")
+    for pta_par in dicts.values():
+        assert _fit_flag(pta_par, "H3")
+        assert _fit_flag(pta_par, "STIG", "STIGMA")
+        assert _mixed_orthometric_sextet_detail(pta_par) is None
+    d = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages=pkgs,
+        combine_components=["binary"],
+        policy=policy,
+    )
+    assert d.outcome == "convert"
+    assert d.target_family == "DDH"
+
+
+@slow
+def test_mixed_orthometric_sextet_unfreeze_converts_with_fidelity():
+    par = _ppta_mixed_sextet_par()
+    dicts, _pkgs = _two_pta(par)
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages={"PINT": "pint", "T2": "tempo2"},
+        combine_components=["binary"],
+        policy=policy,
+    )
+    assert decision.outcome == "unsupported"
+    prepare_mixed_orthometric_sextet(dicts, policy=policy, decision=decision)
+    decision = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages={"PINT": "pint", "T2": "tempo2"},
+        combine_components=["binary"],
+        policy=policy,
+    )
+    assert decision.outcome == "convert"
+    patch, record = convert_shared_binary(
+        dicts["PINT"],
+        decision,
+        pta_names=("PINT", "T2"),
+        policy=policy,
+        ell1h_shapiro="absorbed",
+    )
+    assert patch.binary_value == "DDH"
+    assert "H3" in record.target_free_params
+    assert "STIGMA" in record.target_free_params
+    assert record.fidelity.total_max_abs_s < 2e-9
+
+
+def test_mixed_orthometric_sextet_unfreeze_preserves_bare_uncertainties():
+    par = _ppta_mixed_sextet_par()
+    # Valid PINT syntax: VALUE UNCERTAINTY, with no explicit fit flag.
+    par["H3"] = [f"{J2145['H3']} 1e-10"]
+    par["STIG"] = ["0.5 0.01"]
+    dicts, pkgs = _two_pta(par)
+    policy = AlignmentPolicy(binary_conversion="always")
+    decision = decide_binary_conversion(
+        dicts,
+        reference_pta="PINT",
+        timing_packages=pkgs,
+        combine_components=["binary"],
+        policy=policy,
+    )
+    prepare_mixed_orthometric_sextet(dicts, policy=policy, decision=decision)
+    assert dicts["PINT"]["H3"] == [f"{J2145['H3']} 1 1e-10"]
+    assert dicts["PINT"]["STIG"] == ["0.5 1 0.01"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "a1", "expected_reason"),
+    [
+        (AlignmentPolicy(binary_conversion="off"), J2145["A1"], "policy_off"),
+        (AlignmentPolicy(), 0.1, "below_threshold"),
+    ],
+)
+def test_manager_skip_does_not_unfreeze_mixed_sextet(
+    policy, a1, expected_reason, caplog
+):
+    par = _ppta_mixed_sextet_par()
+    par["A1"] = [f"{a1} 1 1e-8"]
+    dicts, _ = _two_pta(par)
+    before = copy.deepcopy(dicts)
+    pm = ParameterManager(
+        file_data={
+            "PINT": {"timing_package": "pint"},
+            "T2": {"timing_package": "tempo2"},
+        },
+        combine_components=["binary"],
+        pulsar_name="J1545-4550",
+        alignment_policy=policy,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        pm._maybe_convert_shared_binary(dicts)
+
+    assert dicts == before
+    assert pm.last_binary_conversion_report.decision.reason == expected_reason
+    assert not any("mixed orthometric sextet" in r.message for r in caplog.records)
+
+
+def test_manager_mixed_sextet_error_is_not_downgraded_by_keep():
+    par = _ppta_mixed_sextet_par()
+    dicts, _ = _two_pta(par)
+    before = copy.deepcopy(dicts)
+    pm = ParameterManager(
+        file_data={
+            "PINT": {"timing_package": "pint"},
+            "T2": {"timing_package": "tempo2"},
+        },
+        combine_components=["binary"],
+        pulsar_name="J1545-4550",
+        alignment_policy=AlignmentPolicy(
+            binary_conversion="always",
+            mixed_orthometric_sextet="error",
+            unsupported_binary="keep",
+        ),
+    )
+
+    with pytest.raises(BinaryConversionError, match="mixed orthometric sextet"):
+        pm._maybe_convert_shared_binary(dicts)
+    assert dicts == before
+
+
+@slow
+def test_manager_warns_with_pulsar_and_converts_mixed_sextet(caplog):
+    par = _ppta_mixed_sextet_par()
+    dicts, _ = _two_pta(par)
+    pm = ParameterManager(
+        file_data={
+            "PINT": {"timing_package": "pint"},
+            "T2": {"timing_package": "tempo2"},
+        },
+        combine_components=["binary"],
+        pulsar_name="J1545-4550",
+        alignment_policy=AlignmentPolicy(binary_conversion="always"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        pm._maybe_convert_shared_binary(dicts)
+
+    messages = [
+        r.message for r in caplog.records if "mixed orthometric sextet" in r.message
+    ]
+    assert len(messages) == 1
+    assert "J1545-4550" in messages[0]
+    assert "PINT" in messages[0]
+    assert "H3, STIGMA" in messages[0]
+    assert all(par["BINARY"][0].split()[0] == "DDH" for par in dicts.values())
 
 
 # ---------------------------------------------------------------------------

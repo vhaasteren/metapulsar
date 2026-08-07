@@ -589,6 +589,124 @@ def _compute_scale_gate(
 # ---------------------------------------------------------------------------
 
 
+def _orthometric_sextet_members(
+    par: Mapping[str, Any],
+) -> list[tuple[str, Optional[str], bool]]:
+    """Return ``(canonical, dict_key_or_None, free)`` for the orthometric sextet.
+
+    The ratio slot is ``STIGMA`` (any spelling) when present, else ``H4``.
+    Absent members keep ``dict_key is None`` and count as frozen.
+    """
+    members: list[tuple[str, Optional[str], bool]] = []
+    for name in ("A1", "EPS1", "EPS2", "TASC", "H3"):
+        key = _find_key(par, name)
+        members.append((name, key, _fit_flag(par, name)))
+    ratio_key = _find_key(par, "STIGMA", "STIG", "VARSIGMA") or _find_key(par, "H4")
+    if ratio_key is not None:
+        canon = _canon_key(ratio_key)
+        members.append((canon, ratio_key, _fit_flag(par, ratio_key)))
+    return members
+
+
+def _mixed_orthometric_sextet_detail(par: Mapping[str, Any]) -> Optional[str]:
+    """Detail string when the orthometric sextet mixes free/frozen flags."""
+    members = _orthometric_sextet_members(par)
+    flags = [free for _, _, free in members]
+    if len(set(flags)) <= 1:
+        return None
+    detail = " ".join(f"{name}={int(free)}" for name, _, free in members)
+    return f"mixed orthometric sextet flags ({detail})"
+
+
+def _set_fit_flag(par: dict, *names: str, free: bool = True) -> bool:
+    """Set the fit-flag token on a present parameter. Return True if changed."""
+    key = _find_key(par, *names)
+    if key is None:
+        return False
+    entries = par[key]
+    if not entries:
+        return False
+    tokens = str(entries[0] if isinstance(entries, list) else entries).split()
+    if not tokens:
+        return False
+    flag = "1" if free else "0"
+    if len(tokens) == 1:
+        tokens.append(flag)
+        changed = True
+    elif tokens[1] in {"0", "1"}:
+        if tokens[1] == flag:
+            return False
+        tokens[1] = flag
+        changed = True
+    else:
+        # VALUE UNCERTAINTY has no explicit fit flag. Insert one rather than
+        # overwriting the uncertainty token.
+        tokens.insert(1, flag)
+        changed = True
+    new_line = " ".join(tokens)
+    if isinstance(entries, list):
+        par[key] = [new_line, *entries[1:]]
+    else:
+        par[key] = new_line
+    return changed
+
+
+def _unfreeze_orthometric_sextet(par: dict) -> tuple[str, ...]:
+    """Set fit flag ``1`` on every present orthometric-sextet member."""
+    unfrozen: list[str] = []
+    for name, key, free in _orthometric_sextet_members(par):
+        if key is None or free:
+            continue
+        if _set_fit_flag(par, key, free=True):
+            unfrozen.append(name)
+    return tuple(unfrozen)
+
+
+def _is_mixed_orthometric_sextet_refusal(
+    decision: BinaryConversionDecision,
+) -> bool:
+    """Whether ``decision`` is precisely the B6 mixed-sextet refusal."""
+    detail = decision.warnings[0] if decision.warnings else ""
+    return (
+        decision.outcome == "unsupported"
+        and decision.reason == "unsupported_fit_pattern"
+        and decision.source_family == "ELL1H"
+        and detail.startswith("mixed orthometric sextet flags")
+    )
+
+
+def prepare_mixed_orthometric_sextet(
+    parfile_dicts: Mapping[str, dict],
+    *,
+    policy: "AlignmentPolicy",
+    decision: BinaryConversionDecision,
+) -> tuple[str, ...]:
+    """Unfreeze the mixed sextet identified by a conversion decision.
+
+    This preparation is deliberately decision-driven: D1–D7 and D5 have
+    already run, and mutation is allowed only when the sole refusal is the
+    orthometric fit pattern. Returns the canonical names that were unfrozen
+    (empty when the decision or policy does not authorize the workaround).
+
+    TODO(B6): replace this workaround with the proper §7.2 implication
+    ``free(H3) or free(ς) ⇒ free(A1) and free(triple)``, which admits the
+    Kepler-free/Shapiro-frozen PPTA house style without expanding the free
+    subspace. See ``bugs_2026-08-06_todo.md`` B6 "Proper long-term fix".
+    """
+    if not _is_mixed_orthometric_sextet_refusal(decision):
+        return ()
+    if policy.mixed_orthometric_sextet == "error":
+        return ()
+
+    # D5 already proved the binary blocks identical. Collect a union anyway so
+    # the warning stays accurate if engine-native aliases differ.
+    unfrozen: dict[str, None] = {}
+    for par in parfile_dicts.values():
+        for name in _unfreeze_orthometric_sextet(par):
+            unfrozen.setdefault(name, None)
+    return tuple(unfrozen)
+
+
 def _check_fit_pattern(par: Mapping[str, Any], *, orthometric: bool) -> Optional[str]:
     """Return None if OK, else a detail string for unsupported_fit_pattern."""
     free_eps1 = _fit_flag(par, "EPS1")
@@ -623,18 +741,16 @@ def _check_fit_pattern(par: Mapping[str, Any], *, orthometric: bool) -> Optional
         return "free PB requires a free Laplace triple"
 
     if orthometric:
-        # Coupled sextet: A1, EPS1, EPS2, TASC, H3, STIGMA-or-H4
-        stigma_key = _find_key(par, "STIGMA", "STIG", "VARSIGMA")
-        h4_key = _find_key(par, "H4")
-        ratio_key = stigma_key or h4_key
-        names = ["A1", "EPS1", "EPS2", "TASC", "H3"]
-        flags = [_fit_flag(par, n) for n in names]
-        if ratio_key is not None:
-            flags.append(_fit_flag(par, ratio_key))
-            names.append(ratio_key)
-        if len(set(flags)) > 1:
-            detail = " ".join(f"{n}={int(f)}" for n, f in zip(names, flags))
-            return f"mixed orthometric sextet flags ({detail})"
+        # Coupled sextet: A1, EPS1, EPS2, TASC, H3, STIGMA-or-H4.
+        # TODO(B6): the equality rule below is stricter than the physics. The
+        # proper contract is the implication
+        # ``free(H3) or free(ς) ⇒ free(A1) and free(triple)``. Until that
+        # §7.2 amendment lands, ``prepare_mixed_orthometric_sextet`` unfreezes
+        # mixed sextets (default policy) so this gate only sees all-free /
+        # all-frozen after preparation.
+        detail = _mixed_orthometric_sextet_detail(par)
+        if detail is not None:
+            return detail
     return None
 
 
