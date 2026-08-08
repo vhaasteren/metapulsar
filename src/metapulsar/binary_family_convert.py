@@ -944,12 +944,16 @@ def decide_binary_conversion(
     combine_components: Sequence[str],
     policy: "AlignmentPolicy",
     span_mjd: Optional[tuple[float, float]] = None,
+    force_mixed_engine: bool = False,
 ) -> BinaryConversionDecision:
     """Pure classification + scale gate. No mutation, no I/O, no model building.
 
     ``span_mjd`` is an optional ``(mjd_min, mjd_max)`` from tim metadata used
     when the reference par lacks ``START``/``FINISH``. Par keywords win when
     both are present.
+
+    ``force_mixed_engine`` bypasses the D3 single-engine skip (used when
+    ``AlignmentPolicy.convention_profile="always"``).
     """
     # D1
     if policy.binary_conversion == "off":
@@ -973,7 +977,7 @@ def decide_binary_conversion(
 
     # D3
     packages = {normalize_timing_package(p) for p in timing_packages.values()}
-    if not {"pint", "tempo2"}.issubset(packages):
+    if not force_mixed_engine and not {"pint", "tempo2"}.issubset(packages):
         return BinaryConversionDecision(
             outcome="skip",
             reason="single_engine_stack",

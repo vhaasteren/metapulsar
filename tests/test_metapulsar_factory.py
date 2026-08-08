@@ -1221,3 +1221,165 @@ class TestAlignmentPolicyForwarding:
 
         for func in (create_metapulsar, create_all_metapulsars):
             assert "alignment_policy" in inspect.signature(func).parameters
+            assert "combination_output_dir" in inspect.signature(func).parameters
+
+
+class TestCombinationOutputDir:
+    """Factory guards and smoke for ``combination_output_dir``."""
+
+    def setup_method(self):
+        self.factory = MetaPulsarFactory()
+
+    def test_requires_shared_strategy(self, tmp_path):
+        with pytest.raises(ValueError, match="combination_strategy='shared'"):
+            self.factory.create_metapulsar(
+                file_data={
+                    "pta_a": [
+                        {
+                            "par": tmp_path / "a.par",
+                            "tim": tmp_path / "a.tim",
+                            "par_content": "PSR J0000+0000\n",
+                            "timing_package": "pint",
+                        }
+                    ]
+                },
+                combination_strategy="per_pta",
+                canonicalize_tim=True,
+                combination_output_dir=tmp_path / "out",
+            )
+
+    def test_requires_canonicalize_tim(self, tmp_path):
+        with pytest.raises(ValueError, match="canonicalize_tim=True"):
+            self.factory.create_metapulsar(
+                file_data={
+                    "pta_a": [
+                        {
+                            "par": tmp_path / "a.par",
+                            "tim": tmp_path / "a.tim",
+                            "par_content": "PSR J0000+0000\n",
+                            "timing_package": "pint",
+                        }
+                    ]
+                },
+                combination_strategy="shared",
+                canonicalize_tim=False,
+                combination_output_dir=tmp_path / "out",
+            )
+
+    @pytest.mark.unit
+    def test_combination_output_dir_writes_self_contained_tree(self, tmp_path):
+        import re
+
+        from metapulsar.parameter_manager import AlignmentPolicy
+        from metapulsar.metapulsar_factory import create_metapulsar
+
+        fixture_par = (
+            Path(__file__).parent / "fixtures" / "sample_parfiles" / "simple.par"
+        )
+        par_text = fixture_par.read_text(encoding="utf-8") + (
+            "JUMP -sys TEST 0 1\n" "FD1 1.2D-03 1 3.4D-04\n"
+        )
+        par_path = tmp_path / "pta_a.par"
+        tim_path = tmp_path / "pta_a.tim"
+        par_path.write_text(par_text, encoding="utf-8")
+        tim_path.write_text(
+            "FORMAT 1\n"
+            "test1 1400.0 54510.0 1.5 g -sys TEST\n"
+            "test2 1400.0 54520.0 1.5 g -sys TEST\n",
+            encoding="utf-8",
+        )
+        out = tmp_path / "combined"
+        mp = create_metapulsar(
+            file_data={
+                "pta_a": [
+                    {
+                        "par": par_path,
+                        "tim": tim_path,
+                        "par_content": par_text,
+                        "timing_package": "pint",
+                    }
+                ]
+            },
+            combination_strategy="shared",
+            canonicalize_tim=True,
+            use_pulse_numbers="no",
+            alignment_policy=AlignmentPolicy(
+                convention_profile="always", binary_conversion="off"
+            ),
+            combination_output_dir=out,
+        )
+        assert mp.combination_write_result is not None
+        result = mp.combination_write_result
+        assert result.par_path.is_file()
+        assert result.tim_path.is_file()
+        tim_d = out / f"{result.par_path.stem}.tim.d"
+        assert tim_d.is_dir()
+        include_targets = list(tim_d.glob("*.tim"))
+        assert len(include_targets) == 1
+        comb_tim = result.tim_path.read_text(encoding="utf-8")
+        assert "FORMAT 1" in comb_tim
+        assert "INCLUDE" in comb_tim
+        assert str(tim_d.name) in comb_tim
+        comb_par = result.par_path.read_text(encoding="utf-8")
+        assert "FDJUMP1 -pta pta_a" in comb_par
+        assert "1.2E-03" in comb_par
+        assert not re.search(r"^JUMP\s+-pta\b", comb_par, re.M)
+        assert re.search(r"^TRACK\s+-2\b", comb_par, re.M)
+
+    @pytest.mark.unit
+    def test_always_profile_single_tempo2_exported_par_has_tdb(self, tmp_path):
+        """§5.3: single tempo2 PTA with convention_profile=always → UNITS TDB."""
+        import re
+
+        from metapulsar.parameter_manager import AlignmentPolicy
+        from metapulsar.metapulsar_factory import create_metapulsar
+
+        body = (
+            Path(__file__).parent / "fixtures" / "sample_parfiles" / "simple.par"
+        ).read_text(encoding="utf-8")
+        par_path = tmp_path / "pta_a.par"
+        tim_path = tmp_path / "pta_a.tim"
+        par_path.write_text(body, encoding="utf-8")
+        tim_path.write_text(
+            "FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
+            encoding="utf-8",
+        )
+        file_data = {
+            "pta_a": [
+                {
+                    "par": par_path,
+                    "tim": tim_path,
+                    "par_content": body,
+                    "timing_package": "tempo2",
+                }
+            ]
+        }
+        par_out = tmp_path / "par"
+
+        with (
+            patch.object(
+                MetaPulsarFactory,
+                "_create_pulsar_objects",
+                return_value=({"pta_a": Mock()}, {}),
+            ),
+            patch("metapulsar.metapulsar_factory.MetaPulsar") as mock_mp,
+        ):
+            mock_mp.return_value = Mock(
+                binary_conversion_report=None, combination_write_result=None
+            )
+            create_metapulsar(
+                file_data=file_data,
+                combination_strategy="shared",
+                alignment_policy=AlignmentPolicy(
+                    convention_profile="always", binary_conversion="off"
+                ),
+                canonicalize_tim=True,
+                use_pulse_numbers="no",
+                parfile_output_dir=par_out,
+            )
+
+        shared = next(par_out.glob("*_shared_*.par"))
+        text = shared.read_text(encoding="utf-8")
+        assert re.search(r"^UNITS\s+TDB\b", text, re.M)
+        assert re.search(r"^TIMEEPH\s+FB90\b", text, re.M)
+        assert re.search(r"^T2CMETHOD\s+IAU2000B\b", text, re.M)

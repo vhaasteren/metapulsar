@@ -6,6 +6,7 @@ for multi-PTA pulsar data.
 """
 
 import logging
+import re
 import pytest
 import tempfile
 from io import StringIO
@@ -1783,11 +1784,16 @@ class TestAlignmentPolicy:
         assert policy.clock is None
         assert policy.bipm_version is None
         assert policy.ne_sw is None
+        assert policy.convention_profile == "auto"
         assert policy.mixed_orthometric_sextet == "warn_unfreeze"
 
     def test_rejects_unknown_unsupported_policy(self):
         with pytest.raises(ValueError, match="strip.*error"):
             AlignmentPolicy(unsupported="keep")
+
+    def test_rejects_unknown_convention_profile(self):
+        with pytest.raises(ValueError, match="auto.*always"):
+            AlignmentPolicy(convention_profile="forced")
 
     def test_rejects_unknown_mixed_orthometric_sextet_policy(self):
         with pytest.raises(ValueError, match="warn_unfreeze.*error"):
@@ -2880,3 +2886,91 @@ class TestEll1hShapiroMode:
         mock_create.assert_called_once_with(
             "PSR J0000+0000\n", ell1h_shapiro="absorbed"
         )
+
+    def test_always_profile_forces_absorbed(self):
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {
+                    "timing_package": "tempo2",
+                    "par_content": EQUATORIAL_BODY + "UNITS TDB\n",
+                }
+            },
+            alignment_policy=AlignmentPolicy(convention_profile="always"),
+        )
+        assert pm.ell1h_shapiro == "absorbed"
+
+
+class TestAlwaysConventionProfile:
+    """``convention_profile='always'`` forces the mixed-engine common surface."""
+
+    def test_always_profile_single_pta_tempo2_gets_units_tdb(self, tmp_path):
+        pm = ParameterManager(
+            file_data={
+                "pta_a": {
+                    "timing_package": "tempo2",
+                    "par_content": (
+                        EQUATORIAL_BODY
+                        + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n"
+                        + "TIMEEPH IF99\nCORRECT_TROPOSPHERE Y\n"
+                    ),
+                    "par": None,
+                }
+            },
+            output_dir=tmp_path,
+            pulsar_name="J1857+0943",
+            alignment_policy=AlignmentPolicy(
+                convention_profile="always", binary_conversion="off"
+            ),
+        )
+        written = pm.make_parfiles_shared()
+        text = Path(written["pta_a"]).read_text(encoding="utf-8")
+        assert re.search(r"^UNITS\s+TDB\b", text, re.M)
+        assert re.search(r"^TIMEEPH\s+FB90\b", text, re.M)
+        assert re.search(r"^T2CMETHOD\s+IAU2000B\b", text, re.M)
+
+    def test_always_profile_single_pta_tcb_is_converted(self):
+        text = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n"
+        pm = ParameterManager(
+            file_data={"A": {"timing_package": "tempo2", "par_content": text}},
+            alignment_policy=AlignmentPolicy(convention_profile="always"),
+        )
+
+        def as_tdb(content):
+            return content.replace("UNITS TCB", "UNITS TDB")
+
+        with patch.object(pm, "_convert_tempo2_to_tdb", side_effect=as_tdb) as convert:
+            converted = pm._convert_units_if_needed({"A": text})
+
+        convert.assert_called_once()
+        assert parse_parfile(StringIO(converted["A"]))["UNITS"] == ["TDB"]
+
+    def test_always_profile_pint_only_multi_pta_gets_mixed_switches(self, tmp_path):
+        body = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TDB\n"
+        pm = ParameterManager(
+            file_data={
+                "A": {"timing_package": "pint", "par_content": body, "par": None},
+                "B": {"timing_package": "pint", "par_content": body, "par": None},
+            },
+            output_dir=tmp_path,
+            pulsar_name="J1857+0943",
+            alignment_policy=AlignmentPolicy(
+                convention_profile="always", binary_conversion="off"
+            ),
+        )
+        written = pm.make_parfiles_shared()
+        for path in written.values():
+            text = Path(path).read_text(encoding="utf-8")
+            assert re.search(r"^CORRECT_TROPOSPHERE\s+N\b", text, re.M)
+            assert re.search(r"^PLANET_SHAPIRO\s+N\b", text, re.M)
+            assert re.search(r"^T2CMETHOD\s+IAU2000B\b", text, re.M)
+
+    def test_auto_profile_preserves_single_pta_skip(self):
+        text = EQUATORIAL_BODY + "EPHEM DE440\nCLK TT(BIPM2019)\nUNITS TCB\n"
+        pm = ParameterManager(
+            file_data={"A": {"timing_package": "tempo2", "par_content": text}},
+            alignment_policy=AlignmentPolicy(convention_profile="auto"),
+        )
+        with patch.object(pm, "_convert_tempo2_to_tdb") as convert_tempo2:
+            converted = pm._convert_units_if_needed({"A": text})
+        assert converted == {"A": text}
+        convert_tempo2.assert_not_called()

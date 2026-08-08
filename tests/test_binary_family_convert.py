@@ -284,6 +284,16 @@ def test_t6_single_engine(pkgs):
     assert d.reason == "single_engine_stack"
 
 
+@pytest.mark.parametrize("pkgs", [("pint", "pint"), ("tempo2", "tempo2")])
+def test_t6_force_mixed_engine_bypasses_single_engine_skip(pkgs):
+    d = _decide(
+        _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0),
+        timing_packages={"PINT": pkgs[0], "T2": pkgs[1]},
+        force_mixed_engine=True,
+    )
+    assert d.reason != "single_engine_stack"
+
+
 def test_t7_not_ell1_family():
     par = _ell1_dict()
     par["BINARY"] = ["DD"]

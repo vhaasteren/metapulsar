@@ -317,6 +317,32 @@ class TestPintOnlyReleaseShape:
             assert "NE_SW" not in par, pta_name
 
 
+class TestPintOnlyReleaseShapeAlwaysProfile:
+    """PINT-only multi-PTA with ``convention_profile='always'`` gets mixed switches."""
+
+    @pytest.fixture
+    def aligned(self, tmp_path):
+        file_data = build_file_data(
+            ("pta_a", "pint_only_a", "pint"),
+            ("pta_b", "pint_only_b", "pint"),
+        )
+        return align(
+            file_data,
+            tmp_path,
+            policy=AlignmentPolicy(
+                binary_conversion="off", convention_profile="always"
+            ),
+        )
+
+    def test_mixed_engine_switches_are_written(self, aligned):
+        parsed, _ = aligned
+        for pta_name, par in parsed.items():
+            assert first(par["CORRECT_TROPOSPHERE"]) == "N", pta_name
+            assert first(par["PLANET_SHAPIRO"]) == "N", pta_name
+            assert first(par["T2CMETHOD"]) == "IAU2000B", pta_name
+            assert first(par["TIMEEPH"]) == "FB90", pta_name
+
+
 class TestBinaryShapes:
     """Binary families pass through their declared engine unchanged in family."""
 

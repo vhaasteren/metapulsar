@@ -49,6 +49,7 @@ BinaryConversionMode = Literal["auto", "off", "always"]
 UnsupportedBinaryPolicy = Literal["error", "keep"]
 H3OnlyPolicy = Literal["error", "sample_stigma"]
 MixedOrthometricSextetPolicy = Literal["warn_unfreeze", "error"]
+ConventionProfile = Literal["auto", "always"]
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,11 @@ class AlignmentPolicy:
         clock: Override the reference PTA's ``CLOCK``/``CLK``.
         bipm_version: Year used to resolve a bare ``TT(BIPM)`` realization.
         ne_sw: Override the resolved constant solar-wind density in cm^-3.
+        convention_profile: ``"auto"`` (default) keeps today's gated alignment.
+            ``"always"`` forces the validated mixed-engine deterministic surface
+            and TDB normalization even when only one PTA or one timing package
+            is present, so a single-PTA product can be PINT↔Tempo2 round-tripped
+            without a donor leg.
         binary_conversion: Gated ELL1-family → DD/DDH conversion mode.
         binary_conversion_threshold_s: Scale-gate threshold in seconds.
         unsupported_binary: ``error``/``keep`` when the gate fires on an
@@ -96,6 +102,7 @@ class AlignmentPolicy:
     clock: Optional[str] = None
     bipm_version: Optional[int] = None
     ne_sw: Optional[float] = None
+    convention_profile: ConventionProfile = "auto"
 
     # --- gated binary-family conversion ---
     binary_conversion: BinaryConversionMode = "auto"
@@ -111,6 +118,8 @@ class AlignmentPolicy:
     def __post_init__(self) -> None:
         if self.unsupported not in {"strip", "error"}:
             raise ValueError("unsupported must be 'strip' or 'error'")
+        if self.convention_profile not in {"auto", "always"}:
+            raise ValueError("convention_profile must be 'auto' or 'always'")
         if self.bipm_version is not None and (
             isinstance(self.bipm_version, bool)
             or not isinstance(self.bipm_version, int)
@@ -492,13 +501,19 @@ class ParameterManager:
         self._pint_models_cache: Optional[Dict[str, TimingModel]] = None
         self.last_binary_conversion_report = None
 
+    def _force_full_convention_profile(self) -> bool:
+        return self.alignment_policy.convention_profile == "always"
+
     @property
     def ell1h_shapiro(self) -> Ell1hShapiroMode:
         """ELL1H orthometric Shapiro convention used for every PINT model build.
 
-        ``"absorbed"`` on mixed PINT+Tempo2 stacks so temporary models here match
-        the factory's materialization; ``"full"`` (PINT's default) otherwise.
+        ``"absorbed"`` on mixed PINT+Tempo2 stacks (and when
+        ``convention_profile="always"``) so temporary models here match the
+        factory's materialization; ``"full"`` (PINT's default) otherwise.
         """
+        if self._force_full_convention_profile():
+            return "absorbed"
         return resolve_ell1h_shapiro_mode(
             self._get_timing_package(pta_name) for pta_name in self.file_data
         )
@@ -598,6 +613,14 @@ class ParameterManager:
         self._clear_pint_models_cache()
         # A1: never let a stale conversion report survive manager reuse.
         self.last_binary_conversion_report = None
+
+        if self._force_full_convention_profile():
+            packages = sorted(self._normalized_timing_packages())
+            self.logger.info(
+                "Convention profile forced (convention_profile=always); applying "
+                f"mixed-engine common surface to {len(self.file_data)} PTA(s), "
+                f"packages={packages}"
+            )
 
         # 1. Align the orbital chart, then parse into dictionaries
         parfile_dicts = {
@@ -710,22 +733,26 @@ class ParameterManager:
     ) -> None:
         """Reject ambiguous models, then prepare the shared deterministic surface.
 
-        Only multi-PTA combinations are rewritten: a single-PTA pulsar has no
-        second engine or reference to align against, so its native deterministic
-        model is preserved. Invalid orthometric parameter combinations are still
-        rejected early for every ``consistent`` invocation.
+        Only multi-PTA combinations are rewritten under ``convention_profile="auto"``:
+        a single-PTA pulsar has no second engine or reference to align against, so
+        its native deterministic model is preserved. With
+        ``convention_profile="always"``, TEMPO1 expand and unsupported stripping
+        still run for a single PTA (treating the stack as mixed for
+        ``_is_mixed_unsafe`` keys). Invalid orthometric parameter combinations
+        are always rejected early.
         """
         for pta_name, par in parfile_dicts.items():
             self._reject_orthometric_conflict(pta_name, par)
 
-        if len(parfile_dicts) < 2:
+        force = self._force_full_convention_profile()
+        if len(parfile_dicts) < 2 and not force:
             self.logger.info("Common-surface preparation skipped (reason=single_pta)")
             return
 
         normalized_packages = self._normalized_timing_packages()
         has_pint = "pint" in normalized_packages
         has_tempo2 = "tempo2" in normalized_packages
-        mixed = self._is_cross_engine_mix(normalized_packages)
+        mixed = force or self._is_cross_engine_mix(normalized_packages)
 
         for pta_name, par in parfile_dicts.items():
             filled = expand_tempo1(par)
@@ -964,19 +991,22 @@ class ParameterManager:
         Mixed PINT/Tempo2 stacks always use explicit TDB. Homogeneous
         single-engine stacks preserve a common native timescale, while
         genuinely mixed TCB/TDB inputs are normalized to TDB. A single PTA
-        likewise preserves its native timescale.
+        likewise preserves its native timescale under ``convention_profile="auto"``.
+        With ``convention_profile="always"``, every PTA is normalized to
+        explicit ``UNITS TDB``.
         """
+        force = self._force_full_convention_profile()
         file_units = {
             pta_name: self._effective_units_for_content(pta_name, content)
             for pta_name, content in parfile_contents.items()
         }
-        if len(parfile_contents) <= 1:
+        if not force and len(parfile_contents) <= 1:
             self.logger.info("Unit normalization skipped (reason=single_pta)")
             return parfile_contents
 
         unique_units = set(file_units.values())
         mixed_engines = self._is_cross_engine_mix(self._normalized_timing_packages())
-        if len(unique_units) == 1 and not mixed_engines:
+        if not force and len(unique_units) == 1 and not mixed_engines:
             self.logger.info(
                 "Unit normalization skipped "
                 "(reason=homogeneous_single_engine_timescale)"
@@ -1430,20 +1460,23 @@ class ParameterManager:
     ) -> None:
         """Apply gated convention rules across shared parfile dictionaries."""
         # Astrometry validation is local to each model and must still run for a
-        # single PTA, even though cross-PTA convention alignment is skipped.
+        # single PTA, even though cross-PTA convention alignment is skipped under
+        # convention_profile="auto".
         convention_states = self._collect_convention_states(parfile_dicts)
-        if len(parfile_dicts) == 1:
+        force = self._force_full_convention_profile()
+        if len(parfile_dicts) == 1 and not force:
             self.logger.info("Shared convention rules skipped (reason=single_pta)")
             return
 
         ephem, clock = self._resolve_reference_conventions(reference_dict)
 
-        # Multi-PTA combinations share the reference ephemeris and clock.
+        # Multi-PTA combinations (and forced full-profile stacks) share the
+        # reference ephemeris and clock.
         self._align_reference_conventions(parfile_dicts, ephem, clock)
 
         normalized_packages = self._normalized_timing_packages()
 
-        if self._is_cross_engine_mix(normalized_packages):
+        if force or self._is_cross_engine_mix(normalized_packages):
             self._apply_cross_engine_rules(parfile_dicts, convention_states)
         elif normalized_packages == {"pint"}:
             self.logger.info(
@@ -1482,7 +1515,9 @@ class ParameterManager:
         if not ecl_values:
             return None
 
-        if self._is_cross_engine_mix(normalized_packages):
+        if self._force_full_convention_profile() or self._is_cross_engine_mix(
+            normalized_packages
+        ):
             # PINT and tempo2 agree best for ecliptic pars under IERS2003.
             return "IERS2003"
         if len(ecl_values) <= 1:
@@ -1503,7 +1538,7 @@ class ParameterManager:
         This is a coordinate transformation, never a relabel: the position and
         proper motion are rotated so the physical direction is preserved.
         """
-        if len(parfile_dicts) == 1:
+        if len(parfile_dicts) == 1 and not self._force_full_convention_profile():
             self.logger.info("Ecliptic alignment skipped (reason=single_pta)")
             return
 
@@ -1592,7 +1627,9 @@ class ParameterManager:
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> None:
         """Write the explicit common profile onto every PTA dictionary."""
-        mixed = self._is_cross_engine_mix(self._normalized_timing_packages())
+        mixed = self._force_full_convention_profile() or self._is_cross_engine_mix(
+            self._normalized_timing_packages()
+        )
 
         for pta_name, par in parfile_dicts.items():
             if mixed:
@@ -1675,7 +1712,10 @@ class ParameterManager:
         the largest value any input declared, floored at 7. A finer truncation
         is always safe for both engines.
         """
-        if not self._is_cross_engine_mix(self._normalized_timing_packages()):
+        if not (
+            self._force_full_convention_profile()
+            or self._is_cross_engine_mix(self._normalized_timing_packages())
+        ):
             return
 
         binary_is_shared = "binary" in self.combine_components
@@ -1881,6 +1921,7 @@ class ParameterManager:
         )
 
         timing_packages = {pta: self._get_timing_package(pta) for pta in parfile_dicts}
+        force_mixed_engine = self._force_full_convention_profile()
         decision = decide_binary_conversion(
             parfile_dicts,
             reference_pta=self.reference_pta,
@@ -1888,6 +1929,7 @@ class ParameterManager:
             combine_components=self.combine_components,
             policy=self.alignment_policy,
             span_mjd=self._tim_span_mjd(),
+            force_mixed_engine=force_mixed_engine,
         )
 
         detail = decision.warnings[0] if decision.warnings else ""
@@ -1921,6 +1963,7 @@ class ParameterManager:
                 combine_components=self.combine_components,
                 policy=self.alignment_policy,
                 span_mjd=self._tim_span_mjd(),
+                force_mixed_engine=force_mixed_engine,
             )
             if decision.outcome != "convert":
                 raise BinaryConversionError(

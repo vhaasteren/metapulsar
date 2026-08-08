@@ -145,6 +145,7 @@ class MetaPulsar:
         self._dm: float | None = None
         self._dmx: dict | None = None
         self.binary_conversion_report = None
+        self.combination_write_result = None
 
         # Elegant initialization flow
         self._materialize_pta_data()

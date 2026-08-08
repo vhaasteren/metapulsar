@@ -47,6 +47,11 @@ from .pint_helpers import (
     validate_pulse_number_mode,
     parameter_belongs_to_component_category,
 )
+from .combination_writer import (
+    CombinationWriteResult,
+    write_combination_par,
+    write_combination_tim,
+)
 
 
 def _par_content_has_dmx(par_content: str) -> bool:
@@ -213,6 +218,7 @@ class MetaPulsarFactory:
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
         canonicalize_tim: bool = False,
+        combination_output_dir: Path | str | None = None,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -272,6 +278,11 @@ class MetaPulsarFactory:
                 derivation); cross-engine ``TIME``/``INCLUDE`` parity and
                 ``-mjd_jump_pta`` stamping are not provided. Opt in explicitly
                 (AEI-DR2/DR3 rebuild scripts do).
+            combination_output_dir: If set, after a successful build write
+                ``{dir}/{pulsar}.par`` and ``{dir}/{pulsar}.tim`` (the latter
+                ``INCLUDE``s copied canonical per-PTA tims under
+                ``{pulsar}.tim.d/``). Requires ``combination_strategy='shared'``
+                and ``canonicalize_tim=True``.
 
         Returns:
             MetaPulsar object
@@ -288,6 +299,16 @@ class MetaPulsarFactory:
                 "convert_jump_mjd=True requires canonicalize_tim=True because "
                 "JUMP -mjd_jump_pta flags are only stamped on the canonical .tim"
             )
+        if combination_output_dir is not None:
+            if combination_strategy != "shared":
+                raise ValueError(
+                    "combination_output_dir requires combination_strategy='shared'"
+                )
+            if not canonicalize_tim:
+                raise ValueError(
+                    "combination_output_dir requires canonicalize_tim=True "
+                    "(combination .tim INCLUDE targets must be canonical FORMAT 1 files)"
+                )
         if alignment_policy is not None and combination_strategy != "shared":
             raise ValueError(
                 "alignment_policy only applies to combination_strategy='shared'; "
@@ -426,7 +447,63 @@ class MetaPulsarFactory:
         )
         mp.binary_conversion_report = binary_conversion_report
         mp._pta_file_owner = pta_file_owner
+
+        if combination_output_dir is not None:
+            combination_output_dir = Path(combination_output_dir).resolve()
+            combination_output_dir.mkdir(parents=True, exist_ok=True)
+            result = self._write_combination_products(
+                mp=mp,
+                pulsar_name=pulsar_name,
+                reference_pta=next(iter(single_file_data)),
+                combination_output_dir=combination_output_dir,
+            )
+            mp.combination_write_result = result
+
         return mp
+
+    def _write_combination_products(
+        self,
+        *,
+        mp: MetaPulsar,
+        pulsar_name: str,
+        reference_pta: str,
+        combination_output_dir: Path,
+    ) -> CombinationWriteResult:
+        """Write self-contained combination ``.par`` / ``.tim`` under ``combination_output_dir``."""
+        pta_files = mp._pta_files
+        ordered = [reference_pta] + sorted(p for p in pta_files if p != reference_pta)
+        pta_par_texts = {
+            pta: pta_files[pta].par_path.read_text(encoding="utf-8") for pta in ordered
+        }
+
+        tim_dir = combination_output_dir / f"{pulsar_name}.tim.d"
+        tim_dir.mkdir(parents=True, exist_ok=True)
+        pta_tim_paths: Dict[str, Path] = {}
+        for pta in ordered:
+            dest = tim_dir / f"{_safe_pta_filename(pta)}.tim"
+            shutil.copyfile(pta_files[pta].tim_path, dest)
+            pta_tim_paths[pta] = dest
+
+        par_path = combination_output_dir / f"{pulsar_name}.par"
+        tim_path = combination_output_dir / f"{pulsar_name}.tim"
+        stats = write_combination_par(
+            reference_pta=reference_pta,
+            pta_par_texts=pta_par_texts,
+            out_path=par_path,
+        )
+        write_combination_tim(
+            pulsar=pulsar_name,
+            reference_pta=reference_pta,
+            pta_tim_paths=pta_tim_paths,
+            out_path=tim_path,
+        )
+        return CombinationWriteResult(
+            par_path=par_path,
+            tim_path=tim_path,
+            reference_pta=reference_pta,
+            pta_names=tuple(ordered),
+            stats=stats,
+        )
 
     def _validate_single_pulsar_data(
         self, file_data: Dict[str, List[Dict[str, Any]]]
@@ -618,6 +695,7 @@ class MetaPulsarFactory:
         alignment_policy: AlignmentPolicy | None = None,
         convert_jump_mjd: bool = False,
         canonicalize_tim: bool = False,
+        combination_output_dir: Path | str | None = None,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all available pulsars using file data.
 
@@ -644,6 +722,8 @@ class MetaPulsarFactory:
                 Requires ``canonicalize_tim=True``.
             canonicalize_tim: Forwarded to each ``create_metapulsar`` call.
                 Default False; see that method for the opt-in contract.
+            combination_output_dir: Forwarded to each ``create_metapulsar`` call.
+                Requires ``combination_strategy='shared'`` and ``canonicalize_tim=True``.
 
         Returns:
             Dictionary mapping pulsar names to MetaPulsar objects
@@ -654,6 +734,16 @@ class MetaPulsarFactory:
                 "convert_jump_mjd=True requires canonicalize_tim=True because "
                 "JUMP -mjd_jump_pta flags are only stamped on the canonical .tim"
             )
+        if combination_output_dir is not None:
+            if combination_strategy != "shared":
+                raise ValueError(
+                    "combination_output_dir requires combination_strategy='shared'"
+                )
+            if not canonicalize_tim:
+                raise ValueError(
+                    "combination_output_dir requires canonicalize_tim=True "
+                    "(combination .tim INCLUDE targets must be canonical FORMAT 1 files)"
+                )
         if alignment_policy is not None and combination_strategy != "shared":
             raise ValueError(
                 "alignment_policy only applies to combination_strategy='shared'; "
@@ -697,6 +787,7 @@ class MetaPulsarFactory:
                     alignment_policy=alignment_policy,
                     convert_jump_mjd=convert_jump_mjd,
                     canonicalize_tim=canonicalize_tim,
+                    combination_output_dir=combination_output_dir,
                 )
 
                 # Canonical name is automatically calculated from pulsar data
@@ -1247,6 +1338,7 @@ def create_metapulsar(
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
     canonicalize_tim: bool = False,
+    combination_output_dir: Path | str | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -1285,6 +1377,9 @@ def create_metapulsar(
             dual-engine-reloadable canonical artifact before load. Default
             False: engines load the release ``.tim`` tree (see
             ``MetaPulsarFactory.create_metapulsar``). Opt in explicitly.
+        combination_output_dir: If set, write a self-contained combination
+            ``.par`` / ``.tim`` tree under that directory. Requires
+            ``combination_strategy='shared'`` and ``canonicalize_tim=True``.
 
     Returns:
         MetaPulsar object
@@ -1308,6 +1403,7 @@ def create_metapulsar(
         alignment_policy=alignment_policy,
         convert_jump_mjd=convert_jump_mjd,
         canonicalize_tim=canonicalize_tim,
+        combination_output_dir=combination_output_dir,
     )
 
 
@@ -1325,6 +1421,7 @@ def create_all_metapulsars(
     alignment_policy: AlignmentPolicy | None = None,
     convert_jump_mjd: bool = False,
     canonicalize_tim: bool = False,
+    combination_output_dir: Path | str | None = None,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all available pulsars using file data.
 
@@ -1351,6 +1448,7 @@ def create_all_metapulsars(
             ``{pta}_{k}`` values stamped on the canonical tim. Default False.
             Requires ``canonicalize_tim=True``.
         canonicalize_tim: Forwarded to each ``create_metapulsar`` call. Default False.
+        combination_output_dir: Forwarded to each ``create_metapulsar`` call.
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
@@ -1370,6 +1468,7 @@ def create_all_metapulsars(
         alignment_policy=alignment_policy,
         convert_jump_mjd=convert_jump_mjd,
         canonicalize_tim=canonicalize_tim,
+        combination_output_dir=combination_output_dir,
     )
 
 
