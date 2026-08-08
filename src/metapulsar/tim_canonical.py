@@ -344,6 +344,11 @@ def _classify(line: str) -> Tuple[str, List[str]]:
     return "data", tokens
 
 
+def classify_tim_line(line: str) -> Tuple[str, List[str]]:
+    """Public internal wrapper for canonical tim line classification."""
+    return _classify(line)
+
+
 def _parse_bounded_decimal(
     token: str, *, what: str, minimum: Decimal, maximum: Decimal
 ) -> Fraction:
@@ -588,7 +593,7 @@ class _TimWalker:
         entry_total = accum.total
         try:
             for lineno, line in enumerate(_read_lines(path), start=1):
-                kind, tokens = _classify(line)
+                kind, tokens = classify_tim_line(line)
 
                 if kind == "blank":
                     self._write(line)
@@ -872,7 +877,7 @@ def stamp_metadata_flags(tim_text: str, *, pta_name: str, timing_package: str) -
     tempo2_info_active = False
     tempo2_skipping = False
     for line in tim_text.splitlines():
-        kind, tokens = _classify(line)
+        kind, tokens = classify_tim_line(line)
         if timing_package == "tempo2" and kind == "directive":
             directive = tokens[0].upper()
             if directive == "SKIP":
@@ -912,8 +917,8 @@ def _pn_occurrences(line: str) -> Tuple[List[Tuple[int, int]], List[str]]:
     return occurrences, values
 
 
-def _replace_pn_on_toa_line(line: str, pn_value: str) -> str:
-    """Preserve a canonical line byte-for-byte except for its -pn pairs."""
+def replace_pn_on_toa_line(line: str, pn_value: str) -> str:
+    """Replace or append a single ``-pn`` flag on one TOA line."""
     occurrences, _ = _pn_occurrences(line)
     replaced = line
     for start, end in reversed(occurrences):
@@ -926,7 +931,7 @@ def _validate_injected_tim_text(text: str, affected_names: set[str]) -> None:
     info_active = False
     skipping = False
     for line in text.splitlines():
-        kind, tokens = _classify(line)
+        kind, tokens = classify_tim_line(line)
         if kind == "directive":
             directive = tokens[0].upper()
             if directive == "SKIP":
@@ -975,7 +980,7 @@ def inject_pulse_numbers(canonical_tim: Path, *, derived_tim: Path) -> int:
     canonical_names: Dict[str, int] = {}
     canonical_lines = canonical_text.splitlines()
     for index, line in enumerate(canonical_lines):
-        kind, tokens = _classify(line)
+        kind, tokens = classify_tim_line(line)
         if kind != "data" or len(tokens) < 5:
             continue
         name = tokens[0]
@@ -987,7 +992,7 @@ def inject_pulse_numbers(canonical_tim: Path, *, derived_tim: Path) -> int:
 
     derived_values: Dict[str, str] = {}
     for line in derived_text.splitlines():
-        kind, tokens = _classify(line)
+        kind, tokens = classify_tim_line(line)
         if kind != "data" or len(tokens) < 5:
             continue
         name = tokens[0]
@@ -1019,7 +1024,7 @@ def inject_pulse_numbers(canonical_tim: Path, *, derived_tim: Path) -> int:
 
     for name, pn_value in derived_values.items():
         index = canonical_names[name]
-        canonical_lines[index] = _replace_pn_on_toa_line(
+        canonical_lines[index] = replace_pn_on_toa_line(
             canonical_lines[index], pn_value
         )
 
@@ -1286,7 +1291,7 @@ def stamp_mjd_jump_pta_flags(
     tempo2_info_active = False
     tempo2_skipping = False
     for line in tim_text.splitlines():
-        kind, tokens = _classify(line)
+        kind, tokens = classify_tim_line(line)
         if timing_package == "tempo2" and kind == "directive":
             directive = tokens[0].upper()
             if directive == "SKIP":

@@ -10,10 +10,12 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final, Mapping
+from typing import Final, Mapping, Sequence
 
 from .pint_helpers import par_text_with_track_minus_2
+from .tim_canonical import classify_tim_line, replace_pn_on_toa_line
 
 # Noise / white-noise / red-noise hyperparameter keys removed from the
 # combination par (exact key match).
@@ -65,6 +67,42 @@ def fortran_d_to_e(token: str) -> str:
 def sanitize_fortran_exponents(text: str) -> str:
     """Rewrite every Fortran ``D`` exponent in ``text`` to ``E``."""
     return _FORTRAN_D_EXPONENT_RE.sub(r"\1E\2", text)
+
+
+def _first_par_decimal(par_text: str, key: str) -> Decimal:
+    """Return the exact value from the first active line whose first token is key."""
+    want = key.upper()
+    for line in par_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.upper().startswith("C "):
+            continue
+        parts = s.split()
+        if parts and parts[0].upper() == want:
+            try:
+                return Decimal(parts[1].replace("D", "E").replace("d", "E"))
+            except (IndexError, InvalidOperation) as exc:
+                raise ValueError(f"invalid {key} line: {line!r}") from exc
+    raise ValueError(f"required {key} missing from par text")
+
+
+def _format_dm_delta(delta: Decimal) -> str:
+    """Exact ASCII decimal for FDJUMPDM with any exponent normalized to E."""
+    return fortran_d_to_e(str(delta))
+
+
+def _strip_track_lines(text: str) -> str:
+    """Drop non-comment TRACK lines; preserve trailing-newline policy."""
+    kept: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and not s.upper().startswith("C "):
+            if s.split()[0].upper() == "TRACK":
+                continue
+        kept.append(line)
+    result = "\n".join(kept)
+    if text.endswith("\n"):
+        result += "\n"
+    return result
 
 
 def _is_noise_line(line: str) -> bool:
@@ -146,12 +184,22 @@ class CombinationParStats:
 
 
 @dataclass(frozen=True)
+class CombinationPnStats:
+    n_toas: int
+    pn0_abs: int
+    tzrmjd: str
+    tzrfrq: str
+    tzrsite: str
+
+
+@dataclass(frozen=True)
 class CombinationWriteResult:
     par_path: Path
     tim_path: Path
     reference_pta: str
     pta_names: tuple[str, ...]
     stats: CombinationParStats
+    pn_stats: CombinationPnStats | None
 
 
 def write_combination_tim(
@@ -190,6 +238,7 @@ def write_combination_par(
     reference_pta: str,
     pta_par_texts: Mapping[str, str],
     out_path: Path,
+    track_pulse_numbers: bool = True,
 ) -> CombinationParStats:
     """Merged combination par; see feature_combination_parfile_writer.md §3.3."""
     if reference_pta not in pta_par_texts:
@@ -227,9 +276,14 @@ def write_combination_par(
         for idx, value, uncertainty in extract_fd_terms(pta_par_texts[pta]):
             fdjump_lines.append(format_fdjump_line(idx, pta, value, uncertainty))
 
-    fdjumpdm_lines = [
-        f"FDJUMPDM -pta {pta} 0.0 1" for pta in ordered if pta != reference_pta
-    ]
+    fdjumpdm_lines: list[str] = []
+    non_reference_ptas = [pta for pta in ordered if pta != reference_pta]
+    if non_reference_ptas:
+        ref_dm = _first_par_decimal(pta_par_texts[reference_pta], "DM")
+        for pta in non_reference_ptas:
+            pta_dm = _first_par_decimal(pta_par_texts[pta], "DM")
+            delta = pta_dm - ref_dm
+            fdjumpdm_lines.append(f"FDJUMPDM -pta {pta} {_format_dm_delta(delta)} 1")
 
     fdjump_scale_lines: list[str] = []
     if fdjump_lines or fdjumpdm_lines:
@@ -241,7 +295,8 @@ def write_combination_par(
             f"# MetaPulsar combination: JUMP from all PTAs; "
             f"JUMP -pta for non-reference; "
             f"FDx -> FDJUMPx (value+uncertainty copied); "
-            f"FDJUMPDM for non-reference (ref={reference_pta})"
+            f"FDJUMPDM = DM - DM_ref for non-reference "
+            f"(ref={reference_pta})"
         ),
     ]
     block.extend(jump_lines)
@@ -251,9 +306,11 @@ def write_combination_par(
     block.extend(fdjumpdm_lines)
     block.append("")
 
-    merged = sanitize_fortran_exponents(
-        par_text_with_track_minus_2("\n".join(kept + block))
-    )
+    body = "\n".join(kept + block)
+    if track_pulse_numbers:
+        merged = sanitize_fortran_exponents(par_text_with_track_minus_2(body))
+    else:
+        merged = sanitize_fortran_exponents(_strip_track_lines(body))
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(merged, encoding="utf-8")
@@ -261,4 +318,155 @@ def write_combination_par(
         n_jumps=len(jump_lines) + len(pta_jump_lines),
         n_fdjump=len(fdjump_lines),
         n_fdjumpdm=len(fdjumpdm_lines),
+    )
+
+
+def align_combination_tzr(
+    par_path: Path,
+    *,
+    tzrmjd: str,
+    tzrfrq: str,
+    tzrsite: str,
+) -> None:
+    """Rewrite/insert TZRMJD/TZRFRQ/TZRSITE on the combination par."""
+    text = Path(par_path).read_text(encoding="utf-8")
+    wanted = {
+        "TZRMJD": tzrmjd,
+        "TZRFRQ": tzrfrq,
+        "TZRSITE": tzrsite,
+    }
+    seen: set[str] = set()
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and not s.upper().startswith("C "):
+            key = s.split()[0].upper()
+            if key in wanted:
+                out_lines.append(f"{key} {wanted[key]}")
+                seen.add(key)
+                continue
+        out_lines.append(line)
+    for key, value in wanted.items():
+        if key not in seen:
+            out_lines.append(f"{key} {value}")
+    result = "\n".join(out_lines)
+    if text.endswith("\n") or not text:
+        result += "\n"
+    Path(par_path).write_text(result, encoding="utf-8")
+
+
+def _first_data_toa_tokens(tim_path: Path) -> tuple[str, str, str, str]:
+    """Return exact FORMAT 1 tokens ``(name, freq, mjd, site)`` for the first data TOA."""
+    for line in Path(tim_path).read_text(encoding="utf-8").splitlines():
+        kind, tokens = classify_tim_line(line)
+        if kind != "data" or len(tokens) < 5:
+            continue
+        return tokens[0], tokens[1], tokens[2], tokens[4]
+    raise ValueError(f"no FORMAT 1 data TOA found in {tim_path}")
+
+
+def _count_data_lines(tim_path: Path) -> int:
+    n = 0
+    for line in Path(tim_path).read_text(encoding="utf-8").splitlines():
+        if classify_tim_line(line)[0] == "data":
+            n += 1
+    return n
+
+
+def _rewrite_tim_pn_sequential(tim_path: Path, relative_pns: list[int]) -> int:
+    """Rewrite ``-pn`` flags in document order; return number of data lines rewritten."""
+    text = Path(tim_path).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    out: list[str] = []
+    consumed = 0
+    for line in lines:
+        kind, _tokens = classify_tim_line(line)
+        if kind == "data":
+            if consumed >= len(relative_pns):
+                raise ValueError(
+                    f"{tim_path}: more data TOAs than pulse numbers provided"
+                )
+            out.append(replace_pn_on_toa_line(line, str(relative_pns[consumed])))
+            consumed += 1
+        else:
+            out.append(line)
+    result = "\n".join(out)
+    if text.endswith("\n"):
+        result += "\n"
+    Path(tim_path).write_text(result, encoding="utf-8")
+    return consumed
+
+
+def renumber_combination_pulse_numbers(
+    *,
+    combination_par_path: Path,
+    combination_tim_path: Path,
+    ordered_tim_paths: Sequence[Path],
+) -> CombinationPnStats:
+    """Renumber INCLUDE-target ``-pn`` onto a Tempo2-relative global ladder."""
+    if not ordered_tim_paths:
+        raise ValueError("ordered_tim_paths must be non-empty")
+    for path in ordered_tim_paths:
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"missing combination INCLUDE target: {path}")
+
+    first_path = Path(ordered_tim_paths[0])
+    _name, tzrfrq, tzrmjd, tzrsite = _first_data_toa_tokens(first_path)
+    align_combination_tzr(
+        Path(combination_par_path),
+        tzrmjd=tzrmjd,
+        tzrfrq=tzrfrq,
+        tzrsite=tzrsite,
+    )
+
+    from pint.models import get_model_and_toas
+
+    _model, toas = get_model_and_toas(
+        str(combination_par_path),
+        str(combination_tim_path),
+        allow_T2=True,
+        allow_tcb=True,
+        planets=True,
+        include_pn=True,
+        ell1h_shapiro="absorbed",
+    )
+    indices = list(toas.table["index"])
+    if indices != list(range(len(toas))):
+        raise ValueError(
+            "PINT did not preserve INCLUDE/source TOA order "
+            f"(index={indices[:10]}{'...' if len(indices) > 10 else ''})"
+        )
+
+    n_data = sum(_count_data_lines(Path(p)) for p in ordered_tim_paths)
+    if n_data != len(toas):
+        raise ValueError(
+            f"data-line count {n_data} != loaded TOA count {len(toas)}; "
+            "INCLUDE load/order mismatch"
+        )
+
+    toas.compute_pulse_numbers(_model)
+    abs_pn_ints = [int(x) for x in toas.table["pulse_number"]]
+    pn0 = abs_pn_ints[0]
+    rel = [p - pn0 for p in abs_pn_ints]
+
+    offset = 0
+    for path in ordered_tim_paths:
+        n = _count_data_lines(Path(path))
+        chunk = rel[offset : offset + n]
+        rewritten = _rewrite_tim_pn_sequential(Path(path), chunk)
+        if rewritten != n:
+            raise ValueError(
+                f"{path}: expected to rewrite {n} data TOAs, rewrote {rewritten}"
+            )
+        offset += n
+    if offset != len(rel):
+        raise ValueError(f"pulse-number rewrite consumed {offset} of {len(rel)} values")
+
+    return CombinationPnStats(
+        n_toas=len(rel),
+        pn0_abs=pn0,
+        tzrmjd=tzrmjd,
+        tzrfrq=tzrfrq,
+        tzrsite=tzrsite,
     )

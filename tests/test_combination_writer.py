@@ -8,8 +8,10 @@ import pytest
 
 from metapulsar.combination_writer import (
     _is_noise_line,
+    align_combination_tzr,
     extract_fd_terms,
     fortran_d_to_e,
+    renumber_combination_pulse_numbers,
     sanitize_fortran_exponents,
     write_combination_par,
     write_combination_tim,
@@ -20,6 +22,7 @@ PSR J1234+5678
 RAJ 12:34:56
 DECJ +56:78:90
 F0 100.0
+DM 10.0
 EPHEM DE440
 CLK TT(BIPM2019)
 UNITS TDB
@@ -38,12 +41,29 @@ PSR J1234+5678
 RAJ 12:34:56
 DECJ +56:78:90
 F0 100.0
+DM 10.0
 EPHEM DE440
 CLK TT(BIPM2019)
 UNITS TDB
 JUMP -sys system_b 0 1
 FD1 2.0E-03 1
 EQUAD -f 1400 1.0e-6
+"""
+
+MINIMAL_COMBO_PAR = """\
+PSR J1909-3744
+RAJ 19:09:47.4280
+DECJ -37:44:14.326
+F0 339.315686
+F1 -1.61e-15
+PEPOCH 55000
+POSEPOCH 55000
+DMEPOCH 55000
+DM 10.39
+EPHEM DE440
+CLK UTC(NIST)
+UNITS TDB
+TRACK -2
 """
 
 
@@ -92,6 +112,44 @@ def test_write_combination_par_shape(tmp_path):
     assert stats.n_fdjump >= 1 and stats.n_fdjumpdm == 1
     assert "JUMP -pta pta_a" not in body
     assert "FDJUMPDM -pta pta_a" not in body
+    assert "FDJUMPDM = DM - DM_ref" in body
+
+
+@pytest.mark.unit
+def test_write_combination_par_fdjumpdm_delta(tmp_path):
+    pta_a = PTA_A_PAR.replace("DM 10.0", "DM 10.0")
+    pta_b = PTA_B_PAR.replace("DM 10.0", "DM 10.25")
+    write_combination_par(
+        reference_pta="pta_a",
+        pta_par_texts={"pta_a": pta_a, "pta_b": pta_b},
+        out_path=tmp_path / "delta.par",
+    )
+    body = (tmp_path / "delta.par").read_text()
+    assert "FDJUMPDM -pta pta_b 0.25 1" in body
+    assert "FDJUMPDM -pta pta_a" not in body
+
+
+@pytest.mark.unit
+def test_write_combination_par_missing_dm_errors(tmp_path):
+    pta_b = PTA_B_PAR.replace("DM 10.0\n", "")
+    with pytest.raises(ValueError, match="required DM missing"):
+        write_combination_par(
+            reference_pta="pta_a",
+            pta_par_texts={"pta_a": PTA_A_PAR, "pta_b": pta_b},
+            out_path=tmp_path / "bad.par",
+        )
+
+
+@pytest.mark.unit
+def test_write_combination_par_track_pulse_numbers_false(tmp_path):
+    write_combination_par(
+        reference_pta="pta_a",
+        pta_par_texts={"pta_a": PTA_A_PAR, "pta_b": PTA_B_PAR},
+        out_path=tmp_path / "notrack.par",
+        track_pulse_numbers=False,
+    )
+    body = (tmp_path / "notrack.par").read_text()
+    assert not re.search(r"^TRACK\b", body, re.M)
 
 
 @pytest.mark.unit
@@ -159,3 +217,72 @@ def test_noise_line_detection():
     assert not _is_noise_line("RAJ 12:34:56")
     assert not _is_noise_line("# comment")
     assert not _is_noise_line("")
+
+
+@pytest.mark.unit
+def test_align_combination_tzr_inserts_missing_keys(tmp_path):
+    par = tmp_path / "x.par"
+    par.write_text(MINIMAL_COMBO_PAR, encoding="utf-8")
+    align_combination_tzr(
+        par,
+        tzrmjd="54510.123456789012",
+        tzrfrq="1400.0",
+        tzrsite="g",
+    )
+    body = par.read_text(encoding="utf-8")
+    assert re.search(r"^TZRMJD 54510\.123456789012\s*$", body, re.M)
+    assert re.search(r"^TZRFRQ 1400\.0\s*$", body, re.M)
+    assert re.search(r"^TZRSITE g\s*$", body, re.M)
+
+
+@pytest.mark.unit
+def test_renumber_combination_pulse_numbers_duplicate_names(tmp_path):
+    tim_d = tmp_path / "J1909-3744.tim.d"
+    tim_d.mkdir()
+    a = tim_d / "pta_a.tim"
+    b = tim_d / "pta_b.tim"
+    # Duplicate canonical names across legs; different MJDs so abs PN differs.
+    a.write_text(
+        "FORMAT 1\n"
+        "toa00001 1400.0 54510.0 1.5 g -pn 0\n"
+        "toa00002 1400.0 54511.0 1.5 g -pn 0\n",
+        encoding="utf-8",
+    )
+    b.write_text(
+        "FORMAT 1\n"
+        "toa00001 1400.0 54600.0 1.5 g -pn 0\n"
+        "toa00002 1400.0 54601.0 1.5 g -pn 0\n",
+        encoding="utf-8",
+    )
+    par = tmp_path / "J1909-3744.par"
+    par.write_text(MINIMAL_COMBO_PAR, encoding="utf-8")
+    tim = tmp_path / "J1909-3744.tim"
+    write_combination_tim(
+        pulsar="J1909-3744",
+        reference_pta="pta_a",
+        pta_tim_paths={"pta_a": a, "pta_b": b},
+        out_path=tim,
+    )
+    stats = renumber_combination_pulse_numbers(
+        combination_par_path=par,
+        combination_tim_path=tim,
+        ordered_tim_paths=[a, b],
+    )
+    assert stats.n_toas == 4
+    assert stats.tzrmjd == "54510.0"
+    assert stats.tzrfrq == "1400.0"
+    assert stats.tzrsite == "g"
+    a_text = a.read_text(encoding="utf-8")
+    b_text = b.read_text(encoding="utf-8")
+    first_a = next(
+        ln for ln in a_text.splitlines() if ln.strip().startswith("toa00001")
+    )
+    first_b = next(
+        ln for ln in b_text.splitlines() if ln.strip().startswith("toa00001")
+    )
+    assert re.search(r"-pn\s+0(?:\s|$)", first_a)
+    b_pn = re.search(r"-pn\s+(-?\d+)", first_b)
+    assert b_pn is not None
+    assert int(b_pn.group(1)) != 0
+    comb_par = par.read_text(encoding="utf-8")
+    assert re.search(r"^TZRMJD 54510\.0\s*$", comb_par, re.M)

@@ -1312,6 +1312,7 @@ class TestCombinationOutputDir:
         result = mp.combination_write_result
         assert result.par_path.is_file()
         assert result.tim_path.is_file()
+        assert result.pn_stats is None
         tim_d = out / f"{result.par_path.stem}.tim.d"
         assert tim_d.is_dir()
         include_targets = list(tim_d.glob("*.tim"))
@@ -1324,7 +1325,70 @@ class TestCombinationOutputDir:
         assert "FDJUMP1 -pta pta_a" in comb_par
         assert "1.2E-03" in comb_par
         assert not re.search(r"^JUMP\s+-pta\b", comb_par, re.M)
+        assert not re.search(r"^TRACK\b", comb_par, re.M)
+        # use_pulse_numbers="no" must not invent a combination PN ladder.
+        include_text = include_targets[0].read_text(encoding="utf-8")
+        assert "-pn" not in include_text
+
+    @pytest.mark.unit
+    def test_combination_output_dir_pulse_numbers_yes_aligns_tzr_and_pn(self, tmp_path):
+        import re
+
+        from metapulsar.parameter_manager import AlignmentPolicy
+        from metapulsar.metapulsar_factory import create_metapulsar
+
+        fixture_par = (
+            Path(__file__).parent / "fixtures" / "sample_parfiles" / "simple.par"
+        )
+        par_text = fixture_par.read_text(encoding="utf-8") + (
+            "JUMP -sys TEST 0 1\n" "FD1 1.2D-03 1 3.4D-04\n"
+        )
+        par_path = tmp_path / "pta_a.par"
+        tim_path = tmp_path / "pta_a.tim"
+        par_path.write_text(par_text, encoding="utf-8")
+        tim_path.write_text(
+            "FORMAT 1\n"
+            "test1 1400.0 54510.0 1.5 g -sys TEST\n"
+            "test2 1400.0 54520.0 1.5 g -sys TEST\n",
+            encoding="utf-8",
+        )
+        out = tmp_path / "combined"
+        mp = create_metapulsar(
+            file_data={
+                "pta_a": [
+                    {
+                        "par": par_path,
+                        "tim": tim_path,
+                        "par_content": par_text,
+                        "timing_package": "pint",
+                    }
+                ]
+            },
+            combination_strategy="shared",
+            canonicalize_tim=True,
+            use_pulse_numbers="yes",
+            alignment_policy=AlignmentPolicy(
+                convention_profile="always", binary_conversion="off"
+            ),
+            combination_output_dir=out,
+        )
+        result = mp.combination_write_result
+        assert result is not None
+        assert result.pn_stats is not None
+        comb_par = result.par_path.read_text(encoding="utf-8")
         assert re.search(r"^TRACK\s+-2\b", comb_par, re.M)
+        assert re.search(r"^TZRMJD\b", comb_par, re.M)
+        include_targets = sorted((out / f"{result.par_path.stem}.tim.d").glob("*.tim"))
+        assert len(include_targets) == 1
+        first_data = next(
+            ln
+            for ln in include_targets[0].read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+            and not ln.strip().upper().startswith("FORMAT")
+            and not ln.strip().startswith("#")
+            and not ln.strip().upper().startswith("C ")
+        )
+        assert re.search(r"-pn\s+0(?:\s|$)", first_data)
 
     @pytest.mark.unit
     def test_always_profile_single_tempo2_exported_par_has_tdb(self, tmp_path):

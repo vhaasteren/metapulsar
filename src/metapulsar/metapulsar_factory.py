@@ -49,6 +49,7 @@ from .pint_helpers import (
 )
 from .combination_writer import (
     CombinationWriteResult,
+    renumber_combination_pulse_numbers,
     write_combination_par,
     write_combination_tim,
 )
@@ -456,6 +457,7 @@ class MetaPulsarFactory:
                 pulsar_name=pulsar_name,
                 reference_pta=next(iter(single_file_data)),
                 combination_output_dir=combination_output_dir,
+                use_pulse_numbers=pulse_mode,
             )
             mp.combination_write_result = result
 
@@ -468,9 +470,15 @@ class MetaPulsarFactory:
         pulsar_name: str,
         reference_pta: str,
         combination_output_dir: Path,
+        use_pulse_numbers: PulseNumberMode,
     ) -> CombinationWriteResult:
         """Write self-contained combination ``.par`` / ``.tim`` under ``combination_output_dir``."""
         pta_files = mp._pta_files
+        if reference_pta not in pta_files:
+            raise ValueError(
+                f"reference_pta {reference_pta!r} missing from retained PTA files "
+                f"{sorted(pta_files)}"
+            )
         ordered = [reference_pta] + sorted(p for p in pta_files if p != reference_pta)
         pta_par_texts = {
             pta: pta_files[pta].par_path.read_text(encoding="utf-8") for pta in ordered
@@ -484,12 +492,14 @@ class MetaPulsarFactory:
             shutil.copyfile(pta_files[pta].tim_path, dest)
             pta_tim_paths[pta] = dest
 
+        track_pn = pulse_number_tracking_enabled(use_pulse_numbers)
         par_path = combination_output_dir / f"{pulsar_name}.par"
         tim_path = combination_output_dir / f"{pulsar_name}.tim"
         stats = write_combination_par(
             reference_pta=reference_pta,
             pta_par_texts=pta_par_texts,
             out_path=par_path,
+            track_pulse_numbers=track_pn,
         )
         write_combination_tim(
             pulsar=pulsar_name,
@@ -497,12 +507,23 @@ class MetaPulsarFactory:
             pta_tim_paths=pta_tim_paths,
             out_path=tim_path,
         )
+
+        pn_stats = None
+        if track_pn:
+            ordered_tim_paths = [pta_tim_paths[p] for p in ordered]
+            pn_stats = renumber_combination_pulse_numbers(
+                combination_par_path=par_path,
+                combination_tim_path=tim_path,
+                ordered_tim_paths=ordered_tim_paths,
+            )
+
         return CombinationWriteResult(
             par_path=par_path,
             tim_path=tim_path,
             reference_pta=reference_pta,
             pta_names=tuple(ordered),
             stats=stats,
+            pn_stats=pn_stats,
         )
 
     def _validate_single_pulsar_data(
