@@ -75,10 +75,11 @@ PTA_DATA_RELEASES = {
         # Flat release. The plain <PSR>.par is the Tempo2 solution; the release
         # also ships a derived <PSR>_pint.par, and working subdirectories
         # (dr2/, uwl/, temp/) that repeat the pulsar names, so both patterns are
-        # anchored to a file sitting directly in PPTA_DR3/.
+        # anchored to a file sitting directly in PPTA_DR3/. Optional trailing
+        # letter covers globular-cluster names such as J1824-2452A.
         "base_dir": "PPTA_DR3/",
-        "par_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4})\.par$",
-        "tim_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+        "par_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4}[A-Z]?)\.par$",
+        "tim_pattern": r"PPTA_DR3/([BJ]\d{4}[+-]\d{2,4}[A-Z]?)\.tim$",
         "timing_package": "tempo2",
         "description": "PPTA Data Release 3",
     },

@@ -233,14 +233,30 @@ class TestFileDiscovery:
             "PSR J1909-3744\n", encoding="utf-8"
         )
         (ppta / "uwl" / "J1909-3744.tim").write_text("FORMAT 1\n", encoding="utf-8")
+        # Globular-cluster suffix (e.g. J1824-2452A); still only the root pair.
+        (ppta / "J1824-2452A.par").write_text("PSR J1824-2452A\n", encoding="utf-8")
+        (ppta / "J1824-2452A.tim").write_text("FORMAT 1\n", encoding="utf-8")
+        (ppta / "J1824-2452A_pint.par").write_text(
+            "PSR J1824-2452A\n", encoding="utf-8"
+        )
+        (ppta / "uwl" / "J1824-2452A.par").write_text(
+            "PSR J1824-2452A\n", encoding="utf-8"
+        )
+        (ppta / "uwl" / "J1824-2452A.tim").write_text("FORMAT 1\n", encoding="utf-8")
 
         service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
         found = service.discover_files(["mpta_dr2", "ppta_dr3"])
 
         assert [e["par"] for e in found["mpta_dr2"]] == [mpta / "J1909-3744.par"]
         assert [e["tim"] for e in found["mpta_dr2"]] == [mpta / "J1909-3744.tim"]
-        assert [e["par"] for e in found["ppta_dr3"]] == [ppta / "J1909-3744.par"]
-        assert [e["tim"] for e in found["ppta_dr3"]] == [ppta / "J1909-3744.tim"]
+        assert [e["par"] for e in found["ppta_dr3"]] == [
+            ppta / "J1824-2452A.par",
+            ppta / "J1909-3744.par",
+        ]
+        assert [e["tim"] for e in found["ppta_dr3"]] == [
+            ppta / "J1824-2452A.tim",
+            ppta / "J1909-3744.tim",
+        ]
         assert all(
             entry["timing_package"] == "tempo2"
             for entries in found.values()
