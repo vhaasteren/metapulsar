@@ -908,6 +908,95 @@ UNITS TDB
         assert parfile_dicts["EPTA"]["DM1"] == ["0.0 1"]
         assert parfile_dicts["EPTA"]["DM2"] == ["0.0 1"]
 
+    def test_get_dmx_parameters_includes_pint_ignored_dmx_auxiliaries(self):
+        """PINT ignore_prefix DMX auxiliaries are discovered for shared strip."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J0613-0200\n"
+                    "RAJ 06:13:43.975698\n"
+                    "DECJ -02:00:47.15687\n"
+                    "F0 326.600562\n"
+                    "PEPOCH 55000\n"
+                    "DM 38.778\n"
+                    "DMX_0001 0.01 1\n"
+                    "DMXR1_0001 53390\n"
+                    "DMXR2_0001 53400\n"
+                    "DMXEP_0001 53394.85539\n"
+                    "DMXF1_0001 424.000\n"
+                    "DMXF2_0001 1442.000\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+        parfile_dict = parameter_manager._parse_parfiles()["NG"]
+
+        dmx_params = parameter_manager._get_dmx_parameters_from_parfile(parfile_dict)
+
+        assert "DMX_0001" in dmx_params
+        assert "DMXR1_0001" in dmx_params
+        assert "DMXR2_0001" in dmx_params
+        assert "DMXEP_0001" in dmx_params
+        assert "DMXF1_0001" in dmx_params
+        assert "DMXF2_0001" in dmx_params
+        # Bare DMX is a PINT model default, not a present par-file key.
+        assert "DMX" not in dmx_params
+
+    def test_shared_dispersion_strips_pint_ignored_dmx_auxiliaries(self):
+        """Shared cleanup removes DMXEP_/DMXF1_/DMXF2_ with the DMX model."""
+        file_data = {
+            "NG": {
+                "timing_package": "pint",
+                "par_content": (
+                    "PSR J0613-0200\n"
+                    "RAJ 06:13:43.975698\n"
+                    "DECJ -02:00:47.15687\n"
+                    "F0 326.600562\n"
+                    "PEPOCH 55000\n"
+                    "DM 38.778 1\n"
+                    "DMX_0001 0.01 1\n"
+                    "DMXR1_0001 53390\n"
+                    "DMXR2_0001 53400\n"
+                    "DMXEP_0001 53394.85539\n"
+                    "DMXF1_0001 424.000\n"
+                    "DMXF2_0001 1442.000\n"
+                    "EPHEM DE440\n"
+                    "CLOCK TT(BIPM2021)\n"
+                    "UNITS TDB\n"
+                ),
+            },
+        }
+        parameter_manager = ParameterManager(
+            file_data=file_data,
+            combine_components=["dispersion"],
+            add_dm_derivatives=True,
+        )
+        shared = parameter_manager._make_parameters_shared(
+            {pta: data["par_content"] for pta, data in file_data.items()}
+        )
+        shared_dict = parse_parfile(StringIO(shared["NG"]))
+
+        for key in (
+            "DMX_0001",
+            "DMXR1_0001",
+            "DMXR2_0001",
+            "DMXEP_0001",
+            "DMXF1_0001",
+            "DMXF2_0001",
+        ):
+            assert key not in shared_dict
+        assert "DM" in shared_dict
+        assert "DM1" in shared_dict
+        assert "DM2" in shared_dict
+
     @pytest.fixture
     def file_data_with_two_different_dm_values(self):
         return {

@@ -2140,18 +2140,40 @@ class ParameterManager:
                 self.logger.info(f"PTA {pta_name}: Set DM1 = 0.0, DM2 = 0.0")
 
     def _get_dmx_parameters_from_parfile(self, parfile_dict: Dict) -> List[str]:
-        """Get DMX parameters from a parfile using PINT component discovery."""
-        # Create PINT model directly from dictionary
+        """Get DMX parameters to strip from a parfile for shared dispersion.
+
+        Uses PINT's ``DispersionDMX`` component params as the primary source of
+        truth, then also includes raw-dict keys whose prefixes are in PINT's
+        ``ignore_prefix`` and start with ``DMX`` (currently ``DMXEP_``,
+        ``DMXF1_``, ``DMXF2_``). Those auxiliaries are ignored by PINT on load
+        (and unknown to this Tempo2 checkout), so they never appear on the
+        component but remain in the ``parse_parfile`` dict unless removed here.
+        """
+        from pint.exceptions import PrefixError
+        from pint.models.timing_model import ignore_prefix
+        from pint.utils import split_prefixed_name
+
         model = self._create_model_from_dict(parfile_dict)
 
-        # Find DMX parameters from dispersion_dmx component
-        dmx_params = []
+        dmx_params: List[str] = []
         for comp in model.components.values():
-            if hasattr(comp, "category") and comp.category == "dispersion_dmx":
-                if hasattr(comp, "params"):
-                    dmx_params.extend(comp.params)
+            if getattr(comp, "category", None) == "dispersion_dmx":
+                dmx_params.extend(getattr(comp, "params", []))
 
-        return dmx_params
+        ignored_dmx_prefixes = {
+            prefix for prefix in ignore_prefix if prefix.startswith("DMX")
+        }
+        for key in parfile_dict:
+            try:
+                prefix, _, _ = split_prefixed_name(key)
+            except PrefixError:
+                continue
+            if prefix in ignored_dmx_prefixes:
+                dmx_params.append(key)
+
+        # Model discovery can invent defaults (e.g. bare ``DMX``) that were
+        # never present in the par dict; only return keys we can actually pop.
+        return [name for name in dict.fromkeys(dmx_params) if name in parfile_dict]
 
     def _write_parfile(self, pta_name: str, content: str, *, tag: str) -> Path:
         """Write one par file into the output directory and return its path."""
