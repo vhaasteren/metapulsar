@@ -261,7 +261,7 @@ small sampled timing block whitened against the live `C(η)`, `whitening=None`).
 See the nltiming README and `examples/notebooks/03_j1640_decentering_validation.ipynb`
 (the three-mode comparison) for choosing among them.
 
-Install the JUG engine with `pip install "metapulsar[jug]"` (Python 3.12+).
+Install the JUG engine with `pip install "metapulsar[jug]"` (Python 3.11+).
 Optional Vela support is `metapulsar[vela]` (requires a compatible Julia
 runtime). Discovery / NumPyro / PTMCMC extras are installed from nltiming
 directly. The package base and nltiming require Python 3.11 or newer.
