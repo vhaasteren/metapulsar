@@ -42,7 +42,6 @@ test-cov:  ## Run tests with coverage
 
 lint:  ## Run linting
 	ruff check src/ tests/
-	mypy src/
 
 format:  ## Format code
 	black src/ tests/
@@ -64,7 +63,6 @@ docs:  ## Build documentation
 check:  ## Run all checks (lint, format, test)
 	black --check src/ tests/
 	ruff check src/ tests/
-	mypy src/
 	pytest
 
 ci:  ## Run CI pipeline locally

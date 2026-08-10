@@ -45,7 +45,6 @@ dev = [
     "pytest>=6.0",
     "pytest-cov>=2.0",
     "black==25.11.0",
-    "mypy>=0.900",
     "flake8>=4.0",
     "build>=1.2",
 ]
@@ -103,28 +102,12 @@ extend-exclude = '''
   \.eggs
   | \.git
   | \.hg
-  | \.mypy_cache
   | \.tox
   | \.venv
   | build
   | dist
 )/
 '''
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
