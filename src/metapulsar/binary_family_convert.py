@@ -146,7 +146,7 @@ class BinaryConversionMetadata:
 
 # Day-to-second arithmetic on MJD differences only; parameter-value unit
 # conventions live in the `si_from_par` / `token_from_si` boundary
-# (nltiming.pint_compat), never here.
+# (metapulsar.pint_compat), never here.
 _SECDAY = 86400.0
 
 # Alias closure §7.3: canonical ← accepted spellings
@@ -859,7 +859,6 @@ def _classify_unsupported(
             stig = float(policy.stigma_central)  # validated by AlignmentPolicy
             if not _domain_ok(float(h3), stig, float(a1)):
                 return "ell1h_domain_violation"
-            _require_nltiming_conversion_contract()
 
     elif _is_plain_family(family):
         if _has_any(par, _ORTHOMETRIC_KEYS) and not orthometric_shapiro_absent(par):
@@ -875,28 +874,6 @@ def _classify_unsupported(
     if _check_fit_pattern(par, orthometric=_is_orthometric_family(family)) is not None:
         return "unsupported_fit_pattern"
     return None
-
-
-def _require_nltiming_conversion_contract() -> None:
-    """§8.5a landing gate: Case D needs the nltiming metadata contract.
-
-    Raises rather than returning an ``unsupported`` reason code: the gate is a
-    hard §18 lock, so ``unsupported_binary="keep"`` must not downgrade it to a
-    warning.
-    """
-    try:
-        import nltiming
-    except ImportError:  # pragma: no cover - nltiming is a hard dependency
-        supported = False
-    else:
-        supported = bool(getattr(nltiming, "SUPPORTS_CONVERSION_METADATA", False))
-    if not supported:
-        raise BinaryConversionError(
-            "sample_stigma_requires_nltiming_contract: h3_only='sample_stigma' "
-            "requires an nltiming build advertising SUPPORTS_CONVERSION_METADATA "
-            "(the required_sampling channel of §8.5a)\n"
-            f"{remediation_message()}"
-        )
 
 
 def _unsupported_message(
@@ -2424,19 +2401,21 @@ def run_fidelity_check(
 # ---------------------------------------------------------------------------
 
 
-def engine_native_binary_key(key: str, timing_package: Optional[str]) -> str:
-    """Map a canonical patch key onto the target engine's native spelling.
+def engine_native_binary_key(key: str, timing_package: Optional[str] = None) -> str:
+    """Map a canonical patch key onto the portable on-disk spelling.
 
     Tempo2 reads the DDH orthometric ratio as ``STIG`` only — ``readParfile.C``
     has no ``STIGMA``/``VARSIGMA`` branch, and ``DDHmodel.C`` *exits the
     process* when ``stig`` is unset. PINT accepts ``STIG`` as an alias of
-    ``STIGMA``, so the tempo2-native spelling is the one both engines read.
-    Analogous to portable ``CLK`` for the clock pin: prefer the spelling every
-    target engine actually reads.
+    ``STIGMA`` and round-trips it unchanged via ``as_parfile``, so ``STIG`` is
+    written for every timing package. Analogous to portable ``CLK`` for the
+    clock pin: prefer the spelling every target engine actually reads.
+
+    ``timing_package`` is retained for call-site compatibility; it does not
+    change the spelling.
     """
-    if _canon_key(key) == "STIGMA" and normalize_timing_package(timing_package) == (
-        "tempo2"
-    ):
+    _ = timing_package
+    if _canon_key(key) == "STIGMA":
         return "STIG"
     return key
 
@@ -2449,9 +2428,9 @@ def apply_binary_patch(
 ) -> None:
     """Apply a binary-owned patch in place (§8.4).
 
-    ``timing_package`` selects the engine-native spelling for keys that differ
-    between PINT and tempo2 (see :func:`engine_native_binary_key`); the
-    alias-resolved postcondition 2 identity across PTAs is unaffected.
+    ``timing_package`` is forwarded to :func:`engine_native_binary_key` (today
+    unused: DDH ratio is always written as portable ``STIG``). Alias-resolved
+    postcondition 2 identity across PTAs is unaffected.
     """
     for key in patch.removed_keys:
         # Match case-insensitively

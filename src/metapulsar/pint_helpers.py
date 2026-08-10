@@ -29,9 +29,10 @@ from io import StringIO
 import re
 import numpy as np
 
-# Parameter-name utilities live in the timing package (self-contained for the
-# future ``nltiming`` split); re-exported here for the rest of MetaPulsar.
-from nltiming.pint_compat import (
+# Pure PINT parameter-name/unit utilities, MetaPulsar-owned so the core
+# combination path never imports ``nltiming``; re-exported here for the rest of
+# MetaPulsar. See :mod:`metapulsar.pint_compat`.
+from .pint_compat import (
     CANONICAL_SI as CANONICAL_SI,
     KeyReturningDict as KeyReturningDict,
     ParUnitError as ParUnitError,

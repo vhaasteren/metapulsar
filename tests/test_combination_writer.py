@@ -254,9 +254,11 @@ def test_modal_offset_unimodal_with_outliers():
 
 
 @pytest.mark.unit
-def test_modal_offset_ties_break_toward_smaller_integer():
+def test_modal_offset_ties_break_toward_first_seen():
+    # Equal counts: first-seen key wins (not min / not last).
+    assert _modal_offset([5, 5, 6, 6]).offset == 5
+    assert _modal_offset([6, 6, 5, 5]).offset == 6
     result = _modal_offset([5, 5, 6, 6])
-    assert result.offset == 5
     assert result.mode_fraction == 0.5
     assert result.max_deviation == 1
 
@@ -328,7 +330,7 @@ def test_renumber_keeps_leg_pn_and_applies_constant_offset(tmp_path):
 
 
 @pytest.mark.unit
-def test_renumber_refuses_bimodal_leg(tmp_path):
+def test_renumber_accepts_plurality_without_majority(tmp_path):
     pytest.importorskip("pint.models")
     par, tim, ref, other, inferred = _write_legs(
         tmp_path,
@@ -338,7 +340,7 @@ def test_renumber_refuses_bimodal_leg(tmp_path):
     ref_inf, other_inf = inferred[:2], inferred[2:]
 
     _rewrite_tim_pn_sequential(ref, [v - 100 for v in ref_inf])
-    # Split the other leg 50/50 between two offsets: no majority.
+    # Split the other leg 50/50 between two offsets: plurality/tie → first-seen (100).
     split = [
         other_inf[0] - 100,
         other_inf[1] - 100,
@@ -347,9 +349,10 @@ def test_renumber_refuses_bimodal_leg(tmp_path):
     ]
     _rewrite_tim_pn_sequential(other, split)
 
-    with pytest.raises(ValueError, match="no majority pulse-number offset"):
-        renumber_combination_pulse_numbers(
-            combination_par_path=par,
-            combination_tim_path=tim,
-            ordered_pta_tims=[("nanograv", ref), ("epta", other)],
-        )
+    stats = renumber_combination_pulse_numbers(
+        combination_par_path=par,
+        combination_tim_path=tim,
+        ordered_pta_tims=[("nanograv", ref), ("epta", other)],
+    )
+    assert stats.per_pta_offset["epta"] == 100
+    assert stats.per_pta_mode_fraction["epta"] == 0.5

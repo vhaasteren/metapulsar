@@ -1,6 +1,6 @@
 """Tests for the par-value unit boundary (`feature_par_units.md` §8).
 
-Covers the `nltiming.pint_compat` accessors re-exported through
+Covers the `metapulsar.pint_compat` accessors re-exported through
 ``metapulsar.pint_helpers``: par-vs-model equality, Tempo-convention
 spellings, the emission portability rule against a model of tempo2's
 parser, epoch accessors, alias closure, long-double preservation, prototype
@@ -250,7 +250,7 @@ def test_long_double_preservation():
 
 
 def test_prototypes_cheap_and_inert():
-    from nltiming.pint_compat import _prototype
+    from metapulsar.pint_compat import _prototype
 
     p1 = _prototype("EPS1DOT")
     p2 = _prototype("EPS1DOT")
@@ -272,7 +272,7 @@ def test_prototypes_cheap_and_inert():
 
 def test_canonical_si_entries_are_convertible():
     """Import-time invariant: a PINT unit change fails here, not in a run."""
-    from nltiming.pint_compat import _descriptor
+    from metapulsar.pint_compat import _descriptor
 
     for name, canonical_unit in CANONICAL_SI.items():
         d = _descriptor(name)

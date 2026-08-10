@@ -23,10 +23,10 @@
     "JUG_REMOTE_UI": "1",
     "LIBGL_ALWAYS_SOFTWARE": "1",
     "QSG_RHI_BACKEND": "software",
-    "PINT_CLOCK_OVERRIDE": "${containerEnv:HOME_OVERRIDE}/pint-clock-override"
+    "TEMPO2": "/opt/software/tempo2/T2runtime"
   },
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "onCreateCommand": "mkdir -p \"$HOME\" && git config --global --add safe.directory \"$PWD\" || true; bash \"$PWD/scripts/ensure_pint_clock_override.sh\" || true",
+  "onCreateCommand": "mkdir -p \"$HOME\" && git config --global --add safe.directory \"$PWD\" || true",
   "customizations": {
     "vscode": {
       "extensions": [

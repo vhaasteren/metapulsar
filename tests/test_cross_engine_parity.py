@@ -337,12 +337,13 @@ class TestBinaryFamilyConversionParity:
         assert re.search(r"^BINARY\s+DDH\b", text, re.M)
 
         # Tempo2 reads the orthometric ratio as STIG only; DDHmodel.C *exits*
-        # the process when it is unset, so the tempo2 par must carry the
-        # engine-native spelling while PINT's keeps the canonical one.
+        # the process when it is unset. PINT accepts STIG, so both published
+        # pars use the portable spelling.
         assert re.search(r"^STIG\s", text, re.M)
         assert not re.search(r"^(STIGMA|VARSIGMA)\s", text, re.M)
         text_pint = Path(written["pint"]).read_text(encoding="utf-8")
-        assert re.search(r"^STIGMA\s", text_pint, re.M)
+        assert re.search(r"^STIG\s", text_pint, re.M)
+        assert not re.search(r"^(STIGMA|VARSIGMA)\s", text_pint, re.M)
 
         # The converted DDH par must actually load and evaluate in tempo2 —
         # a text-only assertion is what let the STIGMA/STIG defect through.

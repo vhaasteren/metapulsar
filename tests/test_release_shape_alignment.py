@@ -444,9 +444,9 @@ class TestBinaryFamilyConversionShapes:
             assert "H3" in par, pta_name
             for gone in ("EPS1", "EPS2", "TASC", "NHARM", "NHARMS", "H4"):
                 assert gone not in par, f"{pta_name}: {gone}"
-        # Tempo2 reads the orthometric ratio as STIG only; PINT keeps STIGMA.
+        # Portable STIG: Tempo2 requires it; PINT accepts it as a STIGMA alias.
         assert "STIG" in parsed["t2_pta"] and "STIGMA" not in parsed["t2_pta"]
-        assert "STIGMA" in parsed["pint_pta"] and "STIG" not in parsed["pint_pta"]
+        assert "STIG" in parsed["pint_pta"] and "STIGMA" not in parsed["pint_pta"]
 
     @needs_tempo2
     def test_plain_ell1_reference_converts_to_dd(self, tmp_path):

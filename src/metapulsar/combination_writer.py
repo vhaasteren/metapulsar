@@ -422,14 +422,6 @@ def _rewrite_tim_pn_sequential(tim_path: Path, relative_pns: list[int]) -> int:
     return consumed
 
 
-# A leg's per-TOA ``inferred - source`` votes must agree on one integer for a
-# strict majority of the leg's TOAs. A coherent leg clusters on a single value
-# with a few ±1 stragglers; anything below this is bimodal / phase-incoherent
-# and is refused rather than resolved by fiat (the absolute offset is gauge —
-# see ``renumber_combination_pulse_numbers`` — so a search could not pick anyway).
-_PN_OFFSET_MAJORITY: Final[float] = 0.5
-
-
 @dataclass(frozen=True)
 class _LegOffset:
     """Outcome of aligning one leg's own ``-pn`` onto the global ladder."""
@@ -474,12 +466,18 @@ def _read_pn_sequence(tim_path: Path) -> list[int]:
 def _modal_offset(model_minus_leg: Sequence[int]) -> _LegOffset:
     """Fold one leg's per-TOA ``inferred - source`` into a single integer offset.
 
-    The plurality value is the offset (ties resolved toward the smaller integer);
-    ``mode_fraction`` and ``max_deviation`` report how tight the cluster is.
+    The offset with the largest vote count wins. Exact ties break toward the
+    first-seen value in document order (``Counter`` insertion order). Absolute
+    offset is gauge — absorbed by that leg's free ``JUMP`` — so plurality is
+    enough; a majority gate is not required. ``mode_fraction`` and
+    ``max_deviation`` still report how tight the cluster is.
     """
+    if not model_minus_leg:
+        raise ValueError("model_minus_leg must be non-empty")
     counts = Counter(model_minus_leg)
     top = max(counts.values())
-    offset = min(value for value, count in counts.items() if count == top)
+    # Counter preserves first-seen key order; take the first key at the top count.
+    offset = next(value for value, count in counts.items() if count == top)
     return _LegOffset(
         offset=offset,
         n_toas=len(model_minus_leg),
@@ -530,12 +528,11 @@ def renumber_combination_pulse_numbers(
     which would break within-leg coherence wherever the shared model mispredicts.
 
     The shared model is used only to *vote* on each leg's offset: infer the
-    nearest-integer pulse number under it, then take the modal ``inferred -
-    source`` per leg. The offset's absolute value is gauge — a uniform per-leg
-    shift is absorbed exactly by that leg's free ``JUMP`` (empirically to
-    ~1e-12 turns), so no residual search can or need pick it; the mode is the
-    canonical representative. A leg whose vote lacks a clear majority is
-    phase-incoherent with the shared model and is refused.
+    nearest-integer pulse number under it, then take the plurality
+    ``inferred - source`` per leg (ties: first-seen). The offset's absolute
+    value is gauge — a uniform per-leg shift is absorbed exactly by that leg's
+    free ``JUMP`` (empirically to ~1e-12 turns), so no residual search can or
+    need pick it; the plurality mode is the canonical representative.
     """
     if not ordered_pta_tims:
         raise ValueError("ordered_pta_tims must be non-empty")
@@ -566,7 +563,7 @@ def renumber_combination_pulse_numbers(
             "INCLUDE load/order mismatch"
         )
 
-    # Steps 2-3: one modal integer offset per leg, refusing incoherent legs.
+    # Steps 2-3: one plurality integer offset per leg.
     leg_offsets: dict[str, _LegOffset] = {}
     global_pns: dict[str, list[int]] = {}
     cursor = 0
@@ -579,14 +576,6 @@ def renumber_combination_pulse_numbers(
             global_pns[name] = []
             continue
         result = _modal_offset([inf - pn for inf, pn in zip(window, leg)])
-        if result.mode_fraction <= _PN_OFFSET_MAJORITY:
-            raise ValueError(
-                f"{name}: no majority pulse-number offset — modal {result.offset} "
-                f"covers only {result.mode_fraction:.1%} of {result.n_toas} TOAs "
-                f"(max deviation {result.max_deviation} turns). The leg's -pn are "
-                "phase-incoherent with the shared model up to a constant; refusing "
-                "to invent a global ladder."
-            )
         leg_offsets[name] = result
         global_pns[name] = [pn + result.offset for pn in leg]
 

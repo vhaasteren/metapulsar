@@ -1315,9 +1315,6 @@ def test_t37_case_d_default_message():
 
 @slow
 def test_t38_case_d_sample_stigma():
-    import nltiming
-
-    assert getattr(nltiming, "SUPPORTS_CONVERSION_METADATA", False) is True
     policy = AlignmentPolicy(
         binary_conversion="always",
         h3_only="sample_stigma",
@@ -1664,8 +1661,6 @@ def test_c5_still_catches_true_a1dot_drift():
 
 @slow
 def test_t44_metadata_protocol():
-    import nltiming
-
     policy = AlignmentPolicy(
         binary_conversion="always",
         h3_only="sample_stigma",
@@ -1694,30 +1689,12 @@ def test_t44_metadata_protocol():
     assert meta.stigma_provenance == "test"
     assert metadata_from_report(None) is None
 
-    # Capability gate (§8.5a is a hard §18 lock, so it RAISES — an
-    # `unsupported` reason code would let unsupported_binary="keep" downgrade
-    # it to a warning and convert Case D with no metadata channel).
-    old = nltiming.SUPPORTS_CONVERSION_METADATA
-    try:
-        nltiming.SUPPORTS_CONVERSION_METADATA = False
-        with pytest.raises(
-            BinaryConversionError, match="sample_stigma_requires_nltiming_contract"
-        ):
-            _decide(par, policy=policy)
-        # "keep" must not soften it either.
-        keep_policy = AlignmentPolicy(
-            binary_conversion="always",
-            unsupported_binary="keep",
-            h3_only="sample_stigma",
-            stigma_central=0.37,
-            stigma_provenance="test",
-        )
-        with pytest.raises(
-            BinaryConversionError, match="sample_stigma_requires_nltiming_contract"
-        ):
-            _decide(par, policy=keep_policy)
-    finally:
-        nltiming.SUPPORTS_CONVERSION_METADATA = old
+    # The required_sampling metadata is MetaPulsar-owned and produced without
+    # nltiming installed: combination is self-contained. The contract that a
+    # STIGMA marked required_sampling is *sampled* (never frozen) is enforced
+    # downstream at point-of-use by nltiming's sampler
+    # (nonlinear_timing_model._reject_delta_flat_required_sampling), not by
+    # refusing to convert here.
 
 
 def test_t45_intrinsic_dots_finite_difference():
@@ -1892,12 +1869,12 @@ def test_t2_kepler_is_never_ell1_family():
 
 @slow
 def test_ddh_patch_uses_engine_native_stigma_spelling():
-    """Tempo2 reads the DDH ratio as STIG only, and *exits* when it is unset.
+    """DDH orthometric ratio is always written as portable ``STIG``.
 
     ``readParfile.C`` has no STIGMA/VARSIGMA branch and ``DDHmodel.C`` aborts
-    with "both h3 and stig must be set", so a canonical-only STIGMA line makes
-    the tempo2 half of a converted stack unloadable. PINT accepts STIG as an
-    alias, so the alias-resolved §8.4 postcondition 2 still holds.
+    with "both h3 and stig must be set", so a STIGMA line makes any tempo2 load
+    of the published par exit. PINT accepts STIG as an alias, so both packages
+    get the same portable spelling.
     """
     par = _ell1_dict(binary="ELL1H")
     par["H3"] = [f"{J2145['H3']} 1 1e-10"]
@@ -1916,14 +1893,13 @@ def test_ddh_patch_uses_engine_native_stigma_spelling():
     t2_dict = copy.deepcopy(par)
     apply_binary_patch(pint_dict, patch, timing_package="pint")
     apply_binary_patch(t2_dict, patch, timing_package="tempo2")
-    assert "STIGMA" in pint_dict and "STIG" not in pint_dict
+    assert "STIG" in pint_dict and "STIGMA" not in pint_dict
     assert "STIG" in t2_dict and "STIGMA" not in t2_dict
     # libstempo is spelled tempo2 for this purpose.
     lst_dict = copy.deepcopy(par)
     apply_binary_patch(lst_dict, patch, timing_package="libstempo")
     assert "STIG" in lst_dict
 
-    # Postconditions are alias-resolved, so mixed spellings still agree.
     assert_postconditions(
         {"PINT": pint_dict, "T2": t2_dict},
         target_family="DDH",
@@ -1932,7 +1908,6 @@ def test_ddh_patch_uses_engine_native_stigma_spelling():
             "T2": _nonbinary_snapshot(par),
         },
     )
-    # Both spellings load in PINT and give the same STIGMA.
     assert create_pint_model(pint_dict).STIGMA.value == pytest.approx(
         create_pint_model(t2_dict).STIGMA.value
     )
