@@ -8,13 +8,12 @@ This document provides comprehensive API documentation for the staggered selecti
 - [API Reference](#api-reference)
 - [Usage Examples](#usage-examples)
 - [Enterprise Integration](#enterprise-integration)
-- [Migration Guide](#migration-guide)
 - [Performance Considerations](#performance-considerations)
 - [Troubleshooting](#troubleshooting)
 
 ## Overview
 
-The `selection_utils` module provides a modern, well-documented API for creating Enterprise-compatible selection functions. It replaces the legacy `create_selection_stag` function with improved functionality, better documentation, and enhanced type safety.
+The `selection_utils` module provides a well-documented API for creating Enterprise-compatible selection functions with hierarchical flag fallback, frequency filtering, and full type hints.
 
 ### Key Features
 
@@ -252,54 +251,6 @@ white_signal = white_signals.MeasurementNoise(
     log10_efac=Uniform(-10, 10)
 )
 ```
-
-## Migration Guide
-
-### From Legacy `create_selection_stag`
-
-The new API is designed to be a drop-in replacement for the legacy function:
-
-```python
-# Legacy code
-from legacy.metapulsar import create_selection_stag
-
-legacy_sel = create_selection_stag("efac", {"group": None}, lowfreq=400, highfreq=1000)
-
-# New API
-from metapulsar.selection_utils import create_staggered_selection
-
-new_sel = create_staggered_selection("efac", {"group": None}, freq_range=(400, 1000))
-```
-
-### Key Differences
-
-1. **Function name**: `create_selection_stag` → `create_staggered_selection`
-2. **Frequency parameters**: `(lowfreq, highfreq)` → `freq_range=(low_freq, high_freq)`
-3. **Type hints**: Full type annotations for better IDE support
-4. **Documentation**: Comprehensive docstrings and examples
-5. **Error handling**: Improved error handling for edge cases
-
-### Migration Steps
-
-1. **Update imports**:
-   ```python
-   # Old
-   from legacy.metapulsar import create_selection_stag
-   
-   # New
-   from metapulsar.selection_utils import create_staggered_selection
-   ```
-
-2. **Update function calls**:
-   ```python
-   # Old
-   sel = create_selection_stag("efac", {"group": None}, lowfreq=400, highfreq=1000)
-   
-   # New
-   sel = create_staggered_selection("efac", {"group": None}, freq_range=(400, 1000))
-   ```
-
-3. **Test compatibility**: Verify that selections work identically with your data
 
 ## Performance Considerations
 

@@ -80,7 +80,6 @@ Issues = "https://github.com/vhaasteren/metapulsar/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["metapulsar*", "pylk*"]
-exclude = ["metapulsar.legacy", "metapulsar.legacy.*"]
 
 [tool.setuptools.package-data]
 metapulsar = ["resources/*.json", "resources/*.md"]
@@ -139,7 +138,6 @@ addopts = [
     "--tb=short",
     "--ignore=ref-packages",
     "--ignore=research",
-    "--ignore=legacy",
     "--ignore=data/ipta-dr2",
     "--ignore=examples",
     "--ignore=paper",

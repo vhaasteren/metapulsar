@@ -1,8 +1,8 @@
 """Selection utilities for MetaPulsar.
 
-This module provides a modern, well-documented API for creating Enterprise-compatible
-selection functions. It replaces the legacy `create_selection_stag` function with
-improved functionality, better documentation, and enhanced type safety.
+This module provides a well-documented API for creating Enterprise-compatible
+selection functions with hierarchical flag fallback, frequency filtering, and
+full type hints.
 
 Key Features:
     - Hierarchical flag selection with automatic fallback
@@ -40,17 +40,6 @@ Advanced Usage:
     ...     ("group", "f", "B"): None,  # Triple fallback
     ...     "pta": "EPTA"  # PTA-specific
     ... })
-
-Migration from Legacy:
-    The new API is designed to be a drop-in replacement for the legacy function:
-
-    >>> # Legacy code
-    >>> from legacy.metapulsar import create_selection_stag
-    >>> legacy_sel = create_selection_stag("efac", {"group": None}, lowfreq=400, highfreq=1000)
-    >>>
-    >>>
-    >>> from metapulsar.selection_utils import create_staggered_selection
-    >>> new_sel = create_staggered_selection("efac", {"group": None}, freq_range=(400, 1000))
 
 See Also:
     - `enterprise.signals.selections.Selection`: Enterprise Selection class
