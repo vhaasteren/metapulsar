@@ -7,7 +7,12 @@ import re
 import pytest
 
 from metapulsar.combination_writer import (
+    _first_data_toa_tokens,
+    _infer_pulse_numbers,
     _is_noise_line,
+    _modal_offset,
+    _read_pn_sequence,
+    _rewrite_tim_pn_sequential,
     align_combination_tzr,
     extract_fd_terms,
     fortran_d_to_e,
@@ -100,6 +105,10 @@ def test_write_combination_par_shape(tmp_path):
         out_path=tmp_path / "X.par",
     )
     body = (tmp_path / "X.par").read_text()
+    assert body.startswith("# Created:")
+    assert "# By:      MetaPulsar" in body
+    assert "# Product: combination" in body
+    assert "# reference_pta: pta_a" in body
     assert "FD1 " not in body
     assert "FDJUMP1 -pta pta_a 1.2E-03 1 3.4E-04" in body
     assert "JUMP -pta pta_b 0.0 1" in body
@@ -236,53 +245,111 @@ def test_align_combination_tzr_inserts_missing_keys(tmp_path):
 
 
 @pytest.mark.unit
-def test_renumber_combination_pulse_numbers_duplicate_names(tmp_path):
-    tim_d = tmp_path / "J1909-3744.tim.d"
+def test_modal_offset_unimodal_with_outliers():
+    result = _modal_offset([5, 5, 5, 6, 5])
+    assert result.offset == 5
+    assert result.n_toas == 5
+    assert result.mode_fraction == 0.8
+    assert result.max_deviation == 1
+
+
+@pytest.mark.unit
+def test_modal_offset_ties_break_toward_smaller_integer():
+    result = _modal_offset([5, 5, 6, 6])
+    assert result.offset == 5
+    assert result.mode_fraction == 0.5
+    assert result.max_deviation == 1
+
+
+def _write_legs(tmp_path, ref_mjds, other_mjds):
+    """Write a two-leg combination tree with placeholder ``-pn 0``."""
+    pulsar = "J1909-3744"
+    tim_d = tmp_path / f"{pulsar}.tim.d"
     tim_d.mkdir()
-    a = tim_d / "pta_a.tim"
-    b = tim_d / "pta_b.tim"
-    # Duplicate canonical names across legs; different MJDs so abs PN differs.
-    a.write_text(
-        "FORMAT 1\n"
-        "toa00001 1400.0 54510.0 1.5 g -pn 0\n"
-        "toa00002 1400.0 54511.0 1.5 g -pn 0\n",
-        encoding="utf-8",
-    )
-    b.write_text(
-        "FORMAT 1\n"
-        "toa00001 1400.0 54600.0 1.5 g -pn 0\n"
-        "toa00002 1400.0 54601.0 1.5 g -pn 0\n",
-        encoding="utf-8",
-    )
-    par = tmp_path / "J1909-3744.par"
+    ref = tim_d / "nanograv.tim"
+    other = tim_d / "epta.tim"
+    for path, mjds in ((ref, ref_mjds), (other, other_mjds)):
+        lines = ["FORMAT 1"] + [
+            f"toa{i:05d} 1400.0 {mjd} 1.0 g -pn 0" for i, mjd in enumerate(mjds, 1)
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    par = tmp_path / f"{pulsar}.par"
     par.write_text(MINIMAL_COMBO_PAR, encoding="utf-8")
-    tim = tmp_path / "J1909-3744.tim"
+    tim = tmp_path / f"{pulsar}.tim"
     write_combination_tim(
-        pulsar="J1909-3744",
-        reference_pta="pta_a",
-        pta_tim_paths={"pta_a": a, "pta_b": b},
+        pulsar=pulsar,
+        reference_pta="nanograv",
+        pta_tim_paths={"nanograv": ref, "epta": other},
         out_path=tim,
     )
+    # Align TZR exactly as the renumber does, then infer under that TZR so the
+    # oracle matches the pulse numbers the renumber will compute internally.
+    _n, frq, mjd, site = _first_data_toa_tokens(ref)
+    align_combination_tzr(par, tzrmjd=mjd, tzrfrq=frq, tzrsite=site)
+    inferred = _infer_pulse_numbers(par, tim)
+    return par, tim, ref, other, inferred
+
+
+@pytest.mark.unit
+def test_renumber_keeps_leg_pn_and_applies_constant_offset(tmp_path):
+    pytest.importorskip("pint.models")
+    par, tim, ref, other, inferred = _write_legs(
+        tmp_path, ["54510.0", "54511.0", "54512.0"], ["54600.0", "54601.0", "54602.0"]
+    )
+    ref_inf, other_inf = inferred[:3], inferred[3:]
+
+    # Coherent leg -pn = inferred - K, with distinct per-leg constants.
+    K_ref, K_other = 100, 777
+    _rewrite_tim_pn_sequential(ref, [v - K_ref for v in ref_inf])
+    _rewrite_tim_pn_sequential(other, [v - K_other for v in other_inf])
+
     stats = renumber_combination_pulse_numbers(
         combination_par_path=par,
         combination_tim_path=tim,
-        ordered_tim_paths=[a, b],
+        ordered_pta_tims=[("nanograv", ref), ("epta", other)],
     )
-    assert stats.n_toas == 4
+
+    # The single modal offset per leg is recovered exactly; clusters are tight.
+    assert stats.per_pta_offset == {"nanograv": K_ref, "epta": K_other}
+    assert stats.per_pta_mode_fraction == {"nanograv": 1.0, "epta": 1.0}
+    assert stats.per_pta_max_deviation == {"nanograv": 0, "epta": 0}
+    assert stats.per_pta_n_toas == {"nanograv": 3, "epta": 3}
+    assert stats.n_toas == 6
+    assert stats.pn0_abs == ref_inf[0]
     assert stats.tzrmjd == "54510.0"
-    assert stats.tzrfrq == "1400.0"
-    assert stats.tzrsite == "g"
-    a_text = a.read_text(encoding="utf-8")
-    b_text = b.read_text(encoding="utf-8")
-    first_a = next(
-        ln for ln in a_text.splitlines() if ln.strip().startswith("toa00001")
-    )
-    first_b = next(
-        ln for ln in b_text.splitlines() if ln.strip().startswith("toa00001")
-    )
-    assert re.search(r"-pn\s+0(?:\s|$)", first_a)
-    b_pn = re.search(r"-pn\s+(-?\d+)", first_b)
-    assert b_pn is not None
-    assert int(b_pn.group(1)) != 0
+
+    # Written ladder = the inferred numbering re-origined to the first ref TOA;
+    # every within-leg difference is the leg's own (i.e. inferred) difference.
+    written = _read_pn_sequence(ref) + _read_pn_sequence(other)
+    assert written == [v - ref_inf[0] for v in inferred]
+    assert _read_pn_sequence(ref)[0] == 0
     comb_par = par.read_text(encoding="utf-8")
     assert re.search(r"^TZRMJD 54510\.0\s*$", comb_par, re.M)
+
+
+@pytest.mark.unit
+def test_renumber_refuses_bimodal_leg(tmp_path):
+    pytest.importorskip("pint.models")
+    par, tim, ref, other, inferred = _write_legs(
+        tmp_path,
+        ["54510.0", "54511.0"],
+        ["54600.0", "54601.0", "54602.0", "54603.0"],
+    )
+    ref_inf, other_inf = inferred[:2], inferred[2:]
+
+    _rewrite_tim_pn_sequential(ref, [v - 100 for v in ref_inf])
+    # Split the other leg 50/50 between two offsets: no majority.
+    split = [
+        other_inf[0] - 100,
+        other_inf[1] - 100,
+        other_inf[2] - 105,
+        other_inf[3] - 105,
+    ]
+    _rewrite_tim_pn_sequential(other, split)
+
+    with pytest.raises(ValueError, match="no majority pulse-number offset"):
+        renumber_combination_pulse_numbers(
+            combination_par_path=par,
+            combination_tim_path=tim,
+            ordered_pta_tims=[("nanograv", ref), ("epta", other)],
+        )

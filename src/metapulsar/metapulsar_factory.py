@@ -279,11 +279,16 @@ class MetaPulsarFactory:
                 derivation); cross-engine ``TIME``/``INCLUDE`` parity and
                 ``-mjd_jump_pta`` stamping are not provided. Opt in explicitly
                 (AEI-DR2/DR3 rebuild scripts do).
-            combination_output_dir: If set, after a successful build write
-                ``{dir}/{pulsar}.par`` and ``{dir}/{pulsar}.tim`` (the latter
-                ``INCLUDE``s copied canonical per-PTA tims under
-                ``{pulsar}.tim.d/``). Requires ``combination_strategy='shared'``
-                and ``canonicalize_tim=True``.
+            combination_output_dir: If set, after a successful build write a
+                self-contained tree under ``{dir}/``::
+
+                    par/{pulsar}.par
+                    tim/{pulsar}.tim
+                    tim/{pulsar}/{pulsar}_{pta}.tim
+
+                The master ``.tim`` ``INCLUDE``s only paths under ``tim/`` (no
+                references outside ``combination_output_dir``). Requires
+                ``combination_strategy='shared'`` and ``canonicalize_tim=True``.
 
         Returns:
             MetaPulsar object
@@ -458,6 +463,13 @@ class MetaPulsarFactory:
                 reference_pta=next(iter(single_file_data)),
                 combination_output_dir=combination_output_dir,
                 use_pulse_numbers=pulse_mode,
+                combination_strategy=combination_strategy,
+                canonicalize_tim=canonicalize_tim,
+                convert_jump_mjd=convert_jump_mjd,
+                exclude_from_shared=exclude_from_shared,
+                combine_components=combine_components,
+                add_dm_derivatives=add_dm_derivatives,
+                alignment_policy=parameter_manager.alignment_policy,
             )
             mp.combination_write_result = result
 
@@ -471,8 +483,24 @@ class MetaPulsarFactory:
         reference_pta: str,
         combination_output_dir: Path,
         use_pulse_numbers: PulseNumberMode,
+        combination_strategy: str = "shared",
+        canonicalize_tim: bool = True,
+        convert_jump_mjd: bool = False,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
+        combine_components: List[str] | None = None,
+        add_dm_derivatives: bool = True,
+        alignment_policy: AlignmentPolicy | None = None,
     ) -> CombinationWriteResult:
-        """Write self-contained combination ``.par`` / ``.tim`` under ``combination_output_dir``."""
+        """Write self-contained combination ``.par`` / ``.tim`` under ``combination_output_dir``.
+
+        Layout::
+
+            {combination_output_dir}/par/{pulsar}.par
+            {combination_output_dir}/tim/{pulsar}.tim
+            {combination_output_dir}/tim/{pulsar}/{pulsar}_{pta}.tim
+        """
+        from .parfile_header import combination_options_header_items
+
         pta_files = mp._pta_files
         if reference_pta not in pta_files:
             raise ValueError(
@@ -484,22 +512,40 @@ class MetaPulsarFactory:
             pta: pta_files[pta].par_path.read_text(encoding="utf-8") for pta in ordered
         }
 
-        tim_dir = combination_output_dir / f"{pulsar_name}.tim.d"
-        tim_dir.mkdir(parents=True, exist_ok=True)
+        par_dir = combination_output_dir / "par"
+        tim_root = combination_output_dir / "tim"
+        leg_dir = tim_root / pulsar_name
+        par_dir.mkdir(parents=True, exist_ok=True)
+        leg_dir.mkdir(parents=True, exist_ok=True)
+
         pta_tim_paths: Dict[str, Path] = {}
         for pta in ordered:
-            dest = tim_dir / f"{_safe_pta_filename(pta)}.tim"
+            safe = _safe_pta_filename(pta)
+            dest = leg_dir / f"{pulsar_name}_{safe}.tim"
             shutil.copyfile(pta_files[pta].tim_path, dest)
             pta_tim_paths[pta] = dest
 
         track_pn = pulse_number_tracking_enabled(use_pulse_numbers)
-        par_path = combination_output_dir / f"{pulsar_name}.par"
-        tim_path = combination_output_dir / f"{pulsar_name}.tim"
+        par_path = par_dir / f"{pulsar_name}.par"
+        tim_path = tim_root / f"{pulsar_name}.tim"
+        header_options = combination_options_header_items(
+            reference_pta=reference_pta,
+            combination_strategy=combination_strategy,
+            use_pulse_numbers=use_pulse_numbers,
+            canonicalize_tim=canonicalize_tim,
+            convert_jump_mjd=convert_jump_mjd,
+            exclude_from_shared=exclude_from_shared,
+            combine_components=combine_components,
+            add_dm_derivatives=add_dm_derivatives,
+            alignment_policy=alignment_policy,
+            extra={"pulsar": pulsar_name, "ptas": list(ordered)},
+        )
         stats = write_combination_par(
             reference_pta=reference_pta,
             pta_par_texts=pta_par_texts,
             out_path=par_path,
             track_pulse_numbers=track_pn,
+            combination_options=header_options,
         )
         write_combination_tim(
             pulsar=pulsar_name,
@@ -510,11 +556,11 @@ class MetaPulsarFactory:
 
         pn_stats = None
         if track_pn:
-            ordered_tim_paths = [pta_tim_paths[p] for p in ordered]
+            ordered_pta_tims = [(p, pta_tim_paths[p]) for p in ordered]
             pn_stats = renumber_combination_pulse_numbers(
                 combination_par_path=par_path,
                 combination_tim_path=tim_path,
-                ordered_tim_paths=ordered_tim_paths,
+                ordered_pta_tims=ordered_pta_tims,
             )
 
         return CombinationWriteResult(
@@ -1398,8 +1444,9 @@ def create_metapulsar(
             dual-engine-reloadable canonical artifact before load. Default
             False: engines load the release ``.tim`` tree (see
             ``MetaPulsarFactory.create_metapulsar``). Opt in explicitly.
-        combination_output_dir: If set, write a self-contained combination
-            ``.par`` / ``.tim`` tree under that directory. Requires
+        combination_output_dir: If set, write ``par/{pulsar}.par``,
+            ``tim/{pulsar}.tim``, and ``tim/{pulsar}/{pulsar}_{pta}.tim`` under
+            that directory. Requires
             ``combination_strategy='shared'`` and ``canonicalize_tim=True``.
 
     Returns:

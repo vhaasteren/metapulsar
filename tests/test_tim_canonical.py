@@ -16,6 +16,7 @@ from metapulsar.tim_canonical import (
     TimLegacyFormatError,
     _TimeAccum,
     _bake_mjd_token,
+    _extract_sat_corrections,
     _format_fraction,
     _pint_legacy_heuristic_hit,
     convert_jump_mjd_par_text,
@@ -45,6 +46,99 @@ def _toa_lines(text: str):
 
 def _oracle_baked(mjd_token: str, total_seconds: Fraction) -> str:
     return _bake_mjd_token(mjd_token, _TimeAccum(total=total_seconds))
+
+
+class TestSatCorrections:
+    """Tempo2 ``-addsat`` (seconds) and ``-padd`` (turns via F0) baked into SAT."""
+
+    def test_extract_addsat_sums_and_drops_pairs(self):
+        total, kept = _extract_sat_corrections(
+            ["-sys", "A", "-addsat", "+1", "-foo", "bar"]
+        )
+        assert total == Fraction(1)
+        assert kept == ["-sys", "A", "-foo", "bar"]
+
+    def test_extract_tolerates_valueless_neighbour(self):
+        # A bare -gis (no value) appears in EPTA DR1 tims next to -addsat.
+        total, kept = _extract_sat_corrections(["-addsat", "-1", "-gis"])
+        assert total == Fraction(-1)
+        assert kept == ["-gis"]
+
+    def test_extract_addsat_without_value_raises(self):
+        with pytest.raises(TimCanonicalizationError, match="without a value"):
+            _extract_sat_corrections(["-sys", "A", "-addsat"])
+
+    def test_extract_padd_converts_turns_to_seconds_via_f0(self):
+        # 0.5 turns at F0 = 2 Hz -> 0.25 s.
+        total, kept = _extract_sat_corrections(["-padd", "0.5"], f0=Fraction(2))
+        assert total == Fraction(1, 4)
+        assert kept == []
+
+    def test_extract_padd_and_addsat_combine(self):
+        total, kept = _extract_sat_corrections(
+            ["-padd", "0.5", "-addsat", "+1", "-sys", "A"], f0=Fraction(2)
+        )
+        assert total == Fraction(1) + Fraction(1, 4)
+        assert kept == ["-sys", "A"]
+
+    def test_extract_padd_left_untouched_without_f0(self):
+        # Mode discovery walks without a par; -padd is preserved, not baked.
+        total, kept = _extract_sat_corrections(["-padd", "0.5", "-sys", "A"])
+        assert total == Fraction(0)
+        assert kept == ["-padd", "0.5", "-sys", "A"]
+
+    def test_bake_addsat_equals_equivalent_time_bake(self):
+        # extra_seconds and cumulative TIME are one combined offset -> same MJD,
+        # so the SAT shifts inherit TIME's exact-Fraction, round-once precision.
+        token = "58000.123456789012345"
+        assert _bake_mjd_token(
+            token, _TimeAccum(total=Fraction(0)), extra_seconds=Fraction(1)
+        ) == _bake_mjd_token(token, _TimeAccum(total=Fraction(1)))
+
+    def test_flatten_bakes_addsat_and_drops_flag(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\n"
+            f"{_toa('58000.5', ' -sys A -addsat +1 -foo bar')}\n"
+            f"{_toa('58001.5', ' -addsat -1 -sys B')}\n",
+            encoding="utf-8",
+        )
+
+        text = flatten_tim(root).text
+
+        assert "-addsat" not in text
+        lines = _toa_lines(text)
+        assert lines[0].split()[2] == _oracle_baked("58000.5", Fraction(1))
+        assert "-sys A" in lines[0] and "-foo bar" in lines[0]
+        assert lines[1].split()[2] == _oracle_baked("58001.5", Fraction(-1))
+        assert "-sys B" in lines[1]
+
+    def test_flatten_bakes_padd_via_f0_and_drops_flag(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\n" f"{_toa('58000.5', ' -sys A -padd 0.5')}\n",
+            encoding="utf-8",
+        )
+        f0 = Fraction(2)  # 0.5 turns / 2 Hz = 0.25 s
+
+        text = flatten_tim(root, f0=f0).text
+
+        assert "-padd" not in text
+        line = _toa_lines(text)[0]
+        assert line.split()[2] == _oracle_baked("58000.5", Fraction(1, 4))
+        assert "-sys A" in line
+
+    def test_flatten_leaves_padd_when_no_f0(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\n" f"{_toa('58000.5', ' -sys A -padd 0.5')}\n",
+            encoding="utf-8",
+        )
+
+        text = flatten_tim(root).text  # no f0
+
+        assert "-padd 0.5" in text
+        assert _toa_lines(text)[0].split()[2] == "58000.5"  # unbaked
 
 
 class TestFlatten:

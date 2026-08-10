@@ -70,6 +70,15 @@ from .selection_utils import create_staggered_selection
 
 # Exceptions
 from .pint_helpers import PINTDiscoveryError
+from .parfile_header import (
+    ensure_metapulsar_par_header,
+    format_metapulsar_par_header,
+)
+from .parfile_update import (
+    ParUpdateResult,
+    apply_native_deltas,
+    gls_update_and_write_par,
+)
 
 _TIMING_LAZY_EXPORTS = {
     "NonLinearTimingModel": (
@@ -155,6 +164,11 @@ __all__ = [
     "TimMetadata",
     "create_staggered_selection",
     "PINTDiscoveryError",
+    "format_metapulsar_par_header",
+    "ensure_metapulsar_par_header",
+    "ParUpdateResult",
+    "apply_native_deltas",
+    "gls_update_and_write_par",
     # Convenience functions
     "discover_files",
     "discover_layout",

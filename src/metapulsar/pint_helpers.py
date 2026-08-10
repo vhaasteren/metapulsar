@@ -412,7 +412,7 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     Returns:
         Formatted parfile string using PINT's exact formatting
     """
-    from datetime import datetime
+    from .parfile_header import format_metapulsar_par_header
 
     result = ""
 
@@ -420,9 +420,7 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     if format.lower() == "tempo2":
         result += "MODE 1\n"
     elif format.lower() == "pint":
-        result += "# Created: " + datetime.now().isoformat() + "\n"
-        result += "# Format:  PINT\n"
-        result += "# By:      MetaPulsar\n"
+        result += format_metapulsar_par_header(format="PINT")
 
     # Format ALL parameters using PINT's exact formatting
     for param_name, param_data in parfile_dict.items():

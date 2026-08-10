@@ -1313,14 +1313,18 @@ class TestCombinationOutputDir:
         assert result.par_path.is_file()
         assert result.tim_path.is_file()
         assert result.pn_stats is None
-        tim_d = out / f"{result.par_path.stem}.tim.d"
-        assert tim_d.is_dir()
-        include_targets = list(tim_d.glob("*.tim"))
+        stem = result.par_path.stem
+        assert result.par_path == out / "par" / f"{stem}.par"
+        assert result.tim_path == out / "tim" / f"{stem}.tim"
+        leg_dir = out / "tim" / stem
+        assert leg_dir.is_dir()
+        include_targets = list(leg_dir.glob("*.tim"))
         assert len(include_targets) == 1
         comb_tim = result.tim_path.read_text(encoding="utf-8")
         assert "FORMAT 1" in comb_tim
         assert "INCLUDE" in comb_tim
-        assert str(tim_d.name) in comb_tim
+        assert f"{stem}/" in comb_tim
+        assert "../" not in comb_tim
         comb_par = result.par_path.read_text(encoding="utf-8")
         assert "FDJUMP1 -pta pta_a" in comb_par
         assert "1.2E-03" in comb_par
@@ -1378,7 +1382,7 @@ class TestCombinationOutputDir:
         comb_par = result.par_path.read_text(encoding="utf-8")
         assert re.search(r"^TRACK\s+-2\b", comb_par, re.M)
         assert re.search(r"^TZRMJD\b", comb_par, re.M)
-        include_targets = sorted((out / f"{result.par_path.stem}.tim.d").glob("*.tim"))
+        include_targets = sorted((out / "tim" / result.par_path.stem).glob("*.tim"))
         assert len(include_targets) == 1
         first_data = next(
             ln

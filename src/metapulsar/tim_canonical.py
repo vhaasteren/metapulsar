@@ -386,6 +386,91 @@ def _parse_time_offset(token: str) -> Fraction:
     )
 
 
+def _parse_sat_flag_offset(token: str, *, what: str) -> Fraction:
+    """Exact value for a Tempo2 SAT-shifting flag (-addsat seconds, -padd turns)."""
+    return _parse_bounded_decimal(
+        token,
+        what=what,
+        minimum=-_MAX_TIME_ABS_SECONDS,
+        maximum=_MAX_TIME_ABS_SECONDS,
+    )
+
+
+def _first_par_f0(par_text: str) -> Optional[Fraction]:
+    """Exact spin frequency ``F0`` in Hz from a par, or None if absent/unusable.
+
+    Needed only to bake ``-padd`` (a phase offset) into the arrival time as
+    ``padd / F0`` seconds; ``-addsat`` (seconds) needs no model quantity.
+    """
+    for line in par_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.upper().startswith("C "):
+            continue
+        parts = s.split()
+        if len(parts) >= 2 and parts[0].upper() == "F0":
+            try:
+                value = Decimal(parts[1].replace("D", "E").replace("d", "E"))
+            except InvalidOperation:
+                return None
+            if not value.is_finite() or value == 0:
+                return None
+            return Fraction(value)
+    return None
+
+
+def _extract_sat_corrections(
+    flag_tokens: List[str], *, f0: Optional[Fraction] = None
+) -> Tuple[Fraction, List[str]]:
+    """Split Tempo2 SAT-shifting per-TOA flags out of a TOA's flag list.
+
+    Two Tempo2 flags shift a single TOA in ways PINT does not implement, so the
+    canonical writer bakes both into the arrival time (exactly as it bakes
+    ``TIME``) and drops them, leaving one SAT both engines agree on:
+
+    * ``-addsat N`` -- add ``N`` seconds directly.
+    * ``-padd P`` -- add ``P`` turns of *phase*, i.e. ``P / F0`` seconds. This is
+      the one place a model quantity (``F0``) enters, unavoidable because a phase
+      offset is a time offset only through the spin frequency; the F1 curvature
+      this ignores is ~1e-12 turns over a data span, far below the output round.
+      Baked only when ``f0`` is known -- mode discovery walks without a par and
+      discards the rendered line, so an unbaked ``-padd`` is simply left in place.
+
+    Returns the summed exact offset in seconds and the flag list with every baked
+    pair removed. It scans for the flags rather than walking strict flag/value
+    pairs, so a valueless neighbour (a bare ``-gis`` in EPTA DR1 tims) is
+    tolerated.
+    """
+    total = Fraction(0)
+    kept: List[str] = []
+    index = 0
+    count = len(flag_tokens)
+    while index < count:
+        token = flag_tokens[index]
+        key = token.lower()
+        if key == "-addsat":
+            if index + 1 >= count:
+                raise TimCanonicalizationError(
+                    f"-addsat flag without a value: {' '.join(flag_tokens)!r}"
+                )
+            total += _parse_sat_flag_offset(
+                flag_tokens[index + 1], what="-addsat offset"
+            )
+            index += 2
+            continue
+        if key == "-padd" and f0 is not None:
+            if index + 1 >= count:
+                raise TimCanonicalizationError(
+                    f"-padd flag without a value: {' '.join(flag_tokens)!r}"
+                )
+            turns = _parse_sat_flag_offset(flag_tokens[index + 1], what="-padd offset")
+            total += turns / f0
+            index += 2
+            continue
+        kept.append(token)
+        index += 1
+    return total, kept
+
+
 def _frac_digits_for_mjd_token(token: str) -> int:
     """Digits to emit, from the Decimal exponent (never str.split('.'))."""
     exponent = Decimal(token).as_tuple().exponent
@@ -415,18 +500,24 @@ def _format_fraction(value: Fraction, digits: int) -> str:
     return f"{sign}{integral}.{str(fractional).zfill(digits)}"
 
 
-def _bake_mjd_token(mjd_token: str, accum: _TimeAccum) -> str:
+def _bake_mjd_token(
+    mjd_token: str, accum: _TimeAccum, *, extra_seconds: Fraction = Fraction(0)
+) -> str:
     mjd = _parse_bounded_decimal(
         mjd_token, what="TOA MJD token", minimum=_MIN_MJD, maximum=_MAX_MJD
     )
-    if accum.total == 0:
+    # Cumulative TIME plus this TOA's own -addsat, summed once so both bake
+    # through the same exact rational arithmetic and are rounded only at output.
+    offset = accum.total + extra_seconds
+    if offset == 0:
         return mjd_token  # validated above; preserve exact source bytes
-    baked = mjd + accum.total / _SECDAY
+    baked = mjd + offset / _SECDAY
     # In-range tokens can still bake out of range (e.g. MJD 0.5 with TIME -1e9).
     if not (_MIN_MJD_EXACT <= baked <= _MAX_MJD_EXACT):
         raise TimCanonicalizationError(
             f"Baked TOA MJD {baked} out of range [{_MIN_MJD}, {_MAX_MJD}], "
-            f"from source {mjd_token!r} and cumulative TIME {accum.total} s"
+            f"from source {mjd_token!r}, TIME {accum.total} s and "
+            f"-addsat {extra_seconds} s"
         )
     return _format_fraction(baked, _frac_digits_for_mjd_token(mjd_token))
 
@@ -449,6 +540,7 @@ def _render_canonical_toa_line(
     accum: _TimeAccum,
     name_counter: List[int],
     column_dodge_counter: List[int],
+    f0: Optional[Fraction] = None,
 ) -> str:
     if len(tokens) < 5:
         # Internal invariant: the walker filters these out (see
@@ -458,8 +550,13 @@ def _render_canonical_toa_line(
         )
     name_counter[0] += 1
     name = f"toa{name_counter[0]:05d}"
-    mjd = _bake_mjd_token(tokens[2], accum)
-    flags = (" " + " ".join(tokens[5:])) if len(tokens) > 5 else ""
+    # Bake this TOA's Tempo2 SAT shifts (-addsat seconds, -padd turns via F0)
+    # into the SAT alongside cumulative TIME and drop the flags, so PINT (which
+    # implements neither) and Tempo2 read one arrival time. Precision matches the
+    # TIME bake: exact Fraction, rounded once to >=17 MJD fractional digits.
+    sat_shift_seconds, flag_tokens = _extract_sat_corrections(tokens[5:], f0=f0)
+    mjd = _bake_mjd_token(tokens[2], accum, extra_seconds=sat_shift_seconds)
+    flags = (" " + " ".join(flag_tokens)) if flag_tokens else ""
     for pad in range(_MAX_COLUMN_DODGE):
         rebuilt = (
             f" {name}{' ' * (pad + 1)}{tokens[1]} {mjd} "
@@ -492,10 +589,12 @@ class _TimWalker:
         timing_package: Literal["pint", "tempo2"],
         emit: bool,
         on_legacy_toa: Literal["raise", "skip"] = "raise",
+        f0: Optional[Fraction] = None,
     ):
         self.timing_package = timing_package
         self.emit = emit
         self.on_legacy_toa = on_legacy_toa
+        self.f0 = f0  # for -padd phase->time bake; None on par-less mode discovery
         self.out: List[str] = ["FORMAT 1"] if emit else []
         self.name_counter: List[int] = [0]
         self.column_dodge_counter: List[int] = [0]
@@ -627,6 +726,7 @@ class _TimWalker:
                             accum=accum,
                             name_counter=self.name_counter,
                             column_dodge_counter=self.column_dodge_counter,
+                            f0=self.f0,
                         )
                     )
                     continue
@@ -756,7 +856,10 @@ class _TimWalker:
 
 
 def flatten_tim(
-    tim_path: Path, *, timing_package: Literal["pint", "tempo2"] = "tempo2"
+    tim_path: Path,
+    *,
+    timing_package: Literal["pint", "tempo2"] = "tempo2",
+    f0: Optional[Fraction] = None,
 ) -> FlattenTimResult:
     """Return standalone Tempo2 FORMAT 1 text for ``tim_path``.
 
@@ -777,7 +880,9 @@ def flatten_tim(
         TimCanonicalizationError: Missing or circular INCLUDE, unreadable file,
             or invalid observed ``TIME``/``MODE``/MJD.
     """
-    walker = _TimWalker(timing_package=timing_package, emit=True, on_legacy_toa="raise")
+    walker = _TimWalker(
+        timing_package=timing_package, emit=True, on_legacy_toa="raise", f0=f0
+    )
     walker.walk(Path(tim_path).resolve(), [])
     return FlattenTimResult(
         text="\n".join(walker.out) + "\n",
@@ -1475,8 +1580,10 @@ def write_canonical_tim(
     package: Literal["pint", "tempo2"] = (
         "pint" if timing_package == "pint" else "tempo2"
     )
+    # F0 lets the flatten bake -padd (a phase offset) into the SAT as padd / F0.
+    f0 = _first_par_f0(par_text) if par_text is not None else None
     try:
-        flattened = flatten_tim(tim_path, timing_package=package)
+        flattened = flatten_tim(tim_path, timing_package=package, f0=f0)
     except TimLegacyFormatError:
         if par_text is None:
             raise
@@ -1488,7 +1595,7 @@ def write_canonical_tim(
                 timing_package=timing_package,
                 out_path=converted,
             )
-            flattened = flatten_tim(converted, timing_package=package)
+            flattened = flatten_tim(converted, timing_package=package, f0=f0)
 
     text = stamp_metadata_flags(
         flattened.text, pta_name=pta_name, timing_package=timing_package

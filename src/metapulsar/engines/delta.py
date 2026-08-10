@@ -70,11 +70,9 @@ class PintDeltaEngine:
         if not hasattr(model, name):
             raise KeyError(f"PINT model has no parameter '{name}'")
 
-        param = getattr(model, name)
-        try:
-            param.quantity = param.quantity + float(delta) * param.units
-        except Exception:
-            param.value = param.value + float(delta)
+        from metapulsar.parfile_update import apply_native_delta_to_param
+
+        apply_native_delta_to_param(getattr(model, name), float(delta))
 
     def _time_residuals(self, model) -> np.ndarray:
         phase_resids = self._phase_residuals(model)

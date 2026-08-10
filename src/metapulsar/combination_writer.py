@@ -9,13 +9,23 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Final, Mapping, Sequence
 
+from .parfile_header import (
+    combination_options_header_items,
+    ensure_metapulsar_par_header,
+    strip_metapulsar_par_header,
+)
 from .pint_helpers import par_text_with_track_minus_2
-from .tim_canonical import classify_tim_line, replace_pn_on_toa_line
+from .tim_canonical import (
+    _pn_occurrences,
+    classify_tim_line,
+    replace_pn_on_toa_line,
+)
 
 # Noise / white-noise / red-noise hyperparameter keys removed from the
 # combination par (exact key match).
@@ -190,6 +200,15 @@ class CombinationPnStats:
     tzrmjd: str
     tzrfrq: str
     tzrsite: str
+    # Per-leg diagnostics for the modal-offset renumber, keyed by PTA name:
+    # the single integer offset added to each leg's own ``-pn``, the leg's TOA
+    # count, the fraction of TOAs voting for that offset, and the largest ±turn
+    # any TOA departs from it (the shared model's mispredictions, tolerated
+    # because we keep the leg's coherent numbering).
+    per_pta_offset: Mapping[str, int]
+    per_pta_n_toas: Mapping[str, int]
+    per_pta_mode_fraction: Mapping[str, float]
+    per_pta_max_deviation: Mapping[str, int]
 
 
 @dataclass(frozen=True)
@@ -239,13 +258,20 @@ def write_combination_par(
     pta_par_texts: Mapping[str, str],
     out_path: Path,
     track_pulse_numbers: bool = True,
+    combination_options: Mapping[str, object] | None = None,
 ) -> CombinationParStats:
-    """Merged combination par; see feature_combination_parfile_writer.md §3.3."""
+    """Merged combination par; see feature_combination_parfile_writer.md §3.3.
+
+    ``combination_options`` (when provided) are stamped into the MetaPulsar
+    comment header — typically factory user-facing knobs and
+    :class:`~metapulsar.parameter_manager.AlignmentPolicy` fields via
+    :func:`~metapulsar.parfile_header.combination_options_header_items`.
+    """
     if reference_pta not in pta_par_texts:
         raise KeyError(f"reference PTA {reference_pta!r} missing from per-PTA pars")
 
     ordered = [reference_pta] + sorted(p for p in pta_par_texts if p != reference_pta)
-    ref_text = pta_par_texts[reference_pta]
+    ref_text = strip_metapulsar_par_header(pta_par_texts[reference_pta])
     kept: list[str] = []
     for ln in ref_text.splitlines():
         s = ln.strip()
@@ -311,6 +337,13 @@ def write_combination_par(
         merged = sanitize_fortran_exponents(par_text_with_track_minus_2(body))
     else:
         merged = sanitize_fortran_exponents(_strip_track_lines(body))
+    header_extra = combination_options_header_items(reference_pta=reference_pta)
+    if combination_options:
+        header_extra.update(dict(combination_options))
+    # Ensure Product/reference are present even if caller overrode extras.
+    header_extra.setdefault("Product", "combination")
+    header_extra.setdefault("reference_pta", reference_pta)
+    merged = ensure_metapulsar_par_header(merged, extra=header_extra)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(merged, encoding="utf-8")
@@ -365,14 +398,6 @@ def _first_data_toa_tokens(tim_path: Path) -> tuple[str, str, str, str]:
     raise ValueError(f"no FORMAT 1 data TOA found in {tim_path}")
 
 
-def _count_data_lines(tim_path: Path) -> int:
-    n = 0
-    for line in Path(tim_path).read_text(encoding="utf-8").splitlines():
-        if classify_tim_line(line)[0] == "data":
-            n += 1
-    return n
-
-
 def _rewrite_tim_pn_sequential(tim_path: Path, relative_pns: list[int]) -> int:
     """Rewrite ``-pn`` flags in document order; return number of data lines rewritten."""
     text = Path(tim_path).read_text(encoding="utf-8")
@@ -397,34 +422,83 @@ def _rewrite_tim_pn_sequential(tim_path: Path, relative_pns: list[int]) -> int:
     return consumed
 
 
-def renumber_combination_pulse_numbers(
-    *,
-    combination_par_path: Path,
-    combination_tim_path: Path,
-    ordered_tim_paths: Sequence[Path],
-) -> CombinationPnStats:
-    """Renumber INCLUDE-target ``-pn`` onto a Tempo2-relative global ladder."""
-    if not ordered_tim_paths:
-        raise ValueError("ordered_tim_paths must be non-empty")
-    for path in ordered_tim_paths:
-        path = Path(path)
-        if not path.is_file():
-            raise FileNotFoundError(f"missing combination INCLUDE target: {path}")
+# A leg's per-TOA ``inferred - source`` votes must agree on one integer for a
+# strict majority of the leg's TOAs. A coherent leg clusters on a single value
+# with a few ±1 stragglers; anything below this is bimodal / phase-incoherent
+# and is refused rather than resolved by fiat (the absolute offset is gauge —
+# see ``renumber_combination_pulse_numbers`` — so a search could not pick anyway).
+_PN_OFFSET_MAJORITY: Final[float] = 0.5
 
-    first_path = Path(ordered_tim_paths[0])
-    _name, tzrfrq, tzrmjd, tzrsite = _first_data_toa_tokens(first_path)
-    align_combination_tzr(
-        Path(combination_par_path),
-        tzrmjd=tzrmjd,
-        tzrfrq=tzrfrq,
-        tzrsite=tzrsite,
+
+@dataclass(frozen=True)
+class _LegOffset:
+    """Outcome of aligning one leg's own ``-pn`` onto the global ladder."""
+
+    offset: int
+    n_toas: int
+    mode_fraction: float
+    max_deviation: int
+
+
+def _read_pn_sequence(tim_path: Path) -> list[int]:
+    """Return each data TOA's integer ``-pn`` in document order.
+
+    Every data TOA must carry exactly one integral ``-pn``; the canonical legs
+    guarantee this whenever pulse-number tracking is on, which is the only
+    condition under which the combination renumber runs.
+    """
+    values: list[int] = []
+    for line in Path(tim_path).read_text(encoding="utf-8").splitlines():
+        if classify_tim_line(line)[0] != "data":
+            continue
+        _spans, pn_values = _pn_occurrences(line)
+        if len(pn_values) != 1:
+            raise ValueError(
+                f"{tim_path}: each data TOA needs exactly one -pn flag "
+                f"(found {len(pn_values)}): {line.strip()!r}"
+            )
+        try:
+            # Canonical / release tims sometimes emit ``-pn 123.0``; accept any
+            # float string that is an exact integer (float64-safe for |n|<2^53).
+            pn_f = float(pn_values[0])
+            if not pn_f.is_integer():
+                raise ValueError(f"non-integral -pn {pn_values[0]!r}")
+            values.append(int(pn_f))
+        except ValueError as exc:
+            raise ValueError(
+                f"{tim_path}: non-integral -pn {pn_values[0]!r}: {line.strip()!r}"
+            ) from exc
+    return values
+
+
+def _modal_offset(model_minus_leg: Sequence[int]) -> _LegOffset:
+    """Fold one leg's per-TOA ``inferred - source`` into a single integer offset.
+
+    The plurality value is the offset (ties resolved toward the smaller integer);
+    ``mode_fraction`` and ``max_deviation`` report how tight the cluster is.
+    """
+    counts = Counter(model_minus_leg)
+    top = max(counts.values())
+    offset = min(value for value, count in counts.items() if count == top)
+    return _LegOffset(
+        offset=offset,
+        n_toas=len(model_minus_leg),
+        mode_fraction=top / len(model_minus_leg),
+        max_deviation=max(abs(value - offset) for value in model_minus_leg),
     )
 
+
+def _infer_pulse_numbers(par_path: Path, tim_path: Path) -> list[int]:
+    """Nearest-integer absolute pulse number per TOA under the shared model.
+
+    Returned in INCLUDE/document order; a PINT re-sort would break the leg-by-leg
+    slicing in the caller and is rejected rather than silently tolerated.
+    """
     from pint.models import get_model_and_toas
 
-    _model, toas = get_model_and_toas(
-        str(combination_par_path),
-        str(combination_tim_path),
+    model, toas = get_model_and_toas(
+        str(par_path),
+        str(tim_path),
         allow_T2=True,
         allow_tcb=True,
         planets=True,
@@ -437,36 +511,104 @@ def renumber_combination_pulse_numbers(
             "PINT did not preserve INCLUDE/source TOA order "
             f"(index={indices[:10]}{'...' if len(indices) > 10 else ''})"
         )
+    toas.compute_pulse_numbers(model)
+    return [int(x) for x in toas.table["pulse_number"]]
 
-    n_data = sum(_count_data_lines(Path(p)) for p in ordered_tim_paths)
-    if n_data != len(toas):
-        raise ValueError(
-            f"data-line count {n_data} != loaded TOA count {len(toas)}; "
-            "INCLUDE load/order mismatch"
-        )
 
-    toas.compute_pulse_numbers(_model)
-    abs_pn_ints = [int(x) for x in toas.table["pulse_number"]]
-    pn0 = abs_pn_ints[0]
-    rel = [p - pn0 for p in abs_pn_ints]
+def renumber_combination_pulse_numbers(
+    *,
+    combination_par_path: Path,
+    combination_tim_path: Path,
+    ordered_pta_tims: Sequence[tuple[str, Path]],
+) -> CombinationPnStats:
+    """Place every leg's own ``-pn`` on one global ladder via a per-PTA constant.
 
-    offset = 0
-    for path in ordered_tim_paths:
-        n = _count_data_lines(Path(path))
-        chunk = rel[offset : offset + n]
-        rewritten = _rewrite_tim_pn_sequential(Path(path), chunk)
-        if rewritten != n:
-            raise ValueError(
-                f"{path}: expected to rewrite {n} data TOAs, rewrote {rewritten}"
-            )
-        offset += n
-    if offset != len(rel):
-        raise ValueError(f"pulse-number rewrite consumed {offset} of {len(rel)} values")
+    Each PTA leg already carries coherent pulse numbers (derived from that PTA's
+    original model); the only unknown is a single integer offset between its
+    origin and the reference's. We keep the leg numbers verbatim and add that
+    constant — we never re-derive per-TOA pulse numbers from the shared model,
+    which would break within-leg coherence wherever the shared model mispredicts.
 
-    return CombinationPnStats(
-        n_toas=len(rel),
-        pn0_abs=pn0,
+    The shared model is used only to *vote* on each leg's offset: infer the
+    nearest-integer pulse number under it, then take the modal ``inferred -
+    source`` per leg. The offset's absolute value is gauge — a uniform per-leg
+    shift is absorbed exactly by that leg's free ``JUMP`` (empirically to
+    ~1e-12 turns), so no residual search can or need pick it; the mode is the
+    canonical representative. A leg whose vote lacks a clear majority is
+    phase-incoherent with the shared model and is refused.
+    """
+    if not ordered_pta_tims:
+        raise ValueError("ordered_pta_tims must be non-empty")
+    ordered = [(name, Path(path)) for name, path in ordered_pta_tims]
+    for _name, path in ordered:
+        if not path.is_file():
+            raise FileNotFoundError(f"missing combination INCLUDE target: {path}")
+
+    # Anchor the global ladder's TZR on the reference leg's first data TOA.
+    _name, tzrfrq, tzrmjd, tzrsite = _first_data_toa_tokens(ordered[0][1])
+    align_combination_tzr(
+        Path(combination_par_path),
         tzrmjd=tzrmjd,
         tzrfrq=tzrfrq,
         tzrsite=tzrsite,
+    )
+
+    # Step 1: infer pulse numbers under the shared model (no TRACK needed —
+    # compute_pulse_numbers rounds model phase regardless of the residual mode).
+    inferred = _infer_pulse_numbers(
+        Path(combination_par_path), Path(combination_tim_path)
+    )
+    leg_pns = {name: _read_pn_sequence(path) for name, path in ordered}
+    n_data = sum(len(pns) for pns in leg_pns.values())
+    if n_data != len(inferred):
+        raise ValueError(
+            f"data-line count {n_data} != inferred TOA count {len(inferred)}; "
+            "INCLUDE load/order mismatch"
+        )
+
+    # Steps 2-3: one modal integer offset per leg, refusing incoherent legs.
+    leg_offsets: dict[str, _LegOffset] = {}
+    global_pns: dict[str, list[int]] = {}
+    cursor = 0
+    for name, _path in ordered:
+        leg = leg_pns[name]
+        window = inferred[cursor : cursor + len(leg)]
+        cursor += len(leg)
+        if not leg:
+            leg_offsets[name] = _LegOffset(0, 0, 1.0, 0)
+            global_pns[name] = []
+            continue
+        result = _modal_offset([inf - pn for inf, pn in zip(window, leg)])
+        if result.mode_fraction <= _PN_OFFSET_MAJORITY:
+            raise ValueError(
+                f"{name}: no majority pulse-number offset — modal {result.offset} "
+                f"covers only {result.mode_fraction:.1%} of {result.n_toas} TOAs "
+                f"(max deviation {result.max_deviation} turns). The leg's -pn are "
+                "phase-incoherent with the shared model up to a constant; refusing "
+                "to invent a global ladder."
+            )
+        leg_offsets[name] = result
+        global_pns[name] = [pn + result.offset for pn in leg]
+
+    # Steps 4-5: re-origin so the reference leg's first TOA reads 0, then write.
+    anchor = global_pns[ordered[0][0]][0]
+    for name, path in ordered:
+        relative = [g - anchor for g in global_pns[name]]
+        written = _rewrite_tim_pn_sequential(path, relative)
+        if written != len(relative):
+            raise ValueError(
+                f"{path}: expected to rewrite {len(relative)} data TOAs, "
+                f"rewrote {written}"
+            )
+
+    return CombinationPnStats(
+        n_toas=n_data,
+        pn0_abs=anchor,
+        tzrmjd=tzrmjd,
+        tzrfrq=tzrfrq,
+        tzrsite=tzrsite,
+        per_pta_offset={n: o.offset for n, o in leg_offsets.items()},
+        per_pta_n_toas={n: o.n_toas for n, o in leg_offsets.items()},
+        per_pta_mode_fraction={n: o.mode_fraction for n, o in leg_offsets.items()},
+        per_pta_max_deviation={n: o.max_deviation for n, o in leg_offsets.items()},
     )
