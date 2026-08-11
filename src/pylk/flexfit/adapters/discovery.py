@@ -12,14 +12,14 @@ Discovery is imported lazily so the numerical core imports without it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable
 
 import numpy as np
 
 from ..basis import BasisBlock, VarianceGroup, fourier_pair_groups
 from ..noise import DiagonalNoise, NoiseOperator, ShermanMorrisonNoise
 from ..projection import SpectrumProjection, project_spectrum
+from ..waveform import WaveformAnalysis, analyze_waveforms, frequencies_from_blocks
 
 # Sensible default induced-RMS bounds for a learnable red/DM group: 0.1 ns to 10 us.
 # The upper bound guards a free-spectrum EM from absorbing white noise into the
@@ -558,7 +558,7 @@ def reconstruct_waveforms(
     spectra,
     residuals=None,
     n_sweeps: int = 2,
-):
+) -> WaveformAnalysis:
     """One joint reconstruction of **all** stochastic components (timing + GPs).
 
     Solves the joint conditional over ``T = [timing_marg, F_red, F_dm, ...]`` with
@@ -566,6 +566,9 @@ def reconstruct_waveforms(
     law, using ``pylk.flexfit.solve_flexible_phi`` — bit-identical to Discovery's
     Woodbury but, unlike ``PulsarLikelihood.conditional``, it also returns the
     timing-model coefficients (Discovery folds a constant timing GP into ``N``).
+
+    ``pulsar.toas`` are raw seconds (``MJD × 86400``, the same convention
+    MetaPulsar materializes); ``toa_mjd`` is therefore ``toas / 86400.0``.
 
     Parameters
     ----------
@@ -586,10 +589,11 @@ def reconstruct_waveforms(
 
     Returns
     -------
-    Reconstruction
+    WaveformAnalysis
         Dict-like over per-block conditional-mean waveforms at the TOAs
-        (``recon["red"]`` etc.), plus per-block coefficient mean/covariance and a
-        :meth:`Reconstruction.predict_gp` for GP posterior mean+std on a grid.
+        (``analysis["red"]`` etc.), plus staged residuals and
+        :meth:`~pylk.flexfit.waveform.WaveformAnalysis.predict_gp` returning a
+        :class:`~pylk.flexfit.waveform.GPBand`.
     """
     from pylk.flexfit import assemble, solve_flexible_phi
 
@@ -615,77 +619,14 @@ def reconstruct_waveforms(
         n_sweeps=n_sweeps,
     )
 
-    waveforms, means, covs, freqs = {}, {}, {}, {}
-    for block in blocks:
-        span = res.block_spans[block.name]
-        waveforms[block.name] = res.waveform(block.name)
-        means[block.name] = np.asarray(res.coefficient_mean[span], dtype=float)
-        covs[block.name] = np.asarray(
-            res.coefficient_covariance[span, span], dtype=float
-        )
-        if "frequencies" in block.metadata:
-            freqs[block.name] = np.asarray(block.metadata["frequencies"], dtype=float)
-    return Reconstruction(waveforms, means, covs, freqs)
-
-
-@dataclass(frozen=True)
-class Reconstruction:
-    """Joint reconstruction of all components with GP grid prediction.
-
-    Dict-like over per-block conditional-mean waveforms at the TOAs; also carries
-    the coefficient posterior mean/covariance and (for Fourier GP blocks) the
-    per-column frequencies, enabling true GP prediction on an arbitrary grid.
-    """
-
-    waveforms: Mapping[str, np.ndarray]
-    coefficient_mean: Mapping[str, np.ndarray]
-    coefficient_covariance: Mapping[str, np.ndarray]
-    frequencies: Mapping[str, np.ndarray]  # GP blocks only (Hz, per column)
-
-    def __getitem__(self, name: str) -> np.ndarray:
-        return np.asarray(self.waveforms[name], dtype=float)
-
-    def __iter__(self):
-        return iter(self.waveforms)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self.waveforms
-
-    def keys(self):
-        return self.waveforms.keys()
-
-    def waveform(self, name: str) -> np.ndarray:
-        return self[name]
-
-    def predict_gp(self, name: str, t_grid) -> tuple[np.ndarray, np.ndarray]:
-        """GP posterior mean and 1-sigma std on a regular time grid.
-
-        ``t_grid`` is in seconds (same units as ``pulsar.toas``). For a **chromatic
-        (DM)** block this returns the DM-induced delay at the basis reference
-        frequency ``fref`` — i.e. the DM time series in seconds — because the
-        plain Fourier basis (no ``(fref/nu)^2`` factor) is evaluated on the grid;
-        divide-out is automatic. Red noise is achromatic, so it is the red
-        waveform itself. Timing blocks have no Fourier basis and are rejected.
-        """
-        if name not in self.frequencies:
-            raise KeyError(
-                f"block {name!r} has no Fourier frequencies (cannot predict on a "
-                "grid; timing-model prediction would need a new design matrix)"
-            )
-        f = np.asarray(self.frequencies[name], dtype=float)  # (2C,), interleaved
-        t = np.asarray(t_grid, dtype=float)
-        phase = 2.0 * np.pi * np.outer(t, f)
-        basis = np.empty_like(phase)
-        basis[:, 0::2] = np.sin(phase[:, 0::2])  # sin at even columns
-        basis[:, 1::2] = np.cos(phase[:, 1::2])  # cos at odd columns
-        mean = basis @ np.asarray(self.coefficient_mean[name], dtype=float)
-        cov = np.asarray(self.coefficient_covariance[name], dtype=float)
-        var = np.einsum("gi,ij,gj->g", basis, cov, basis)
-        return mean, np.sqrt(np.clip(var, 0.0, None))
-
-
-def _gp_name(index_key: str, psr_name: str) -> str:
-    # keys look like "{psr}_{name}_coefficients(2C)"; recover "{name}".
-    body = index_key.rsplit("_coefficients", 1)[0]
-    prefix = f"{psr_name}_"
-    return body[len(prefix) :] if body.startswith(prefix) else body
+    toas = np.asarray(pulsar.toas, dtype=float)
+    return analyze_waveforms(
+        np.asarray(y, dtype=float),
+        np.asarray(variance, dtype=float),
+        res,
+        toas=toas,
+        toa_mjd=toas / 86400.0,
+        block_kinds={b.name: b.kind for b in blocks},
+        block_frequencies=frequencies_from_blocks(blocks),
+        freqs_mhz=np.asarray(pulsar.freqs, dtype=float),
+    )

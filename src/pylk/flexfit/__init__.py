@@ -26,6 +26,12 @@ Typical use::
     fit = fastfit(noise=noise, blocks=blocks, timing=timing, n_sweeps=3)
     whitened = fit.whitened_residuals()          # residuals minus red+DM waveforms
     red_wave = fit.waveform("red")
+    analysis = fit.waveform_analysis(
+        variance=noise.variance,
+        toas=pulsar.toas,
+        toa_mjd=pulsar.toas / 86400.0,
+    )
+    panels = analysis.panel_arrays()
 """
 
 from __future__ import annotations
@@ -51,6 +57,18 @@ from .flexible_phi import (
 from .noise import DiagonalNoise, NoiseOperator, ShermanMorrisonNoise
 from .projection import SpectrumProjection, project_spectrum, spectrum_objective
 from .timing import TimingModel
+from .waveform import (
+    STANDARD_PTA_STAGES,
+    GPBand,
+    StageSpec,
+    WaveformAnalysis,
+    WaveformPanelArrays,
+    WaveformStage,
+    analyze_waveforms,
+    load_waveform_figdata,
+    predict_fourier_gp,
+    write_waveform_figdata,
+)
 from .whitenoise import WhiteNoiseResult, expected_squared_residuals, fit_white_noise
 
 __all__ = [
@@ -87,4 +105,15 @@ __all__ = [
     "SpectrumProjection",
     # timing interface
     "TimingModel",
+    # waveform analysis
+    "StageSpec",
+    "WaveformStage",
+    "GPBand",
+    "WaveformPanelArrays",
+    "WaveformAnalysis",
+    "STANDARD_PTA_STAGES",
+    "analyze_waveforms",
+    "predict_fourier_gp",
+    "write_waveform_figdata",
+    "load_waveform_figdata",
 ]

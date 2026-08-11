@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 import numpy as np
 from scipy.optimize import minimize
@@ -42,6 +42,9 @@ from .basis import BasisBlock, assemble
 from .flexible_phi import FlexiblePhiResult, solve_flexible_phi
 from .noise import DiagonalNoise
 from .timing import TimingModel
+
+if TYPE_CHECKING:
+    from .waveform import StageSpec, WaveformAnalysis
 
 
 @dataclass(frozen=True)
@@ -56,13 +59,41 @@ class WhiteNoiseResult:
     history: tuple[Mapping[str, tuple[float, float]], ...]
     solve: FlexiblePhiResult | None  # None for a pure-WN fit (no basis blocks)
     variance: np.ndarray  # final per-TOA N diagonal (s^2)
+    residuals: np.ndarray  # y vector of the final solve (seconds)
 
     def __post_init__(self) -> None:
         for name in ("efac", "equad", "n_toas"):
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
-        var = np.array(self.variance, dtype=float, copy=True)
-        var.setflags(write=False)
-        object.__setattr__(self, "variance", var)
+        for name in ("variance", "residuals"):
+            arr = np.array(getattr(self, name), dtype=float, copy=True)
+            arr.setflags(write=False)
+            object.__setattr__(self, name, arr)
+
+    def waveform_analysis(
+        self,
+        *,
+        toas: np.ndarray,
+        toa_mjd: np.ndarray,
+        block_kinds: Mapping[str, str],
+        block_frequencies: Mapping[str, np.ndarray] | None = None,
+        freqs_mhz: np.ndarray | None = None,
+        stages: Sequence[StageSpec] | None = None,
+    ) -> WaveformAnalysis:
+        if self.solve is None:
+            raise RuntimeError("WhiteNoiseResult.solve is None (pure-WN fit)")
+        from .waveform import analyze_waveforms
+
+        return analyze_waveforms(
+            self.residuals,
+            self.variance,
+            self.solve,
+            toas=toas,
+            toa_mjd=toa_mjd,
+            block_kinds=block_kinds,
+            block_frequencies=block_frequencies,
+            freqs_mhz=freqs_mhz,
+            stages=stages,
+        )
 
     def noisedict(
         self, psr_name: str, *, convention: str = "tnequad", equad_floor: float = 1e-10
@@ -281,4 +312,5 @@ def fit_white_noise(
         history=tuple(history),
         solve=solve,
         variance=variance,
+        residuals=y,
     )

@@ -320,15 +320,15 @@ def test_predict_gp_on_grid():
         spectra={"red": {"kind": "red", "components": 20, "log10_A": A, "gamma": g}},
     )
     # Grid prediction evaluated at the TOAs equals the TOA-domain waveform.
-    mean_toa, std_toa = recon.predict_gp("red", psr.toas)
-    np.testing.assert_allclose(mean_toa, recon["red"], rtol=1e-8, atol=1e-14)
-    assert np.all(std_toa >= 0.0)
+    band_toa = recon.predict_gp("red", psr.toas)
+    np.testing.assert_allclose(band_toa.mean, recon["red"], rtol=1e-8, atol=1e-14)
+    assert np.all(band_toa.std >= 0.0)
 
     # A finer regular grid works (interpolation/extrapolation) with a valid band.
     grid = np.linspace(psr.toas.min(), psr.toas.max(), 300)
-    mean, std = recon.predict_gp("red", grid)
-    assert mean.shape == (300,) and std.shape == (300,)
-    assert np.all(np.isfinite(mean)) and np.all(std >= 0.0)
+    band = recon.predict_gp("red", grid)
+    assert band.mean.shape == (300,) and band.std.shape == (300,)
+    assert np.all(np.isfinite(band.mean)) and np.all(band.std >= 0.0)
 
     with pytest.raises(KeyError):
         recon.predict_gp("timingmodel", grid)

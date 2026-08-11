@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 import numpy as np
 
@@ -19,6 +19,10 @@ from .basis import BasisBlock, assemble
 from .flexible_phi import FlexiblePhiResult, solve_flexible_phi
 from .noise import NoiseOperator
 from .timing import TimingModel
+from .waveform import block_names_excluding, block_names_of, residuals_after
+
+if TYPE_CHECKING:
+    from .waveform import StageSpec, WaveformAnalysis
 
 
 @dataclass(frozen=True)
@@ -50,12 +54,13 @@ class FastFitResult:
 
     def block_names_of(self, *kinds: str) -> tuple[str, ...]:
         """Block names whose kind is in ``kinds`` (e.g. ``"red", "dm"``)."""
-        wanted = set(kinds)
-        return tuple(n for n, k in self.block_kinds.items() if k in wanted)
+        return block_names_of(self.block_kinds, self.solve.block_waveforms, *kinds)
 
     def noise_waveform(self) -> np.ndarray:
         """Sum of all non-timing (GP) block waveforms."""
-        names = tuple(n for n, k in self.block_kinds.items() if k != "timing")
+        names = block_names_excluding(
+            self.block_kinds, self.solve.block_waveforms, "timing"
+        )
         if not names:
             return np.zeros_like(self.residuals)
         return self.solve.total_waveform(*names)
@@ -66,9 +71,31 @@ class FastFitResult:
 
     def residuals_minus(self, *block_names: str) -> np.ndarray:
         """Residuals with the named block waveforms subtracted."""
-        if not block_names:
-            return np.asarray(self.residuals, dtype=float)
-        return self.residuals - self.solve.total_waveform(*block_names)
+        return residuals_after(self.solve, self.residuals, block_names)
+
+    def waveform_analysis(
+        self,
+        *,
+        variance: np.ndarray,
+        toas: np.ndarray,
+        toa_mjd: np.ndarray,
+        block_frequencies: Mapping[str, np.ndarray] | None = None,
+        freqs_mhz: np.ndarray | None = None,
+        stages: Sequence[StageSpec] | None = None,
+    ) -> WaveformAnalysis:
+        from .waveform import analyze_waveforms
+
+        return analyze_waveforms(
+            self.residuals,
+            variance,
+            self.solve,
+            toas=toas,
+            toa_mjd=toa_mjd,
+            block_kinds=self.block_kinds,
+            block_frequencies=block_frequencies,
+            freqs_mhz=freqs_mhz,
+            stages=stages,
+        )
 
     # --- convenience --------------------------------------------------------
     @property
