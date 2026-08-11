@@ -467,7 +467,7 @@ def parse_par_token(param_name: str, param_value) -> Tuple[Any, bool]:
     Tempo-convention parameters (EPS dots, A1DOT/XDOT, PBDOT, EDOT) the token
     is not the physical value. Use ``si_from_par`` / ``si_quantity_from_token``
     for physics, and this function only for row-C reads, strings and fit
-    flags (see `feature_par_units.md` §2).
+    flags.
 
     Handles the common parfile format of "value fit_status uncertainty":
     - value: the token as written (float when numeric, string otherwise)
@@ -1053,7 +1053,7 @@ def align_orbital_chart(
     (``ELL1model.C:75-76``), so the edit is a coordinate relabel that leaves
     residuals unchanged.
 
-    Applies to every PTA regardless of ``timing_package`` (feature doc S1.5): an
+    Applies to every PTA regardless of ``timing_package``: an
     unaligned hybrid par used as the merge reference would reintroduce ``PB`` as
     the shared binary chart even for PTAs that needed no alignment themselves.
     ``timing_package`` selects only the tempo2 FB-capability guard.
@@ -1158,7 +1158,7 @@ def align_orbital_chart(
             f"PTA {pta_name!r}: PB must be finite and positive, got {pb_days!r}"
         )
 
-    # Computed from THIS par's PB, never from model.FB0 -- feature doc S4.3.
+    # Computed from THIS par's PB, never from model.FB0.
     fb0 = 1 / (SECONDS_PER_DAY_LD * pb_days)
     new_tokens = [format_longdouble_par_value(fb0)]
     if len(pb_tokens) >= 2:

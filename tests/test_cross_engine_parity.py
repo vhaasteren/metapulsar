@@ -206,7 +206,7 @@ class TestOrthometricHarmonicCount:
 
 
 # ---------------------------------------------------------------------------
-# P1–P4: gated ELL1-family → DD/DDH conversion (§12.2)
+# P1–P4: gated ELL1-family → DD/DDH conversion
 # ---------------------------------------------------------------------------
 
 J2145_PLAIN = """PSR J2145-0750
@@ -281,7 +281,7 @@ def _mixed_manager(tmp_path, par_text, policy: AlignmentPolicy, name="psr"):
 
 
 class TestBinaryFamilyConversionParity:
-    """§12.2 P1–P4: conversion path under mixed engines."""
+    """P1–P4: conversion path under mixed engines."""
 
     def test_p1_plain_ell1_converts_and_parity(self, tmp_path):
         policy = AlignmentPolicy(ne_sw=0.0)

@@ -50,7 +50,7 @@ class PintEngine:
         )
 
     def binary_chart_capability(self, chart_family: str, suffix: str):
-        """Authoritative §2.4 capability for the Kepler↔Laplace chart, derived
+        """Authoritative binary-chart capability for the Kepler↔Laplace chart, derived
         directly from the wrapped PINT binary model (no MetaPulsar involvement).
 
         Returns ``None`` (→ candidacy uses its conservative name-search fallback)
@@ -79,7 +79,7 @@ class PintEngine:
             kepler_convention=convention,
             epoch_shift_exact=not secular,
             secular_terms=tuple(sorted(secular)),
-            origin_certified=False,  # flip only via a passing §12.6 cert PR
+            origin_certified=False,  # flip only via a passing origin-cert PR
             supports_domain=True,
         )
 

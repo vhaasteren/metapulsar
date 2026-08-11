@@ -260,7 +260,7 @@ def write_combination_par(
     track_pulse_numbers: bool = True,
     combination_options: Mapping[str, object] | None = None,
 ) -> CombinationParStats:
-    """Merged combination par; see feature_combination_parfile_writer.md §3.3.
+    """Merged combination par.
 
     ``combination_options`` (when provided) are stamped into the MetaPulsar
     comment header — typically factory user-facing knobs and

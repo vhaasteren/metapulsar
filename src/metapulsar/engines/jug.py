@@ -122,7 +122,7 @@ class JugEngine:
         self._exact_linear_indices: tuple[int, ...] = tuple()
         self._jug_fitpars: tuple[str, ...] = self.fitpars
         self._jug_indices: tuple[int, ...] = tuple(range(len(self.fitpars)))
-        # Authoritative Kepler↔Laplace chart facts (§2.4.1), resolved once from
+        # Authoritative Kepler↔Laplace chart facts, resolved once from
         # the JUG session at from_contribution time; None for direct/test-double
         # construction (→ candidacy fallback).
         self._binary_facts: Any = None
@@ -205,8 +205,8 @@ class JugEngine:
         return engine
 
     def binary_chart_capability(self, chart_family: str, suffix: str):
-        """Authoritative §2.4 capability, translated from JUG's binary facts
-        (ownership split §2.4.1: JUG owns the physics, this is a thin
+        """Authoritative binary-chart capability, translated from JUG's binary facts
+        (ownership split: JUG owns the physics, this is a thin
         translator). ``None`` (→ candidacy fallback) when the family is not ours
         or JUG could not resolve the binary. ``origin_certified`` /
         ``supports_domain`` are nltiming-owned, not backend facts.
@@ -227,7 +227,7 @@ class JugEngine:
             kepler_convention=facts.convention_family,  # 'dd' | 'ell1' | 'other'
             epoch_shift_exact=bool(facts.epoch_shift_exact),
             secular_terms=tuple(facts.secular_terms),
-            origin_certified=False,  # flip only via a passing §12.6 cert PR
+            origin_certified=False,  # flip only via a passing origin-cert PR
             supports_domain=True,
         )
 
@@ -236,7 +236,7 @@ class JugEngine:
         return getattr(self, "_exact_linear_fitpars", frozenset())
 
     def identically_linear_fitpars(self) -> frozenset[str]:
-        """Fitpars whose engine delay is affine in delta (§4.3)."""
+        """Fitpars whose engine delay is affine in delta."""
         return getattr(self, "_exact_linear_fitpars", frozenset())
 
     @property

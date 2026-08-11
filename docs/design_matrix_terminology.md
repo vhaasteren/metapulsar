@@ -1,8 +1,8 @@
 # Design matrix vs residual Jacobian
 
 **Status:** Locked vocabulary for MetaPulsar, JUG, and nltiming  
-**Design notes:** `ref-packages/jug/feature_phase_gauge.md`  
-**Prior naming doc:** `ref-packages/jug/feature_designmatrix_naming_conventions.md` (Phases A/B; Phase C superseded)
+**Design notes:** JUG  
+**Prior naming:** JUG design-matrix naming (Phases A/B; Phase C superseded)
 
 This stack locks **two objects, two construction routes, and one operator**. The
 old third noun (`waveform_jacobian` / \(W\)) is deleted: once residual products

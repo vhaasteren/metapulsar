@@ -230,7 +230,7 @@ class VelaEngine:
         return self._exact_linear_fitpars
 
     def identically_linear_fitpars(self) -> frozenset[str]:
-        """Fitpars whose engine delay is affine in delta (§4.3)."""
+        """Fitpars whose engine delay is affine in delta."""
         return self._exact_linear_fitpars
 
     def reference_theta(self) -> np.ndarray:

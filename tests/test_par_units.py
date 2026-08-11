@@ -1,10 +1,10 @@
-"""Tests for the par-value unit boundary (`feature_par_units.md` §8).
+"""Tests for the par-value unit boundary.
 
 Covers the `metapulsar.pint_compat` accessors re-exported through
 ``metapulsar.pint_helpers``: par-vs-model equality, Tempo-convention
 spellings, the emission portability rule against a model of tempo2's
 parser, epoch accessors, alias closure, long-double preservation, prototype
-hygiene, and the §7.3 literal ban on hand-written unit conversions.
+hygiene, and the literal ban on hand-written unit conversions.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from metapulsar.pint_helpers import (
 )
 
 # ---------------------------------------------------------------------------
-# Par templates (§8 test 1)
+# Par templates (test 1)
 # ---------------------------------------------------------------------------
 
 _BASE = """PSR J0000+0000
@@ -230,7 +230,7 @@ def test_alias_closure():
 
 
 # ---------------------------------------------------------------------------
-# 7. Long-double preservation (string-not-float rule, §5.3.1)
+# 7. Long-double preservation (string-not-float rule)
 # ---------------------------------------------------------------------------
 
 
@@ -280,7 +280,7 @@ def test_canonical_si_entries_are_convertible():
 
 
 # ---------------------------------------------------------------------------
-# §7.3 literal ban
+# Literal ban on hand-written unit conversions
 # ---------------------------------------------------------------------------
 
 

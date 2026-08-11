@@ -66,15 +66,15 @@ class PulsarTimingEngine:
         return list(self._contributions)
 
     def identically_linear_fitpars(self) -> frozenset[str]:
-        """Union of per-contribution identically-linear fitpars (§4.3)."""
+        """Union of per-contribution identically-linear fitpars."""
         out: set[str] = set()
         for contribution in self._contributions:
             out.update(contribution.exact_linear_fitpars)
         return frozenset(out)
 
     def binary_chart_capability(self, chart_family: str, suffix: str):
-        """Forward the §2.4 binary-chart capability to the contribution that owns
-        this binary group (ownership split, §2.4.1).
+        """Forward the binary-chart capability to the contribution that owns
+        this binary group (ownership split).
 
         Composite forwarding is nltiming-side: candidacy calls this on the whole
         pulsar engine, and we delegate to the leaf engine (``JugEngine`` /

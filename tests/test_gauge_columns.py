@@ -1,4 +1,4 @@
-"""MetaPulsar combined Mmat carries one named gauge column per PTA (G6 / §10.3)."""
+"""MetaPulsar combined Mmat carries one named gauge column per PTA (G6)."""
 
 from __future__ import annotations
 

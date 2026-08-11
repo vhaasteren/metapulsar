@@ -52,7 +52,7 @@ PB_ONLY = (
 
 
 def _align(par_text, *, timing_package="tempo2", model_text=None, **kw):
-    """Align with a model built from the same text, as §5.1 does."""
+    """Align with a model built from the same text."""
     model = create_pint_model(model_text if model_text is not None else par_text)
     return align_orbital_chart(par_text, model, timing_package=timing_package, **kw)
 
@@ -107,7 +107,7 @@ def test_par_already_agreeing_with_its_model_is_returned_unchanged(text, package
 
 def test_alignment_applies_to_pint_backed_pars_too():
     """Invariant 3: align every par. A hybrid PINT-backed reference would
-    otherwise reintroduce PB as the shared binary chart (§1.5)."""
+    otherwise reintroduce PB as the shared binary chart."""
     out, changed = _align(HYBRID, timing_package="pint")
     assert changed is True
     assert _fb0_line(out).split()[0] == "FB0"
@@ -203,7 +203,7 @@ def test_rejected_formatters_are_inexact(rejected):
 
 @pytest.mark.requires_ipta_data
 def test_written_value_comes_from_the_par_not_the_model():
-    """Pins invariant 2 and §4.3: the TCB/TDB trap.
+    """Pins invariant 2: the TCB/TDB trap.
 
     create_pint_model passes allow_tcb=True, so a TCB par yields a TDB model.
     Copying model.FB0 into the still-TCB par would be a 1.55e-8 relative error
@@ -323,12 +323,12 @@ def test_engine_parfiles_writes_only_what_changed(tmp_path):
 
 
 def test_shared_merge_is_reference_order_independent():
-    """The latent bug from §1.3: MPTA+PPTA built, PPTA+MPTA raised.
+    """The latent ordering bug: MPTA+PPTA built, PPTA+MPTA raised.
 
     Alignment runs before _make_parameters_shared, so the reference PTA is
     canonical whichever one it is. Uses UNITS TDB synthetics so the merge is
     exercised without tempo2's TCB->TDB transform; real TCB end-to-end coverage
-    is §10.7.
+    is covered below.
     """
     for order in (("MPTA", "PPTA"), ("PPTA", "MPTA")):
         texts = {"MPTA": NATIVE_FB0, "PPTA": HYBRID}
@@ -421,7 +421,7 @@ def _build(file_data, strategy, reference=None):
     ],
 )
 def test_every_case_from_the_failure_map_now_builds(ptas, strategy, reference):
-    """All five §1.3 cases. Four raised before this feature; the fifth passed
+    """All five ordering cases. Four raised before this feature; the fifth passed
     only because MPTA happened to be the reference."""
     _require(
         *[DATA / SRC[p][0] / f"{SRC[p][1]}.{e}" for p in ptas for e in ("par", "tim")]
@@ -520,7 +520,7 @@ def test_j1825_mpta_tempo2_unaffected():
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_direct_construction_with_hybrid_chart_fails_loudly():
-    """MetaPulsar(...) bypasses ParameterManager's par production, so §7 must
+    """MetaPulsar(...) bypasses ParameterManager's par production, so the guard must
     raise a clear error rather than a bare list.index failure."""
     from metapulsar.metapulsar import MetaPulsar
     from metapulsar.sandbox_tempo2 import tempopulsar

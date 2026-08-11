@@ -6,8 +6,8 @@ quick-look waveforms (red noise, DM, chromatic, ...) and timing estimates for
 diagnostics and initialization — labelled *quick-look empirical Bayes*, not a
 substitute for production posterior inference.
 
-Home: ``pylk.flexfit`` (incubated under MetaPulsar; design in
-``feature_flexible_fit.md``). The numerical core depends only on NumPy/SciPy;
+Home: ``pylk.flexfit`` (incubated under MetaPulsar). The numerical core
+depends only on NumPy/SciPy;
 Discovery, Enterprise, and ``nltiming`` are reached through
 ``pylk.flexfit.adapters``.
 

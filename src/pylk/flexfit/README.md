@@ -6,8 +6,7 @@ reconstructs quick-look waveforms (red noise, DM, chromatic, …) and timing
 estimates for diagnostics and initialization.
 
 **Package:** `pylk.flexfit` (incubated in the MetaPulsar repo under `src/pylk/`).  
-**Design:** [`feature_flexible_fit.md`](feature_flexible_fit.md) · companion
-[`../feature_pylk.md`](../feature_pylk.md).
+**Design:** flexible-Φ EM fit under `pylk.flexfit`.
 
 > **Quick-look empirical Bayes**, not inference. The fit learns a data-driven
 > width in the transformed timing coordinate, so the result is an

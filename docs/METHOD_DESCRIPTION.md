@@ -209,7 +209,7 @@ PINT‑only multi‑PTA combination keeps whatever troposphere and planetary‑S
 settings its inputs declare; only `UNITS`, `EPHEM`, the clock, `ECL`, and
 `NE_SW` are aligned there, exactly as before.
 
-| Scenario | Full §4.1 forced profile | `T2CMETHOD TEMPO` | Ecliptic `ECL` |
+| Scenario | Full forced profile | `T2CMETHOD TEMPO` | Ecliptic `ECL` |
 |----------|--------------------------|-------------------|----------------|
 | Single PTA | No | Keep | Unchanged |
 | Multi PTA, tempo2-only | No | Align across PTAs; keep `TEMPO` if shared in reference | Transform to `IERS2003` if heterogeneous |
@@ -266,9 +266,9 @@ with PINT and re‑timing them with Tempo2.
 
 When `"binary"` is shared on a mixed PINT+Tempo2 stack, MetaPulsar applies a
 **scale gate** (not a residual floor)
-`scale_s = a1_max·e_max² + ½·n_b·a1_max²·e_max` (§6.3). Above the default 1 ns
+`scale_s = a1_max·e_max² + ½·n_b·a1_max²·e_max`. Above the default 1 ns
 threshold it **losslessly rewrites** supported plain ELL1/T2-EPS binaries to
-`BINARY DD` (via `pint.binaryconvert` plus the §7.6 δT0 and TASC→T0
+`BINARY DD` (via `pint.binaryconvert` plus the δT0 and TASC→T0
 re-referencing corrections) and supported ELL1H blocks with a complete
 orthometric pair to `BINARY DDH` (gauge-correct first-party map). A mandatory
 mean-removed delay-fidelity check (derived tolerances) guards the rewrite.
@@ -280,8 +280,7 @@ Unsupported families (ELL1k, FB series, H3-only under the default
 emitted STIGMA is a prior center (`required_sampling=("STIGMA",)` on the
 conversion report / `MetaPulsar.conversion_metadata()`), never a measurement.
 nltiming may then recondition fully delta-flat Kepler triples via
-`MarginalBasisFrame` and enforce the STIGMA sampling contract. See
-`feature_ell1h_truncation_fixw_nltiming.md`.
+`MarginalBasisFrame` and enforce the STIGMA sampling contract.
 
 Family classification resolves `BINARY T2` through PINT's model builder
 (`guess_binary_model`), the same machinery every MetaPulsar model load uses via

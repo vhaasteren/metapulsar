@@ -82,7 +82,7 @@ class AlignmentPolicy:
         binary_fidelity_floor_s: Absolute floor of the delay-fidelity tolerance.
         binary_fidelity_tolerance_factor: Multiplier applied to every delay-fidelity
             tolerance (Roemer, Shapiro, and total) after the derived budget and
-            floor are computed. Default ``1.0`` preserves the published §7.5
+            floor are computed. Default ``1.0`` preserves the published
             budget; values ``> 1`` loosen the check (e.g. ``1.05`` for a 5%
             margin), values in ``(0, 1)`` tighten it. Does not change the
             scale gate or the conversion map.
@@ -93,7 +93,7 @@ class AlignmentPolicy:
             ``{A1, EPS1, EPS2, TASC, H3, ς}``, ``"warn_unfreeze"`` (default)
             frees every present sextet member so the all-free conversion path
             applies, and warns that the free subspace grew relative to the
-            release; ``"error"`` leaves the mixed flags and lets the §7.2 gate
+            release; ``"error"`` leaves the mixed flags and lets the fit-flag gate
             refuse with ``unsupported_fit_pattern``.
     """
 
@@ -584,7 +584,7 @@ class ParameterManager:
     def make_parfiles_shared(self) -> Dict[str, Path]:
         """Align charts, normalize units, then share model components across PTAs.
 
-        Chart alignment runs FIRST and unconditionally (feature doc S1.5): the
+        Chart alignment runs FIRST and unconditionally: the
         component merge copies values keyed by names present in the reference
         PTA's parfile dict, so a hybrid reference would key the orbit as ``PB``
         and reintroduce it as the shared binary chart. Aligning first makes the
@@ -677,13 +677,13 @@ class ParameterManager:
     def _aligned_parfile_contents(self) -> Dict[str, Tuple[str, bool]]:
         """Per-PTA par text with the orbital chart aligned to its PINT model.
 
-        Pipeline-local: ``self.file_data`` is NOT modified (feature doc
-        invariant 1), so ``par_content`` keeps the data release's own bytes and
+        Pipeline-local: ``self.file_data`` is NOT modified
+        (invariant 1), so ``par_content`` keeps the data release's own bytes and
         ``pint_models`` stays a model of release content -- which is what makes
         it the correct trigger authority.
 
-        Applies to every PTA regardless of ``timing_package``. See feature doc
-        S1.5: an unaligned hybrid par used as the merge reference would
+        Applies to every PTA regardless of ``timing_package``.
+        An unaligned hybrid par used as the merge reference would
         reintroduce ``PB`` as the shared binary chart.
         """
         from .pint_helpers import align_orbital_chart
@@ -986,7 +986,7 @@ class ParameterManager:
 
         Operates on the text it is given. It previously discarded its argument
         and re-read ``self.file_data``, which would undo chart alignment
-        (feature doc invariant 1).
+        (invariant 1).
 
         Mixed PINT/Tempo2 stacks always use explicit TDB. Homogeneous
         single-engine stacks preserve a common native timescale, while
@@ -1347,7 +1347,7 @@ class ParameterManager:
         to its default realization). PINT declares ``CLOCK`` with
         ``aliases=["CLK"]``, so the Tempo2 spelling is the portable pin.
         Never emit both keywords — PINT rejects that as a non-repeatable
-        parameter. See ``bug_clock_keyword_portability.md``.
+        parameter.
         """
         for alias in get_aliases_for_parameter("CLOCK"):
             parfile_dict.pop(alias, None)
@@ -1905,7 +1905,7 @@ class ParameterManager:
     def _maybe_convert_shared_binary(
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> None:
-        """Orchestrate Contract 1–2 binary conversion (§8.2)."""
+        """Orchestrate gated binary-family conversion."""
         from .binary_family_convert import (
             BinaryConversionError,
             BinaryConversionReport,

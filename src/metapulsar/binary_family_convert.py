@@ -1,6 +1,6 @@
 """Gated ELL1-family → DD/DDH conversion for mixed-engine shared combination.
 
-Implements Contracts 1–2 of ``feature_ell1h_truncation_fixw_nltiming.md``:
+Provides:
 classification / scale gate (``decide_binary_conversion``) and binary-owned
 patch conversion with mandatory delay-fidelity checks (``convert_shared_binary``).
 """
@@ -38,7 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# Public types (§4.3)
+# Public types
 # ---------------------------------------------------------------------------
 
 
@@ -55,7 +55,7 @@ class BinaryScaleGate:
     a1_max_lt_s: float  # span-aware max |A1|
     e_ref: float  # hypot(EPS1, EPS2) at reference
     e_max: float  # span-aware max e
-    scale_s: float  # a1_max*e_max**2 + 0.5*nb*a1_max**2*e_max (§6.3 rev 2)
+    scale_s: float  # a1_max*e_max**2 + 0.5*nb*a1_max**2*e_max (rev 2)
     threshold_s: float
     span_known: bool  # False iff dots present but no usable span + TASC
     span_provenance: Optional[SpanProvenance] = None  # "par" | "tim" | None
@@ -70,7 +70,7 @@ class BinaryConversionDecision:
     scale: Optional[BinaryScaleGate]
     warnings: tuple[str, ...] = ()
     resolved_binary_model: Optional[str] = None
-    """The PINT component the reference par resolves to (§6.2 D4).
+    """The PINT component the reference par resolves to.
 
     For ``BINARY T2`` this is what PINT's model builder makes of the wrapper
     (``ELL1``, ``ELL1H``, ``DDK``, ...), which is what the engines actually
@@ -81,7 +81,7 @@ class BinaryConversionDecision:
 
 @dataclass(frozen=True)
 class BinaryPatch:
-    """Binary-owned mutation only; application defined in §8.4."""
+    """Binary-owned mutation only; applied by ``apply_binary_patch``."""
 
     binary_value: str  # "DD" or "DDH"
     removed_keys: tuple[str, ...]
@@ -111,9 +111,9 @@ class BinaryConversionRecord:
     required_sampling: tuple[str, ...] = ()
     stigma_provenance: Optional[str] = None
     uncertainty_propagation: str = "diagonal_jacobian"
-    """How target uncertainties were obtained (§7.6, always APPROXIMATE).
+    """How target uncertainties were obtained (always APPROXIMATE).
 
-    ``diagonal_jacobian`` — differenced through the full §7.6 map, but
+    ``diagonal_jacobian`` — differenced through the full conversion map, but
     diagonal-only: par files carry no covariances, so correlations between the
     source parameters are ignored and the target errors are neither exact nor
     conservative. ``pint_convert_binary`` — PINT's own ELL1→DD propagation
@@ -123,7 +123,7 @@ class BinaryConversionRecord:
 
 @dataclass(frozen=True)
 class BinaryConversionReport:
-    """Exposed after every shared materialization (§8.5)."""
+    """Exposed after every shared materialization."""
 
     decision: BinaryConversionDecision
     record: Optional[BinaryConversionRecord]
@@ -131,7 +131,7 @@ class BinaryConversionReport:
 
 @dataclass(frozen=True)
 class BinaryConversionMetadata:
-    """Typed in-memory channel for Case-D required-sampling (§8.5a)."""
+    """Typed in-memory channel for Case-D required-sampling."""
 
     target_family: str
     gauge: Optional[str]
@@ -149,7 +149,7 @@ class BinaryConversionMetadata:
 # (metapulsar.pint_compat), never here.
 _SECDAY = 86400.0
 
-# Alias closure §7.3: canonical ← accepted spellings
+# Alias closure: canonical ← accepted spellings
 _ALIAS_TO_CANONICAL: dict[str, str] = {
     "E": "ECC",
     "XDOT": "A1DOT",
@@ -165,7 +165,7 @@ _CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
     "NHARMS": ("NHARMS", "NHARM"),
 }
 
-# Binary-owned key universe (§7.3), alias-resolved canonical names
+# Binary-owned key universe, alias-resolved canonical names
 BINARY_OWNED_CANONICAL: frozenset[str] = frozenset(
     {
         "BINARY",
@@ -219,7 +219,7 @@ _REMEDIATIONS = (
 
 
 def remediation_message() -> str:
-    """Return the five remediations from §5.4 as a numbered list."""
+    """Return the five remediations as a numbered list."""
     lines = ["Remediations:"]
     for i, text in enumerate(_REMEDIATIONS, start=1):
         lines.append(f"  {i}. {text}")
@@ -269,7 +269,7 @@ def _par_token_float(
     the token is not the physical value, so this must never feed physics; use
     ``si_from_par`` (or ``mjd_from_par`` for epochs) instead. Legitimate uses
     are presence/zero checks, counts (NHARMS), and row-C reads where token and
-    value coincide by construction (see `feature_par_units.md` §2).
+    value coincide by construction.
     """
     raw = _param_str(par, *names)
     if raw is None:
@@ -311,7 +311,7 @@ def _binary_value(par: Mapping[str, Any]) -> Optional[str]:
 
 
 def _alias_closure(*canonical_or_alias: str) -> frozenset[str]:
-    """Every accepted spelling of ``canonical_or_alias`` (§7.3 alias closure).
+    """Every accepted spelling of ``canonical_or_alias`` (alias closure).
 
     Naming any member of an alias group pulls in the whole group, so a lookup
     keyed on the canonical name still finds a source that spelled it otherwise
@@ -326,7 +326,7 @@ def _alias_closure(*canonical_or_alias: str) -> frozenset[str]:
 
 
 def _find_key_aliased(par: Mapping[str, Any], *names: str) -> Optional[str]:
-    """``_find_key`` over the §7.3 alias closure of ``names``."""
+    """``_find_key`` over the alias closure of ``names``."""
     return _find_key(par, *_alias_closure(*names))
 
 
@@ -385,11 +385,11 @@ def _format_line(
 
 
 # ---------------------------------------------------------------------------
-# Family classification (§6.2 D4)
+# Family classification
 # ---------------------------------------------------------------------------
 
 
-#: PINT binary component → MetaPulsar family label (§6.2 D4), for a ``BINARY T2``
+#: PINT binary component → MetaPulsar family label, for a ``BINARY T2``
 #: par resolved through PINT. ``ELL1`` keeps the ``T2-EPS`` label so the source
 #: spelling stays visible downstream. Every other component PINT can build
 #: (``DD``, ``DDK``, ``DDGR``, ``DDS``, ``DDH``, ``BT``, ``Isolated``) is absent
@@ -403,7 +403,7 @@ _PINT_MODEL_TO_FAMILY: dict[str, str] = {
 
 
 def _classify_t2_family(par: Mapping[str, Any]) -> Optional[str]:
-    """Resolve ``BINARY T2`` through PINT's model builder (§5.1/§5.5).
+    """Resolve ``BINARY T2`` through PINT's model builder.
 
     T2 is a Tempo2 wrapper rather than a model, so the family has to follow the
     component PINT actually builds for this parameter set. MetaPulsar builds
@@ -431,7 +431,7 @@ def orthometric_shapiro_absent(par: Mapping[str, Any]) -> bool:
     That is: no ratio key (``H4``/``STIGMA``/``STIG``/``VARSIGMA``) and an ``H3``
     that is missing or exactly zero. Such a par delivers zero Shapiro delay in
     *both* engines, so an ``ELL1H`` label on it is spelling, not physics, and the
-    §5.2 plain target (``DD``) is exact rather than approximate.
+    The plain target (``DD``) is exact rather than approximate.
     """
     if _has_any(par, ("H4", "STIGMA", "STIG", "VARSIGMA")):
         return False
@@ -466,7 +466,7 @@ def _is_orthometric_family(family: Optional[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Scale gate (§6.3)
+# Scale gate
 # ---------------------------------------------------------------------------
 
 
@@ -549,7 +549,7 @@ def _compute_scale_gate(
             assert mjd is not None
             a1_max = max(a1_max, abs(a1_val + a1dot * _dt(mjd)))
 
-    # §7.2 physical invariants: a violated bound here is a unit-convention
+    # Physical invariants: a violated bound here is a unit-convention
     # error somewhere upstream, never a pathological pulsar (an eccentricity
     # of 7e5 was silently forcing conversions before the SI boundary).
     if not 0.0 <= e_max < 1.0:
@@ -585,7 +585,7 @@ def _compute_scale_gate(
 
 
 # ---------------------------------------------------------------------------
-# Fit-flag contract (§7.2)
+# Fit-flag contract
 # ---------------------------------------------------------------------------
 
 
@@ -688,10 +688,10 @@ def prepare_mixed_orthometric_sextet(
     orthometric fit pattern. Returns the canonical names that were unfrozen
     (empty when the decision or policy does not authorize the workaround).
 
-    TODO(B6): replace this workaround with the proper §7.2 implication
+    TODO(B6): replace this workaround with the proper fit-flag implication
     ``free(H3) or free(ς) ⇒ free(A1) and free(triple)``, which admits the
     Kepler-free/Shapiro-frozen PPTA house style without expanding the free
-    subspace. See ``bugs_2026-08-06_todo.md`` B6 "Proper long-term fix".
+    subspace (B6 long-term fix).
     """
     if not _is_mixed_orthometric_sextet_refusal(decision):
         return ()
@@ -745,7 +745,7 @@ def _check_fit_pattern(par: Mapping[str, Any], *, orthometric: bool) -> Optional
         # TODO(B6): the equality rule below is stricter than the physics. The
         # proper contract is the implication
         # ``free(H3) or free(ς) ⇒ free(A1) and free(triple)``. Until that
-        # §7.2 amendment lands, ``prepare_mixed_orthometric_sextet`` unfreezes
+        # When the fit-flag amendment lands, ``prepare_mixed_orthometric_sextet`` unfreezes
         # mixed sextets (default policy) so this gate only sees all-free /
         # all-frozen after preparation.
         detail = _mixed_orthometric_sextet_detail(par)
@@ -786,7 +786,7 @@ def _source_free_params(par: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Unsupported classification (§5.4 / D8)
+# Unsupported classification
 # ---------------------------------------------------------------------------
 
 
@@ -826,9 +826,9 @@ def _classify_unsupported(
     family: str,
     policy: "AlignmentPolicy",
 ) -> Optional[str]:
-    """Return a §5.4 reason code, or None if supported.
+    """Return an unsupported-classification reason code, or None if supported.
 
-    Checked in the §5.4 table order — ELL1H domain, H4 tail, H3-only, ELL1k,
+    Checked in table order — ELL1H domain, H4 tail, H3-only, ELL1k,
     FB, fit pattern last — so overlapping conditions report the reason the
     design table names first.
     """
@@ -909,7 +909,7 @@ def _unsupported_message(
 
 
 # ---------------------------------------------------------------------------
-# Contract 1 — decide_binary_conversion (§6)
+# decide_binary_conversion
 # ---------------------------------------------------------------------------
 
 
@@ -1064,7 +1064,7 @@ def decide_binary_conversion(
 
 
 # ---------------------------------------------------------------------------
-# §7.6 maps (normative; np.longdouble)
+# Conversion maps (normative; np.longdouble)
 # ---------------------------------------------------------------------------
 
 
@@ -1140,7 +1140,7 @@ def _intrinsic_dots(
 def _rereference_dots(params: Any, tau_s: float) -> None:
     """TASC→T0 epoch re-referencing of every t-linear parameter.
 
-    ``params`` may be a :class:`SimpleNamespace` in the §7.6 map frame (PB in
+    ``params`` may be a :class:`SimpleNamespace` in the conversion-map frame (PB in
     days, OM in radians, dots in SI) or a PINT TimingModel. The TimingModel
     branch reads through the SI boundary and writes back through
     ``param.quantity``, so no unit conversion is hand-rolled here.
@@ -1211,14 +1211,14 @@ def _ddh_map(
     pbdot: Any,
     absorbed: bool,
 ) -> SimpleNamespace:
-    """Pure §7.6 ELL1H → DDH map (no model objects, no I/O).
+    """Pure ELL1H → DDH map (no model objects, no I/O).
 
     Inputs and outputs are one consistent frame: A1 lt-s, TASC/PB MJD days
     (epoch arithmetic), H3 s, and every dot in SI (``xdot`` lsec/s,
     ``e1dot_p``/``e2dot_p`` 1/s, ``pbdot`` s/s); outputs carry ``OM`` in
     radians, ``OMDOT`` in rad/s and ``EDOT`` in 1/s. Declared-unit spelling
     is applied only at emission, via ``token_from_si``. Isolated from
-    :func:`_convert_ell1h_block` so the uncertainty Jacobian (§7.6) can
+    :func:`_convert_ell1h_block` so the uncertainty Jacobian can
     difference the exact same map that produces the values.
     """
     a1_p = np.longdouble(a1_p)
@@ -1286,7 +1286,7 @@ def _ddh_map(
     return out
 
 
-# Outputs the §7.6 uncertainty Jacobian reports, in the `_ddh_map` frame
+# Outputs the uncertainty Jacobian reports, in the `_ddh_map` frame
 # (OM rad, OMDOT rad/s, PB/T0 days). Conversion to the written par frame
 # happens at emission, through `_unc_token` / `token_from_si`.
 _DDH_UNC_OUTPUT_KEYS: tuple[str, ...] = (
@@ -1324,7 +1324,7 @@ def _unc_token(name: str, sigma: Any) -> Optional[str]:
 def _propagate_ddh_uncertainties(
     base: Mapping[str, Any], sigmas: Mapping[str, float], *, absorbed: bool
 ) -> dict[str, float]:
-    """Diagonal-only uncertainty propagation through the full §7.6 Jacobian.
+    """Diagonal-only uncertainty propagation through the full conversion Jacobian.
 
     Par files carry no covariances, so this is the diagonal approximation —
     documented as approximate on :class:`BinaryConversionRecord`. In the
@@ -1527,7 +1527,7 @@ def _timing_model_from_ddh_params(
         key = _find_key_aliased(par, name) or name
         par[key] = [_format_line(value, fit, unc, key=name)]
 
-    # Values and uncertainties both come from the §7.6 map (the absorbed gauge
+    # Values and uncertainties both come from the conversion map (the absorbed gauge
     # mixes H3/STIGMA into A1/ECC/OM/T0, so source errors cannot pass through).
     a1_fit = not getattr(source_model.A1, "frozen", True)
     _set("A1", float(params.A1), a1_fit, _unc("A1"))
@@ -1545,7 +1545,7 @@ def _timing_model_from_ddh_params(
     _set("T0", float(params.T0), triple_free, _unc("T0"))
 
     # Emit EDOT/OMDOT when source had EPS dots. Map-frame SI values are
-    # spelled by token_from_si (§5.3.2), which is also where an unportable
+    # spelled by token_from_si, which is also where an unportable
     # spelling would be refused.
     if hasattr(source_model, "EPS1DOT") and source_model.EPS1DOT.value is not None:
         dots_free = not source_model.EPS1DOT.frozen
@@ -1597,7 +1597,7 @@ def _timing_model_from_ddh_params(
 
 
 # ---------------------------------------------------------------------------
-# Patch construction (§7.3 / C4)
+# Patch construction
 # ---------------------------------------------------------------------------
 
 
@@ -1669,7 +1669,7 @@ def _build_patch_plain(
         removed.extend(_present_spellings(source_dict, name))
     # A spuriously ELL1H-labelled source (zero/absent amplitude, see
     # `orthometric_shapiro_absent`) reaches the plain path carrying inert
-    # orthometric markers. DD has no use for them and §8.4 forbids them, so the
+    # orthometric markers. DD has no use for them and patch application forbids them, so the
     # patch drops every spelling that is present.
     for name in (*_ORTHOMETRIC_KEYS, *_ORTHOMETRIC_TRUNCATION_KEYS):
         removed.extend(_present_spellings(source_dict, name))
@@ -1816,7 +1816,7 @@ def _build_patch_orthometric(
         )
     )
     if case == "D" and policy.stigma_provenance:
-        # Informational comment line — never load-bearing (§8.5a)
+        # Informational comment line — never load-bearing
         added.append(
             (
                 "C",
@@ -1999,7 +1999,7 @@ def _audit_converter_output(
     # be against the PATCH — the artifact that actually lands in the par files —
     # not against `converted_dict`, which is parsed straight back out of
     # `corrected_model.as_parfile()` and so agrees with the model by
-    # construction. Auditing model-vs-model can never fail (§7.3/§C5).
+    # construction. Auditing model-vs-model can never fail.
     patch_values = {
         _canon_key(key): line.split()[0]
         for key, line in patch.added_lines
@@ -2010,8 +2010,8 @@ def _audit_converter_output(
         emitted = patch_values.get(name)
         if emitted is None:
             raise BinaryConversionError(
-                f"correction_not_applied: {name} is marked re-emitted (§7.3) but "
-                "the patch carries no line for it, so the §7.6 correction would "
+                f"correction_not_applied: {name} is marked re-emitted but "
+                "the patch carries no line for it, so the conversion correction would "
                 "be dropped from every written par"
             )
         emitted_si = float(si_quantity_from_token(name, emitted).value)
@@ -2023,7 +2023,7 @@ def _audit_converter_output(
 
 
 # ---------------------------------------------------------------------------
-# Fidelity harness (§7.5 F1–F7)
+# Fidelity harness
 # ---------------------------------------------------------------------------
 
 
@@ -2221,7 +2221,7 @@ def run_fidelity_check(
     stigma_central: Optional[float] = None,
     grid_points: int = 1024,
 ) -> BinaryFidelityReport:
-    """§7.5 delay-fidelity invariant (mean-removed; Case C/D F4b tail)."""
+    """Delay-fidelity invariant (mean-removed; Case C/D F4b tail)."""
     from pint.simulation import make_fake_toas_fromMJDs
     import astropy.units as u
 
@@ -2356,7 +2356,7 @@ def run_fidelity_check(
         peak_delay_s=peak_delay_s,
         floor=floor,
     )
-    # User-facing scale on the published §7.5 budget (AlignmentPolicy).
+    # User-facing scale on the published fidelity budget (AlignmentPolicy).
     # Applied after derivation so factor=1 is bit-identical to the prior default.
     factor = float(policy.binary_fidelity_tolerance_factor)
     tol_roemer *= factor
@@ -2397,7 +2397,7 @@ def run_fidelity_check(
 
 
 # ---------------------------------------------------------------------------
-# Patch application (§8.4)
+# Patch application
 # ---------------------------------------------------------------------------
 
 
@@ -2426,7 +2426,7 @@ def apply_binary_patch(
     *,
     timing_package: Optional[str] = None,
 ) -> None:
-    """Apply a binary-owned patch in place (§8.4).
+    """Apply a binary-owned patch in place.
 
     ``timing_package`` is forwarded to :func:`engine_native_binary_key` (today
     unused: DDH ratio is always written as portable ``STIG``). Alias-resolved
@@ -2465,7 +2465,7 @@ def assert_postconditions(
     target_family: str,
     pre_nonbinary: Mapping[str, dict],
 ) -> None:
-    """§8.4 postconditions; raise BinaryConversionError on violation."""
+    """Patch-application postconditions; raise BinaryConversionError on violation."""
     forbidden = {
         "EPS1",
         "EPS2",
@@ -2544,7 +2544,7 @@ def _nonbinary_snapshot(par: Mapping[str, Any]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Contract 2 — convert_shared_binary (§7)
+# convert_shared_binary
 # ---------------------------------------------------------------------------
 
 
@@ -2560,9 +2560,9 @@ def convert_shared_binary(
 
     ``ell1h_shapiro`` is the *stack's own* resolved evaluator mode
     (``ParameterManager.ell1h_shapiro``) and is required, never defaulted: it
-    selects the gauge of the §7.6 map, and because the source model is loaded
+    selects the gauge of the conversion map, and because the source model is loaded
     in the same mode a wrong value is self-consistent and would slip past the
-    fidelity check (§18, "gauge source" lock).
+    fidelity check ("gauge source" lock).
 
     Never mutates ``reference_dict``. Fail closed on any internal failure.
     """

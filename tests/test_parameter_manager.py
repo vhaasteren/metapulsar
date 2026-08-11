@@ -2645,7 +2645,7 @@ class TestReferenceConventionResolution:
         )
 
     def test_clk_is_written_on_both_flavours_after_alignment(self):
-        """PINT input CLOCK is rewritten to portable CLK (bug_clock_keyword_portability)."""
+        """PINT input CLOCK is rewritten to portable CLK."""
         pm = ParameterManager(file_data=_cross_engine_file_data())
         parfile_dicts = pm._parse_parfiles()
         reference_dict = parfile_dicts["EPTA"]

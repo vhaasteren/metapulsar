@@ -1,6 +1,6 @@
 """Joint conditional Gaussian solve with staged bounded variance updates.
 
-This is Piece B of ``feature_flexible_fit.md``: given a residual vector ``y``, a
+This is Piece B: given a residual vector ``y``, a
 fixed white-noise operator ``N``, an assembled joint basis ``T`` and a diagonal
 ``Phi`` prior structured into variance groups, compute the conditional
 coefficient moments and iterate a small number of empirical-Bayes sweeps that
@@ -79,9 +79,7 @@ def bounded_variance_update(
     Returns ``(rho, hit_bound)``. With no hyperprior (``alpha = beta = 0``) this
     is the maximum-likelihood EM update ``rho = mean(second_moment)``. With an
     inverse-gamma hyperprior ``p(rho) ~ rho^(-alpha-1) exp(-beta/rho)`` it is the
-    posterior-mode MAP update ``(sum s + 2 beta) / (n + 2 alpha + 2)``. Both
-    forms are the deterministic second-moment updates of
-    ``feature_flexible_fit.md``.
+    posterior-mode MAP update ``(sum s + 2 beta) / (n + 2 alpha + 2)``.
     """
     s = np.asarray(second_moment, dtype=float)[list(group.indices)]
     total = float(np.sum(s))
@@ -183,8 +181,7 @@ def solve_flexible_phi(
     an M-step that updates every variance group with ``update_from_sweep <= s``.
     Timing groups default to ``update_from_sweep = 2`` and an initial variance of
     ``1e40``, so the first sweep effectively marginalizes the timing directions
-    while the non-timing groups are learned, exactly as the staged heuristic in
-    ``feature_flexible_fit.md`` prescribes. A final E-step at the converged
+    while the non-timing groups are learned. A final E-step at the converged
     ``Phi`` gives mutually consistent reported moments.
 
     ``tolerance`` may stop the sweeps early once the largest fractional change in

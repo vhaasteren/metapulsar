@@ -1,7 +1,7 @@
-"""Unit tests for gated ELL1-family → DD/DDH conversion (Contracts 1–2).
+"""Unit tests for gated ELL1-family → DD/DDH conversion.
 
 Table-driven acceptance tests T1–T21 and rev-2 T30–T45 from
-``feature_ell1h_truncation_fixw_nltiming.md`` §12.1. Synthetic pars only.
+Synthetic pars only.
 """
 
 from __future__ import annotations
@@ -140,7 +140,7 @@ def _par_text_from_dict(d: dict) -> str:
 def _raw_difference_series(source, converted, *, grid=256, case="B"):
     """Uncentered (source − converted) delay and Shapiro series on one orbit.
 
-    Mirrors §7.5 F1–F5 up to but NOT including the F4c/F5 centering, so tests
+    Mirrors F1–F5 up to but NOT including the F4c/F5 centering, so tests
     can assert what centering is worth.
     """
     import astropy.units as u
@@ -175,13 +175,13 @@ def _raw_difference_series(source, converted, *, grid=256, case="B"):
 # postcondition shape) is pure dict work and stays in ``make fast`` -- that is
 # the layer you iterate on.
 #
-# The physics tests drive the §7.5 harness, which builds PINT models and
+# The physics tests drive the fidelity harness, which builds PINT models and
 # evaluates 1024-point delay grids at up to three anchors, twice per conversion
 # (C6 in memory, C6b on the reloaded par). Left unmarked they were ~5 min and
 # dominated ``make fast``. They are marked ``slow`` instead, so they still run
 # under ``make test`` and in CI but do not blunt the fast target.
 #
-# This is a deliberate, narrow deviation from §12.4 ("MetaPulsar unit tests run
+# This is a deliberate, narrow deviation: "MetaPulsar unit tests run
 # under make fast"): the *coverage* is unchanged, only which target pays for it.
 slow = pytest.mark.slow
 
@@ -1731,7 +1731,7 @@ def test_remediation_message_lists_five():
 
 @slow
 def test_plain_ell1_with_m2_sini_converts():
-    """§5.1: M2/SINI are a SUPPORTED plain-ELL1 shape and pass through.
+    """M2/SINI are a SUPPORTED plain-ELL1 shape and pass through.
 
     Regression for an F6 tolerance that used max|d_shapiro difference| instead
     of peak|delayS_source|, making tol_shapiro self-referential (~5x too tight)
@@ -1766,7 +1766,7 @@ def test_plain_ell1_with_m2_sini_converts():
     assert self_referential < fid.shapiro_max_abs_s  # the old formula rejected
     assert fid.tolerance_shapiro_s > 4.0 * self_referential
 
-    # M2/SINI are untouched pass-through keys (§7.3 minimal delta).
+    # M2/SINI are untouched pass-through keys (minimal delta).
     touched = {k.upper() for k, _ in patch.added_lines} | {
         k.upper() for k in patch.removed_keys
     }
@@ -1775,7 +1775,7 @@ def test_plain_ell1_with_m2_sini_converts():
 
 @slow
 def test_binary_fidelity_tolerance_factor_scales_reported_tolerances():
-    """AlignmentPolicy.binary_fidelity_tolerance_factor multiplies §7.5 budgets."""
+    """AlignmentPolicy.binary_fidelity_tolerance_factor multiplies fidelity budgets."""
     par = _ell1_dict(a1=J2145["A1"], eps1=J2145["EPS1"], eps2=J2145["EPS2"])
     par["M2"] = ["0.5 0"]
     par["SINI"] = ["0.75 0"]
@@ -1833,7 +1833,7 @@ def _t2_kepler_dict(*, h3=None, free=False):
 
 
 def test_t2_kepler_is_never_ell1_family():
-    """§5.5: the gate never fires on T2-Kepler, with or without H-terms.
+    """The gate never fires on T2-Kepler, with or without H-terms.
 
     Regression: classifying `T2` + `H3` as ELL1H on a par with no EPS made a
     legitimate T2-Kepler stack raise ell1h_h3_only_underdetermined by default,
@@ -1915,7 +1915,7 @@ def test_ddh_patch_uses_engine_native_stigma_spelling():
 
 @slow
 def test_ddh_patch_propagates_uncertainties_through_the_map():
-    """§7.6: target errors come from the full map, not a source passthrough.
+    """Target errors come from the full map, not a source passthrough.
 
     In the absorbed gauge H3/STIGMA feed A1/ECC/OM/T0, so a converted DDH par
     whose ECC/OM/T0 carry no error column (or A1 carrying the *source* error)
@@ -1960,7 +1960,7 @@ def test_ddh_patch_propagates_uncertainties_through_the_map():
 
 @slow
 def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
-    """The §8.5a channel must survive the whole factory path, not just the unit.
+    """The required-sampling channel must survive the whole factory path, not just the unit.
 
     ``metadata_from_report`` was covered directly and the factory's report
     propagation separately, but nothing checked that a MetaPulsar built by
@@ -2024,7 +2024,7 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# AEI-DR3 survey regressions (`bugs_2026-08-06_todo.md` B3 / B5)
+# AEI-DR3 survey regressions (B3 / B5)
 # ---------------------------------------------------------------------------
 
 
@@ -2113,7 +2113,7 @@ def test_nharms_alone_does_not_make_a_plain_ell1_orthometric():
 
 
 def test_bare_ell1h_conversion_drops_the_inert_markers():
-    """DD output must not keep ``NHARMS``/zero ``H3`` (§8.4 forbids them)."""
+    """DD output must not keep ``NHARMS``/zero ``H3`` (patch application forbids them)."""
     par = _ell1_dict(binary="ELL1H", extra={"NHARMS": ["7"], "H3": ["0.0"]})
     decision = _decide(par)
     assert decision.outcome == "convert", decision.reason
@@ -2136,7 +2136,7 @@ def test_bare_ell1h_conversion_drops_the_inert_markers():
 
 
 # ---------------------------------------------------------------------------
-# Par-unit boundary regressions (`feature_par_units.md` §8, tests 9-15)
+# Par-unit boundary regressions (tests 9-15)
 # ---------------------------------------------------------------------------
 
 _J2317_PAR = Path("data/aei-dr2/nanograv_9y/par/J2317+1439.par")
@@ -2253,7 +2253,7 @@ def test_ddh_edot_map_analytic_reference():
 
 
 # ---------------------------------------------------------------------------
-# Cross-package emission portability (§8 tests 14-15)
+# Cross-package emission portability (tests 14-15)
 # ---------------------------------------------------------------------------
 
 _T2_HEAD = """PSRJ J2145-0750
@@ -2316,7 +2316,7 @@ def test_eps_dot_emission_portable_across_engines(tmp_path):
     strict=False,
     reason="tempo2 rescales val[0] but never err[0] (readParfile.C), so a "
     "scaled-spelling sigma diverges between engines; upstream bug, see "
-    "feature_par_units.md §6",
+    "par-unit uncertainty spelling across engines",
 )
 def test_row_b_uncertainty_spelling_across_engines(tmp_path):
     """Scaled-spelling XDOT sigma: PINT rescales it, tempo2 appears not to."""

@@ -1,4 +1,4 @@
-"""Authoritative §2.4 engine capability on the PINT adapter (review: this lands
+"""Authoritative engine binary-chart capability on the PINT adapter (review: this lands
 without any MetaPulsar change — PintEngine already wraps the PINT model)."""
 
 import pytest
@@ -85,7 +85,7 @@ def test_pint_capability_real_bt_model():
 
 
 # ---------------------------------------------------------------------------
-# Composite forwarding (§2.4.1 step c): nltiming-side, no MetaPulsar change.
+# Composite forwarding (step c): nltiming-side, no MetaPulsar change.
 # ---------------------------------------------------------------------------
 
 import numpy as np  # noqa: E402
@@ -187,7 +187,7 @@ def test_composite_shared_binary_agreement_and_disagreement():
 
 
 # ---------------------------------------------------------------------------
-# JUG facts (source of truth) + JugEngine translator (§2.4.1 steps a/b).
+# JUG facts (source of truth) + JugEngine translator (steps a/b).
 # ---------------------------------------------------------------------------
 
 

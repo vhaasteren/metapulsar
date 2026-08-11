@@ -1,12 +1,12 @@
 """Pylk — interactive pulsar-timing workbench (incubated in MetaPulsar).
 
-Pylk is the scientific workspace proposed in ``feature_pylk.md``: interactive
+Pylk is the scientific workspace for interactive
 exploration, waveform inspection, and point optimization over MetaPulsar /
 ``nltiming`` / Discovery / Enterprise stacks.
 
 This package is intentionally thin today. The first shipped engine under the
 Pylk umbrella is :mod:`pylk.flexfit` (quick-look empirical-Bayes timing + GP
-fits). Workspace/UI layers land later; see ``src/pylk/feature_pylk.md``.
+fits). Workspace/UI layers land later.
 """
 
 from __future__ import annotations

@@ -24,7 +24,7 @@ import numpy as np
 BlockKind = Literal["timing", "red", "dm", "chromatic", "ecorr", "custom"]
 
 # Enterprise-style broad finite prior used to effectively marginalize the timing
-# directions on the first sweep (see feature_flexible_fit.md).
+# directions on the first sweep.
 INITIAL_TIMING_VARIANCE = 1.0e40
 
 

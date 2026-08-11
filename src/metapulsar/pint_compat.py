@@ -2,7 +2,7 @@
 
 Pure functions over PINT's alias tables and component registry: alias
 resolution, category discovery, and the SI/MJD par-value boundary
-(``feature_par_units.md``). MetaPulsar's core combination path — shared-par
+Par-value unit boundary helpers. MetaPulsar's core combination path — shared-par
 merging, canonical tim/par writing, binary-family conversion — depends on
 these, so they live here rather than in the nonlinear-timing package: basic
 MetaPulsar operations must not import ``nltiming``.
@@ -197,7 +197,7 @@ def get_parameters_by_type_from_models(
 
 
 # ---------------------------------------------------------------------------
-# Par-value unit boundary (`feature_par_units.md`)
+# Par-value unit boundary
 # ---------------------------------------------------------------------------
 #
 # One place that knows what unit a par token or model value is in. Reading
@@ -388,7 +388,7 @@ def token_from_si(name: str, value_si: float) -> str:
     """Inverse of :func:`si_quantity_from_token`, for par emission.
 
     Emits the spelling that PINT and tempo2 read identically
-    (`feature_par_units.md` §5.3.2), and raises :class:`ParUnitError` when no
+    and raises :class:`ParUnitError` when no
     such spelling exists. Both packages read a token through one of three
     rules — PINT's unconditional declared unit, the shared ``|token| > 1e-7 ->
     x1e-12`` heuristic, or verbatim — and the writer's job is to pick the one

@@ -17,7 +17,7 @@ Enterprise's ``T``/``Phi`` language; this module only needs to supply:
 
 Until this lands, build blocks by hand from Enterprise arrays and pass them to
 :func:`pylk.flexfit.fastfit`, or use the Discovery adapter when Discovery is
-available. See ``feature_flexible_fit.md`` §"Implementation status".
+available.
 """
 
 from __future__ import annotations

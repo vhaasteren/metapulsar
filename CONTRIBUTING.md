@@ -21,7 +21,7 @@ We welcome contributions to MetaPulsar! This document provides guidelines for co
    checkout when developing against PINT:
 
    ```bash
-   pip install -e ref-packages/PINT --no-deps
+   pip install -e . --no-deps   # from the local PINT checkout
    ```
 
    A stale non-editable `pint` under `~/.local/lib/.../site-packages` can shadow

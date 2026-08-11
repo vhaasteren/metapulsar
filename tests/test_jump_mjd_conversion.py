@@ -157,7 +157,7 @@ def _single_pta_file_data(
 
 @pytest.mark.unit
 def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
-    """§6.4.32: PN rewrite drops MODE from the tim; engine/retained par keep it."""
+    """PN rewrite drops MODE from the tim; engine/retained par keep it."""
     file_data = _single_pta_file_data(
         tmp_path,
         tim_text=(
@@ -190,7 +190,7 @@ def test_pn_yes_transfers_release_mode_onto_engine_par(tmp_path):
 
 @pytest.mark.unit
 def test_absent_tim_mode_preserves_par_mode(tmp_path):
-    """§6.4.33 / §1.4.4: None means no override — do not write MODE 0."""
+    """None means no override — do not write MODE 0."""
     file_data = _single_pta_file_data(
         tmp_path,
         par_extra="MODE 1\n",
@@ -220,7 +220,7 @@ def test_absent_tim_mode_preserves_par_mode(tmp_path):
 
 @pytest.mark.unit
 def test_legacy_untagged_release_mode_survives_factory_conversion(tmp_path):
-    """§6.4.34: untagged Princeton TOAs convert via PINT; MODE transfers."""
+    """Untagged Princeton TOAs convert via PINT; MODE transfers."""
     file_data = _single_pta_file_data(
         tmp_path,
         timing_package="pint",
@@ -243,7 +243,7 @@ def test_legacy_untagged_release_mode_survives_factory_conversion(tmp_path):
 @pytest.mark.unit
 @pytest.mark.requires_libstempo
 def test_legacy_format0_release_mode_survives_factory_conversion(tmp_path):
-    """§6.4.34: explicit FORMAT 0 (reference-data shape) via tempo2."""
+    """Explicit FORMAT 0 (reference-data shape) via tempo2."""
     file_data = _single_pta_file_data(
         tmp_path,
         timing_package="tempo2",
@@ -265,7 +265,7 @@ def test_legacy_format0_release_mode_survives_factory_conversion(tmp_path):
 
 @pytest.mark.unit
 def test_shared_export_skips_self_copy_without_mode(tmp_path):
-    """§6.4.35: unchanged engine par is already the shared export destination."""
+    """Unchanged engine par is already the shared export destination."""
     file_data = _single_pta_file_data(
         tmp_path,
         tim_text="FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
@@ -286,7 +286,7 @@ def test_shared_export_skips_self_copy_without_mode(tmp_path):
 
 @pytest.mark.unit
 def test_shared_export_skips_self_copy_without_jump_mjd(tmp_path):
-    """§6.4.36: convert_jump_mjd with no JUMP MJD must not SameFileError."""
+    """convert_jump_mjd with no JUMP MJD must not SameFileError."""
     file_data = _single_pta_file_data(
         tmp_path,
         tim_text="FORMAT 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n",
@@ -306,7 +306,7 @@ def test_shared_export_skips_self_copy_without_jump_mjd(tmp_path):
 
 @pytest.mark.unit
 def test_shared_export_contains_transferred_mode(tmp_path):
-    """§6.4.37: changed PTA's shared export carries MODE 1."""
+    """Changed PTA's shared export carries MODE 1."""
     file_data = _single_pta_file_data(
         tmp_path,
         tim_text=("FORMAT 1\nMODE 1\ntest1 1400.0 54510.0 1.5 g -sys TEST\n"),

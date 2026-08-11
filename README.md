@@ -190,8 +190,7 @@ mp = create_metapulsar(
 ### Nonlinear timing (`NonLinearTimingModel`)
 
 Par files are aligned to PINT's orbital chart in `ParameterManager` before
-merging (hybrid `PB + FBn` → free `FB0`); see
-[`feature_orbital_chart_alignment.md`](feature_orbital_chart_alignment.md).
+merging (hybrid `PB + FBn` → free `FB0`).
 
 **Linear objects (locked names):** `design_matrix` / \(M\) is the delay tangent
 in the PINT/tempo2 fitter sign (uncentered; what every other PTA package means
@@ -200,7 +199,7 @@ by “design matrix”). `residual_jacobian` / \(J=-M\) is
 — never called a design matrix. The old `waveform_jacobian` noun is deleted:
 the delay tangent *is* \(M\). Full vocabulary:
 [`docs/design_matrix_terminology.md`](docs/design_matrix_terminology.md);
-design notes: `ref-packages/jug/feature_phase_gauge.md`.
+design notes in JUG.
 
 MetaPulsar exposes a live nonlinear-timing interface as well as an
 Enterprise/Discovery-compatible frozen-pulsar view. Open its engine-independent
@@ -267,10 +266,8 @@ runtime). Discovery / NumPyro / PTMCMC extras are installed from nltiming
 directly. The package base and nltiming require Python 3.11 or newer.
 
 Introductory notebooks and the coordinate/geometry guide live in the
-`nltiming` package (`ref-packages/nltiming/examples/notebooks/` and that
-package’s README when using the MetaPulsar devcontainer checkout). MetaPulsar
-is still required today as the `TimingPulsar` implementation those notebooks
-bind to.
+`nltiming` package (its `examples/notebooks/` and README). MetaPulsar is still
+required today as the `TimingPulsar` implementation those notebooks bind to.
 
 ## Documentation
 
@@ -353,7 +350,7 @@ Long-term plan:
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
 - **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
-- **pint-pulsar** ([nanograv/PINT](https://github.com/nanograv/PINT/tree/main)). Dev checkouts: `pip install -e ref-packages/PINT`. Diagnose installs with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
+- **pint-pulsar** ([nanograv/PINT](https://github.com/nanograv/PINT/tree/main)). Prefer an editable local PINT checkout (`pip install -e . --no-deps` from that tree). Diagnose installs with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
 - **nltiming** (protocols, engine selection, nonlinear timing math)
 
 Optional extras:

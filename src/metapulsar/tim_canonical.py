@@ -50,9 +50,9 @@ from .tim_file_analyzer import (
 CANONICAL_METADATA_FLAGS: Tuple[str, ...] = ("pta", "pta_dataset", "timing_package")
 MJD_JUMP_PTA_FLAG = "mjd_jump_pta"
 
-# tempo2 hard limits (ref-packages/tempo2/tempo2.h:96-97). Overflow makes
-# tempo2 call exit(1) (readTimfile.C:323-327), which would kill the
-# interpreter under in-process libstempo, so we refuse before writing.
+# tempo2 hard limits (tempo2.h). Overflow makes tempo2 call exit(1)
+# (readTimfile.C), which would kill the interpreter under in-process
+# libstempo, so we refuse before writing.
 TEMPO2_MAX_FLAGS = 40
 TEMPO2_MAX_FLAG_LEN = 32
 # readTimfile.C reads with fgets(line, 1000): 998 content bytes plus newline is

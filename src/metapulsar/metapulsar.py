@@ -166,7 +166,7 @@ class MetaPulsar:
         """Derived from binary_conversion_report; None when no conversion ran.
 
         TimingPulsar-protocol extension point for nltiming Case-D STIGMA
-        required-sampling (§8.5a).
+        required-sampling.
         """
         from .binary_family_convert import metadata_from_report
 
@@ -377,7 +377,7 @@ class MetaPulsar:
         vs a native ``PB`` column) otherwise surfaces as a bare
         ``ValueError: 'FB0' is not in list`` from ``list.index``.
         ``ParameterManager`` aligns the orbital chart of every par it produces
-        (see feature doc §5), so reaching this method means the engine object was
+        so reaching this method means the engine object was
         built from a par that never went through it -- typically by calling
         ``MetaPulsar(...)`` directly with pre-built engine objects instead of
         ``create_metapulsar()``.

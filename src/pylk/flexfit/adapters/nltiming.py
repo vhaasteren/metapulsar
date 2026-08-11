@@ -8,8 +8,7 @@ own timing plan does:
   from the column-normalized design matrix, held fixed at ``1e40`` and never
   updated — reproducing Discovery's ``makegp_improper`` timing marginalization;
 * **sampled** columns become a learnable ``J_z`` block whose per-parameter
-  variance is fixed at ``1e40`` on the first sweep and then inferred, matching
-  ``feature_flexible_fit.md``.
+  variance is fixed at ``1e40`` on the first sweep and then inferred.
 
 Sign convention (mandated finite-difference check in :func:`sign_check`):
 timing blocks are built from the residual Jacobian ``J = -M``

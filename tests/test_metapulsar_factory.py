@@ -1396,7 +1396,7 @@ class TestCombinationOutputDir:
 
     @pytest.mark.unit
     def test_always_profile_single_tempo2_exported_par_has_tdb(self, tmp_path):
-        """§5.3: single tempo2 PTA with convention_profile=always → UNITS TDB."""
+        """Single tempo2 PTA with convention_profile=always → UNITS TDB."""
         import re
 
         from metapulsar.parameter_manager import AlignmentPolicy

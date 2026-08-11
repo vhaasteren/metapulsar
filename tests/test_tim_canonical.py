@@ -1257,7 +1257,7 @@ class TestJumpMjd:
 
 
 class TestExactTimeArithmetic:
-    """§6.1 Exact, bounded TIME arithmetic."""
+    """Exact, bounded TIME arithmetic."""
 
     def test_time_86400_adds_one_day(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -1286,7 +1286,7 @@ class TestExactTimeArithmetic:
         assert mjd == _oracle_baked("58000.0", Fraction(1))
 
     def test_exponent_span_cancellation_keeps_time_live(self, tmp_path):
-        """§6.1.4: exact total 1e-30 s; a digit-budgeted Decimal gives 0E-18.
+        """Exact total 1e-30 s; a digit-budgeted Decimal gives 0E-18.
 
         The residual is far below the emitted MJD scale, so the observable is
         the recorded INCLUDE-boundary offset, which pins the *exact* value a
@@ -1386,7 +1386,7 @@ class TestExactTimeArithmetic:
 
 
 class TestMjdValidation:
-    """§6.2 MJD validation, input and output."""
+    """MJD validation, input and output."""
 
     @pytest.mark.parametrize("mjd", ["NaN", "Infinity", "nope", "-1", "1000001"])
     def test_zero_time_still_validates_mjd(self, tmp_path, mjd):
@@ -1518,7 +1518,7 @@ class TestShortDataLines:
 
 
 class TestTraversalSwitches:
-    """§6.3 Single traversal, two switches, legacy policy."""
+    """Single traversal, two switches, legacy policy."""
 
     def test_discover_returns_last_mode(self, tmp_path):
         root = tmp_path / "root.tim"
@@ -1603,7 +1603,7 @@ class TestTraversalSwitches:
             flatten_tim(root)
 
     def test_untagged_legacy_write_canonical_converts(self, tmp_path):
-        """§6.3.20: write_canonical_tim converts untagged Princeton via PINT."""
+        """write_canonical_tim converts untagged Princeton via PINT."""
         root = tmp_path / "legacy.tim"
         root.write_text(
             "MODE 1\n"
@@ -1644,7 +1644,7 @@ class TestTraversalSwitches:
         assert discover_effective_tim_mode(root) == 1
 
     def test_argumentless_format_is_policy_error_not_legacy(self, tmp_path):
-        # §1.4.1: MetaPulsar policy — bare FORMAT is TimCanonicalizationError,
+        # MetaPulsar policy — bare FORMAT is TimCanonicalizationError,
         # not TimLegacyFormatError, so write_canonical_tim does not convert.
         root = tmp_path / "root.tim"
         root.write_text("FORMAT\nMODE 1\n", encoding="utf-8")
@@ -1692,7 +1692,7 @@ class TestTraversalSwitches:
 
 
 class TestNamesArtifactAndHelpers:
-    """§6.4 names, ensure_par_mode, JUMP on baked MJD, flatten idempotency."""
+    """Names, ensure_par_mode, JUMP on baked MJD, flatten idempotency."""
 
     def test_names_are_toa_digits_and_avoid_heuristics(self, tmp_path):
         # Princeton-style one-char name and a long Parkes-like name both rewrite.
@@ -1755,7 +1755,7 @@ class TestNamesArtifactAndHelpers:
         assert out.endswith("\n") == par.endswith("\n")
 
     def test_write_pn_tim_libstempo_omits_mode(self):
-        """§6.4.30: ancillary PN writer must not emit MODE."""
+        """Ancillary PN writer must not emit MODE."""
         import inspect
 
         from metapulsar.pint_helpers import _write_pn_tim_libstempo
