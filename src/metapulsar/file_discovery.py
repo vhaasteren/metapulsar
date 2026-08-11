@@ -37,8 +37,8 @@ PTA_DATA_RELEASES = {
     },
     "ppta_dr2": {
         "base_dir": "PPTA_dr1dr2/",
-        "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})_dr1dr2\.par",
-        "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})_dr1dr2\.tim",
+        "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4}[A-Z]?)_dr1dr2\.par",
+        "tim_pattern": r"tim/v3/([BJ]\d{4}[+-]\d{2,4}[A-Z]?)_dr1dr2\.tim",
         "timing_package": "tempo2",
         "description": "PPTA Data Release 1+2",
     },

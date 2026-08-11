@@ -29,7 +29,7 @@ class TestParfileContentValidation:
             "test_pta": [
                 {
                     "par": "data/ipta-dr2/PPTA_dr1dr2/par/J1857+0943_dr1dr2.par",
-                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
+                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/v3/J1857+0943_dr1dr2.tim",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
@@ -51,7 +51,7 @@ class TestParfileContentValidation:
             "test_pta": [
                 {
                     "par": "data/ipta-dr2/PPTA_dr1dr2/par/J1857+0943_dr1dr2.par",
-                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
+                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/v3/J1857+0943_dr1dr2.tim",
                     "par_content": "PSR J1857+0943\nF0 186.494081\n",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
@@ -74,7 +74,7 @@ class TestParfileContentValidation:
         file_data = {
             "test_pta": [
                 {
-                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
+                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/v3/J1857+0943_dr1dr2.tim",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
@@ -92,7 +92,7 @@ class TestParfileContentValidation:
             "test_pta": [
                 {
                     "par": "non_existent_file.par",
-                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/J1857+0943_dr1dr2.tim",
+                    "tim": "data/ipta-dr2/PPTA_dr1dr2/tim/v3/J1857+0943_dr1dr2.tim",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "timing_package": "tempo2",
                 }
