@@ -11,7 +11,7 @@ function-locally by the figdata I/O helpers.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -20,6 +20,7 @@ import numpy as np
 
 from .basis import BasisBlock
 from .flexible_phi import FlexiblePhiResult
+from .noise import EpochKernelNoise, NoiseOperator, ShermanMorrisonNoise
 
 SEC_TO_US = 1.0e6
 FIGDATA_FORMAT = "pylk.flexfit.waveform_figdata/v1"
@@ -66,13 +67,25 @@ def block_names_excluding(
 
 
 def residuals_after(
-    solve: FlexiblePhiResult, y: np.ndarray, names: Sequence[str]
+    solve: FlexiblePhiResult,
+    y: np.ndarray,
+    names: Sequence[str],
+    *,
+    extra_waveforms: Mapping[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """``y`` minus the named block waveforms; empty ``names`` → copy of ``y``."""
     y_arr = np.asarray(y, dtype=float)
     if not names:
         return y_arr.copy()
-    return y_arr - solve.total_waveform(*names)
+    out = y_arr.copy()
+    extras = extra_waveforms or {}
+    solve_names = [n for n in names if n not in extras]
+    if solve_names:
+        out = out - solve.total_waveform(*solve_names)
+    for name in names:
+        if name in extras:
+            out = out - np.asarray(extras[name], dtype=float)
+    return out
 
 
 def frequencies_from_blocks(
@@ -142,8 +155,8 @@ class GPBand:
     std: np.ndarray  # seconds, 1σ from coefficient covariance
 
     def __post_init__(self) -> None:
-        for field in ("t_grid", "mean", "std"):
-            object.__setattr__(self, field, _freeze_array(getattr(self, field)))
+        for name in ("t_grid", "mean", "std"):
+            object.__setattr__(self, name, _freeze_array(getattr(self, name)))
 
 
 @dataclass(frozen=True)
@@ -176,7 +189,7 @@ class WaveformPanelArrays:
     stage_rms_us: Mapping[str, float]
 
     def __post_init__(self) -> None:
-        for field in (
+        for name in (
             "mjd",
             "freq_mhz",
             "resid_us",
@@ -190,7 +203,7 @@ class WaveformPanelArrays:
             "dm_mean_us",
             "dm_std_us",
         ):
-            object.__setattr__(self, field, _freeze_array(getattr(self, field)))
+            object.__setattr__(self, name, _freeze_array(getattr(self, name)))
         object.__setattr__(
             self, "stage_rms_us", MappingProxyType(dict(self.stage_rms_us))
         )
@@ -306,15 +319,19 @@ def _evaluate_stages(
     solve: FlexiblePhiResult,
     block_kinds: Mapping[str, str],
     stages: Sequence[StageSpec],
+    *,
+    waveforms: Mapping[str, Any] | None = None,
+    extra_waveforms: Mapping[str, np.ndarray] | None = None,
 ) -> tuple[WaveformStage, ...]:
+    waves = waveforms if waveforms is not None else solve.block_waveforms
     out: list[WaveformStage] = []
     for spec in stages:
         names = _resolve_stage_names(
             spec,
             block_kinds=block_kinds,
-            block_waveforms=solve.block_waveforms,
+            block_waveforms=waves,
         )
-        r = residuals_after(solve, y, names)
+        r = residuals_after(solve, y, names, extra_waveforms=extra_waveforms)
         if spec.normalize:
             r = r / np.sqrt(variance)
         out.append(
@@ -343,10 +360,13 @@ class WaveformAnalysis:
     block_frequencies: Mapping[str, np.ndarray]
     stages: tuple[WaveformStage, ...]
     label: str = EB_LABEL
+    extra_waveforms: Mapping[str, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for field in ("y", "variance", "toas", "toa_mjd"):
-            object.__setattr__(self, field, _freeze_array(getattr(self, field)))
+        for field_name in ("y", "variance", "toas", "toa_mjd"):
+            object.__setattr__(
+                self, field_name, _freeze_array(getattr(self, field_name))
+            )
         if self.freqs_mhz is not None:
             object.__setattr__(self, "freqs_mhz", _freeze_array(self.freqs_mhz))
         object.__setattr__(
@@ -363,6 +383,21 @@ class WaveformAnalysis:
             ),
         )
         object.__setattr__(self, "stages", tuple(self.stages))
+        object.__setattr__(
+            self,
+            "extra_waveforms",
+            MappingProxyType(
+                {
+                    k: _freeze_array(np.asarray(v, dtype=float))
+                    for k, v in dict(self.extra_waveforms).items()
+                }
+            ),
+        )
+
+    @property
+    def waveforms(self) -> Mapping[str, np.ndarray]:
+        """Solve block waveforms plus any analysis-layer extras (e.g. kernel ECORR)."""
+        return {**self.solve.block_waveforms, **self.extra_waveforms}
 
     # --- accessors ----------------------------------------------------------
     def stage(self, name: str) -> WaveformStage:
@@ -372,26 +407,32 @@ class WaveformAnalysis:
         raise KeyError(f"unknown stage {name!r}")
 
     def residuals_after(self, *block_names: str) -> np.ndarray:
-        return residuals_after(self.solve, self.y, block_names)
+        return residuals_after(
+            self.solve, self.y, block_names, extra_waveforms=self.extra_waveforms
+        )
 
     def residuals_after_kinds(self, *kinds: str) -> np.ndarray:
         names = self.block_names_of(*kinds)
-        return residuals_after(self.solve, self.y, names)
+        return residuals_after(
+            self.solve, self.y, names, extra_waveforms=self.extra_waveforms
+        )
 
     def residuals_after_excluding_kinds(self, *kinds: str) -> np.ndarray:
         names = self.block_names_excluding(*kinds)
-        return residuals_after(self.solve, self.y, names)
+        return residuals_after(
+            self.solve, self.y, names, extra_waveforms=self.extra_waveforms
+        )
 
     def waveform(self, name: str) -> np.ndarray:
+        if name in self.extra_waveforms:
+            return np.asarray(self.extra_waveforms[name], dtype=float)
         return self.solve.waveform(name)
 
     def block_names_of(self, *kinds: str) -> tuple[str, ...]:
-        return block_names_of(self.block_kinds, self.solve.block_waveforms, *kinds)
+        return block_names_of(self.block_kinds, self.waveforms, *kinds)
 
     def block_names_excluding(self, *kinds: str) -> tuple[str, ...]:
-        return block_names_excluding(
-            self.block_kinds, self.solve.block_waveforms, *kinds
-        )
+        return block_names_excluding(self.block_kinds, self.waveforms, *kinds)
 
     def predict_gp(self, name: str, t_grid: np.ndarray) -> GPBand:
         if name not in self.block_frequencies:
@@ -419,13 +460,13 @@ class WaveformAnalysis:
         return self.waveform(name)
 
     def __iter__(self):
-        return iter(self.solve.block_waveforms)
+        return iter(self.waveforms)
 
     def __contains__(self, name: str) -> bool:
-        return name in self.solve.block_waveforms
+        return name in self.waveforms
 
     def keys(self):
-        return self.solve.block_waveforms.keys()
+        return self.waveforms.keys()
 
     def gp_bands(
         self,
@@ -521,23 +562,22 @@ class WaveformAnalysis:
         )
 
     def summary(self) -> dict[str, object]:
+        blocks: dict[str, object] = {}
+        for name in self.waveforms:
+            span = self.solve.block_spans.get(name)
+            n_coef = None if span is None else int(span.stop - span.start)
+            blocks[name] = {
+                "kind": self.block_kinds[name],
+                "n_coef": n_coef,
+                "toa_rms_us": float(
+                    np.sqrt(np.mean(self.waveform(name) ** 2)) * SEC_TO_US
+                ),
+                "has_frequencies": name in self.block_frequencies,
+            }
         return {
             "label": self.label,
             "n_toa": int(self.y.size),
-            "blocks": {
-                name: {
-                    "kind": self.block_kinds[name],
-                    "n_coef": int(
-                        self.solve.block_spans[name].stop
-                        - self.solve.block_spans[name].start
-                    ),
-                    "toa_rms_us": float(
-                        np.sqrt(np.mean(self.waveform(name) ** 2)) * SEC_TO_US
-                    ),
-                    "has_frequencies": name in self.block_frequencies,
-                }
-                for name in self.solve.block_waveforms
-            },
+            "blocks": blocks,
             "stages": {
                 s.name: {
                     "subtracted": list(s.subtracted),
@@ -552,6 +592,32 @@ class WaveformAnalysis:
         }
 
 
+def _kernel_ecorr_waveform(
+    y: np.ndarray, solve: FlexiblePhiResult, noise: NoiseOperator
+) -> np.ndarray:
+    """Epoch waveform ``E â`` for a kernel-ECORR operator (§5.6)."""
+    r = y - solve.total_waveform()
+    if isinstance(noise, EpochKernelNoise):
+        a_hat = (
+            noise.capacitance_scale
+            * np.asarray(noise.indicator.T @ (r / noise.diagonal)).ravel()
+        )
+        return np.asarray(noise.indicator @ a_hat).ravel()
+    if isinstance(noise, ShermanMorrisonNoise):
+        from .fasttnt import _indicator
+
+        e = _indicator(noise)
+        dinv = 1.0 / noise.diagonal
+        t = np.asarray(e.multiply(e).T @ dinv).ravel()
+        s = 1.0 / (1.0 / noise.jitter + t)
+        a_hat = s * np.asarray(e.T @ (dinv * r)).ravel()
+        return np.asarray(e @ a_hat).ravel()
+    raise TypeError(
+        f"noise={type(noise)!r} is not a kernel-ECORR operator; "
+        "pass EpochKernelNoise or ShermanMorrisonNoise, or omit noise="
+    )
+
+
 def analyze_waveforms(
     y: np.ndarray,
     variance: np.ndarray,
@@ -563,13 +629,20 @@ def analyze_waveforms(
     block_frequencies: Mapping[str, np.ndarray] | None = None,
     freqs_mhz: np.ndarray | None = None,
     stages: Sequence[StageSpec] | None = None,
+    noise: NoiseOperator | None = None,
 ) -> WaveformAnalysis:
     """Build a WaveformAnalysis from a finished flexible-Phi solve.
 
     ``y`` is the residual vector the solve used (seconds). ``variance`` is the
-    diagonal of ``N`` (seconds²). ``toas`` / ``toa_mjd`` are per-TOA time
-    coordinates. ``block_frequencies`` maps Fourier block name → interleaved
+    diagonal of ``D`` (seconds²) — the whitening denominator in both topologies
+    after ECORR is subtracted as a waveform. ``toas`` / ``toa_mjd`` are per-TOA
+    time coordinates. ``block_frequencies`` maps Fourier block name → interleaved
     frequency vector in Hz (usually from ``BasisBlock.metadata["frequencies"]``).
+
+    When ``noise`` is a kernel-ECORR operator, an ``"ecorr_kernel"`` waveform is
+    injected so ``after_all`` / ``whitened`` still subtract ECORR. Mode-1 scripts
+    that pin ECORR in ``N`` must pass ``noise=``; omitting it leaves epoch power
+    in those stages.
     """
     y_arr = np.asarray(y, dtype=float)
     var_arr = np.asarray(variance, dtype=float)
@@ -597,11 +670,27 @@ def analyze_waveforms(
     # Extra keys in block_kinds are ignored (kept mapping is solve-column order).
     kinds_kept = {name: block_kinds[name] for name in solve.block_waveforms}
 
+    extras: dict[str, np.ndarray] = {}
+    if noise is not None and isinstance(
+        noise, (EpochKernelNoise, ShermanMorrisonNoise)
+    ):
+        extras["ecorr_kernel"] = _kernel_ecorr_waveform(y_arr, solve, noise)
+        kinds_kept["ecorr_kernel"] = "ecorr"
+
+    waveforms = {**solve.block_waveforms, **extras}
     freqs_map = {
         k: np.asarray(v, dtype=float) for k, v in (block_frequencies or {}).items()
     }
     stage_specs = tuple(stages) if stages is not None else STANDARD_PTA_STAGES
-    evaluated = _evaluate_stages(y_arr, var_arr, solve, kinds_kept, stage_specs)
+    evaluated = _evaluate_stages(
+        y_arr,
+        var_arr,
+        solve,
+        kinds_kept,
+        stage_specs,
+        waveforms=waveforms,
+        extra_waveforms=extras,
+    )
     return WaveformAnalysis(
         y=y_arr,
         variance=var_arr,
@@ -613,6 +702,7 @@ def analyze_waveforms(
         block_frequencies=freqs_map,
         stages=evaluated,
         label=EB_LABEL,
+        extra_waveforms=extras,
     )
 
 

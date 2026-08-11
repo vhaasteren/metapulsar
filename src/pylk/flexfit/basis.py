@@ -17,9 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping, Protocol, runtime_checkable
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .noise import NoiseOperator
 
 BlockKind = Literal["timing", "red", "dm", "chromatic", "ecorr", "custom"]
 
@@ -146,6 +149,29 @@ class BasisBlock:
         return int(self.matrix.shape[1])
 
 
+@runtime_checkable
+class LinearModel(Protocol):
+    """What the solvers need from a basis container (dense or factored)."""
+
+    @property
+    def n_obs(self) -> int: ...
+
+    @property
+    def n_coef(self) -> int: ...
+
+    @property
+    def groups(self) -> tuple[VarianceGroup, ...]: ...
+
+    @property
+    def block_spans(self) -> Mapping[str, slice]: ...
+
+    def gram_project(
+        self, noise: "NoiseOperator", y: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]: ...
+
+    def expand(self, v: np.ndarray, *, span: slice | None = None) -> np.ndarray: ...
+
+
 @dataclass(frozen=True)
 class AssembledModel:
     """The joint ``T`` matrix with globally-indexed variance groups."""
@@ -156,6 +182,7 @@ class AssembledModel:
     column_kinds: tuple[BlockKind, ...]
     block_spans: Mapping[str, slice]
     block_kinds: Mapping[str, BlockKind]
+    block_metadata: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "matrix", _readonly(self.matrix))
@@ -164,6 +191,13 @@ class AssembledModel:
         )
         object.__setattr__(
             self, "block_kinds", MappingProxyType(dict(self.block_kinds))
+        )
+        object.__setattr__(
+            self,
+            "block_metadata",
+            MappingProxyType(
+                {k: MappingProxyType(dict(v)) for k, v in self.block_metadata.items()}
+            ),
         )
 
     @property
@@ -179,6 +213,45 @@ class AssembledModel:
 
     def block_slice(self, name: str) -> slice:
         return self.block_spans[name]
+
+    def gram_project(
+        self, noise: "NoiseOperator", y: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """``(T^T N^-1 T, T^T N^-1 y)`` via the dense matrix and ``noise.solve``."""
+        ninv_t = noise.solve(self.matrix)
+        return self.matrix.T @ ninv_t, self.matrix.T @ noise.solve(y)
+
+    def expand(self, v: np.ndarray, *, span: slice | None = None) -> np.ndarray:
+        """``T @ v`` for ``(k,)`` or ``(k, m)``; ``span`` restricts to one block."""
+        v = np.asarray(v, dtype=float)
+        if span is None:
+            return self.matrix @ v
+        return self.matrix[:, span] @ v[span]
+
+    def kernel_weights(self, indicator, d: np.ndarray) -> np.ndarray:
+        """``W = E^T diag(d) T``, ``(n_ep, k)`` — the kernel-ECORR products.
+
+        ``indicator`` is the column-disjoint epoch indicator as CSR. One sparse
+        product; never reconstructs ``T`` column by column.
+        """
+        d = np.asarray(d, dtype=float)
+        return np.asarray(indicator.T @ (d[:, None] * self.matrix))
+
+    def epoch_row_dot(self, g: np.ndarray, epoch: np.ndarray) -> np.ndarray:
+        """``out_i = T_i . g[epoch_i]`` (0 where ``epoch_i < 0``), row-chunked.
+
+        Used for the kernel-ECORR cross term; chunking over rows keeps the
+        temporary at ``(chunk, k)`` instead of materializing ``(n, k)``.
+        """
+        g = np.asarray(g, dtype=float)
+        epoch = np.asarray(epoch, dtype=np.int64)
+        out = np.zeros(self.n_obs, dtype=float)
+        rows = np.flatnonzero(epoch >= 0)
+        step = max(1, int(4_000_000 // max(self.n_coef, 1)))
+        for i0 in range(0, rows.size, step):
+            idx = rows[i0 : i0 + step]
+            out[idx] = np.einsum("ij,ij->i", self.matrix[idx], g[epoch[idx]])
+        return out
 
 
 def assemble(blocks: tuple[BasisBlock, ...] | list[BasisBlock]) -> AssembledModel:
@@ -199,6 +272,7 @@ def assemble(blocks: tuple[BasisBlock, ...] | list[BasisBlock]) -> AssembledMode
     column_kinds: list[BlockKind] = []
     block_spans: dict[str, slice] = {}
     block_kinds: dict[str, BlockKind] = {}
+    block_metadata: dict[str, Mapping[str, object]] = {}
     offset = 0
     for block in blocks:
         if block.n_obs != n_obs:
@@ -216,6 +290,7 @@ def assemble(blocks: tuple[BasisBlock, ...] | list[BasisBlock]) -> AssembledMode
         column_kinds.extend([block.kind] * block.n_col)
         block_spans[block.name] = slice(offset, offset + block.n_col)
         block_kinds[block.name] = block.kind
+        block_metadata[block.name] = dict(block.metadata)
         offset += block.n_col
     return AssembledModel(
         matrix=np.hstack(matrices),
@@ -224,6 +299,7 @@ def assemble(blocks: tuple[BasisBlock, ...] | list[BasisBlock]) -> AssembledMode
         column_kinds=tuple(column_kinds),
         block_spans=block_spans,
         block_kinds=block_kinds,
+        block_metadata=block_metadata,
     )
 
 

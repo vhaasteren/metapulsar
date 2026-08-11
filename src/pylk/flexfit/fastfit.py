@@ -22,6 +22,7 @@ from .timing import TimingModel
 from .waveform import block_names_excluding, block_names_of, residuals_after
 
 if TYPE_CHECKING:
+    from .fasttnt import Factorization
     from .waveform import StageSpec, WaveformAnalysis
 
 
@@ -119,6 +120,7 @@ def fastfit(
     step_tolerance: float = 1e-8,
     sweep_tolerance: float | None = None,
     warm_start: bool = True,
+    factorization: Factorization | None = None,
 ) -> FastFitResult:
     """Run the staged flexible-``Phi`` fit with optional nonlinear timing.
 
@@ -147,6 +149,9 @@ def fastfit(
         Optional inner convergence tolerance forwarded to the sweep loop.
     warm_start
         Reuse the previous iteration's ``Phi`` to initialize the next solve.
+    factorization
+        Optional :class:`~pylk.flexfit.fasttnt.Factorization` applied after
+        ``assemble`` each outer iteration.
     """
     if max_timing_iterations < 1:
         raise ValueError("max_timing_iterations must be >= 1")
@@ -171,6 +176,8 @@ def fastfit(
         else:
             timing_blocks = ()
         model = assemble((*timing_blocks, *blocks))
+        if factorization is not None:
+            model = factorization.apply(model)
         solve_result = solve_flexible_phi(
             y,
             model,

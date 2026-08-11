@@ -19,7 +19,7 @@ from typing import Mapping
 import numpy as np
 import scipy.linalg as sl
 
-from .basis import AssembledModel, VarianceGroup
+from .basis import LinearModel, VarianceGroup
 from .noise import NoiseOperator
 
 
@@ -47,28 +47,40 @@ def _stable_cho_factor(precision: np.ndarray) -> tuple[tuple[np.ndarray, bool], 
     )
 
 
+def _gram_project(model, noise: NoiseOperator, y: np.ndarray):
+    """Dispatch: AssembledModel / FactoredModel / bare ndarray."""
+    op = getattr(model, "gram_project", None)
+    if op is not None:
+        return op(noise, y)
+    matrix = np.asarray(model, dtype=float)
+    return matrix.T @ noise.solve(matrix), matrix.T @ noise.solve(y)
+
+
+def _moments_from_gram(
+    gram: np.ndarray, projected: np.ndarray, phi: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    precision = gram.copy()
+    precision[np.diag_indices_from(precision)] += 1.0 / phi
+    factor, _ = _stable_cho_factor(precision)
+    mean = sl.cho_solve(factor, projected)
+    covariance = sl.cho_solve(factor, np.eye(precision.shape[0]))
+    return mean, covariance, mean**2 + np.diag(covariance)
+
+
 def conditional_moments(
     y: np.ndarray,
-    basis: np.ndarray,
+    model,
     phi: np.ndarray,
     noise: NoiseOperator,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(mean, covariance, second_moment)`` of the coefficient posterior.
 
-    Solves ``Sigma = (T^T N^-1 T + Phi^-1)^-1`` and ``m = Sigma T^T N^-1 y`` via
-    a Cholesky factorization of the precision, working with ``Phi^-1`` directly
-    so that broad timing variances (``Phi = 1e40``) never form large entries. A
-    minimal adaptive jitter keeps a rank-deficient improper timing block solvable.
+    ``model`` may be a :class:`~pylk.flexfit.basis.LinearModel` or a bare basis
+    matrix. Solves ``Sigma = (T^T N^-1 T + Phi^-1)^-1`` and
+    ``m = Sigma T^T N^-1 y`` via a Cholesky factorization of the precision.
     """
-    ninv_y = noise.solve(y)
-    ninv_t = noise.solve(basis)
-    precision = basis.T @ ninv_t
-    precision[np.diag_indices_from(precision)] += 1.0 / np.asarray(phi, dtype=float)
-    factor, _ = _stable_cho_factor(precision)
-    mean = sl.cho_solve(factor, basis.T @ ninv_y)
-    covariance = sl.cho_solve(factor, np.eye(precision.shape[0]))
-    second_moment = mean**2 + np.diag(covariance)
-    return mean, covariance, second_moment
+    gram, projected = _gram_project(model, noise, y)
+    return _moments_from_gram(gram, projected, np.asarray(phi, dtype=float))
 
 
 def bounded_variance_update(
@@ -157,7 +169,7 @@ class FlexiblePhiResult:
         return out
 
 
-def _initial_phi(model: AssembledModel) -> np.ndarray:
+def _initial_phi(model: LinearModel) -> np.ndarray:
     phi = np.empty(model.n_coef, dtype=float)
     for group in model.groups:
         rho = group.initial_rho()
@@ -168,7 +180,7 @@ def _initial_phi(model: AssembledModel) -> np.ndarray:
 
 def solve_flexible_phi(
     y: np.ndarray,
-    model: AssembledModel,
+    model: LinearModel,
     noise: NoiseOperator,
     *,
     n_sweeps: int = 3,
@@ -183,6 +195,9 @@ def solve_flexible_phi(
     ``1e40``, so the first sweep effectively marginalizes the timing directions
     while the non-timing groups are learned. A final E-step at the converged
     ``Phi`` gives mutually consistent reported moments.
+
+    The Gram ``(T^T N^-1 T, T^T N^-1 y)`` is computed once per call (``N`` and
+    ``y`` are fixed within a call) and reused across sweeps.
 
     ``tolerance`` may stop the sweeps early once the largest fractional change in
     any group variance falls below it, but never before the second sweep.
@@ -200,12 +215,14 @@ def solve_flexible_phi(
     if phi.shape != (model.n_coef,):
         raise ValueError("initial_phi has the wrong length")
 
+    gram, projected = _gram_project(model, noise, y)
+
     phi_history: list[np.ndarray] = []
     bound_hits: set[str] = set()
     completed = 0
     for sweep in range(1, n_sweeps + 1):
         phi_history.append(phi.copy())
-        _, _, second_moment = conditional_moments(y, model.matrix, phi, noise)
+        _, _, second_moment = _moments_from_gram(gram, projected, phi)
         previous = phi.copy()
         for group in model.groups:
             if group.update_from_sweep > sweep:
@@ -223,12 +240,18 @@ def solve_flexible_phi(
                 break
 
     # Final E-step so the reported moments are consistent with the final Phi.
-    mean, covariance, second_moment = conditional_moments(y, model.matrix, phi, noise)
+    mean, covariance, second_moment = _moments_from_gram(gram, projected, phi)
     phi_history.append(phi.copy())
 
+    expand = getattr(model, "expand", None)
     block_waveforms: dict[str, np.ndarray] = {}
     for name, span in model.block_spans.items():
-        block_waveforms[name] = model.matrix[:, span] @ mean[span]
+        if expand is not None:
+            block_waveforms[name] = expand(mean, span=span)
+        else:
+            # bare-matrix fallback (should not occur for LinearModel)
+            matrix = np.asarray(model, dtype=float)
+            block_waveforms[name] = matrix[:, span] @ mean[span]
 
     group_variances = {
         group.name: float(phi[group.indices[0]]) for group in model.groups
@@ -240,6 +263,7 @@ def solve_flexible_phi(
         "requested_sweeps": n_sweeps,
         "covariance_condition_number": precision_cond,
         "noise_logdet": noise.logdet(),
+        "factored": hasattr(model, "predicted_speedup"),
     }
     return FlexiblePhiResult(
         coefficient_mean=mean,

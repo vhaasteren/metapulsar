@@ -125,8 +125,8 @@ def test_covariance_correction_prevents_signal_absorption():
     from pylk.flexfit.basis import assemble
 
     model = assemble((block,))
-    e = expected_squared_residuals(y, model.matrix, result.solve)
-    r2 = (y - model.matrix @ result.solve.coefficient_mean) ** 2
+    e = expected_squared_residuals(y, model, result.solve)
+    r2 = (y - model.expand(result.solve.coefficient_mean)) ** 2
     assert np.all(e >= r2 - 1e-30)
     assert np.mean(e - r2) > 0.0
 

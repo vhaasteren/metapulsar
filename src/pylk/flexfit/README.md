@@ -18,17 +18,31 @@ estimates for diagnostics and initialization.
 ```
 pylk/flexfit/
   basis.py         # BasisBlock / VarianceGroup / assemble  (pure data)
-  noise.py         # NoiseOperator: DiagonalNoise, ShermanMorrisonNoise
+  noise.py         # NoiseOperator: DiagonalNoise, EpochKernelNoise, …
   flexible_phi.py  # conditional solve + staged bounded EB sweeps
+  fasttnt.py       # epoch factorization for TᵀN⁻¹T (opt-in Factorization)
   projection.py    # project a free spectrum onto a physical Phi(theta)
   timing.py        # TimingModel protocol (relinearization interface)
   fastfit.py       # top-level orchestration + relinearization loop
   whitenoise.py    # Gibbs/ECM per-backend EFAC/EQUAD estimation
+  waveform.py      # EB waveform stages / figdata
   adapters/
     discovery.py   # red/DM/chromatic blocks + white noise (Discovery)
     enterprise.py  # planned Enterprise gp_bases / gp_priors adapter (stub)
     nltiming.py    # timing J_z block + finite-difference sign check
 ```
+
+### Fast-TNT factorization (opt-in)
+
+For large multi-PTA pulsars, pass a `Factorization` into `fastfit` /
+`fit_white_noise`, or call `factorize(model, toas=..., freqs_mhz=...)` before
+`solve_flexible_phi`. Default remains the dense path. For ECORR-heavy pulsars
+prefer Topology B: `dx.white_noise(psr, noisedict, ecorr=True)` returns an
+`EpochKernelNoise` (ECORR in `N`, not as basis columns). Pin ECORR with the
+operator as-is (mode 2.1), or learn it via
+`fit_white_noise(..., kernel_ecorr=..., learn_kernel_ecorr=True)` and read
+amplitudes with `ecorr_from_kernel(result.kernel)`. See
+`feature_flexfit_fasttnt.md`.
 
 Ownership: the timing `z`-space Jacobian and prior transform belong to
 `nltiming`. GP bases and `Phi` conventions belong to Discovery **or** Enterprise

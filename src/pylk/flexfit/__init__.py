@@ -40,6 +40,7 @@ from .basis import (
     INITIAL_TIMING_VARIANCE,
     AssembledModel,
     BasisBlock,
+    LinearModel,
     VarianceGroup,
     assemble,
     column_rms_scale,
@@ -48,13 +49,20 @@ from .basis import (
     rho_bounds_from_rms,
 )
 from .fastfit import FastFitResult, fastfit
+from .fasttnt import FactoredModel, Factorization, factorize
 from .flexible_phi import (
     FlexiblePhiResult,
     bounded_variance_update,
     conditional_moments,
     solve_flexible_phi,
 )
-from .noise import DiagonalNoise, NoiseOperator, ShermanMorrisonNoise
+from .noise import (
+    DiagonalNoise,
+    EpochKernelNoise,
+    NoiseOperator,
+    ShermanMorrisonNoise,
+    ecorr_from_kernel,
+)
 from .projection import SpectrumProjection, project_spectrum, spectrum_objective
 from .timing import TimingModel
 from .waveform import (
@@ -69,7 +77,13 @@ from .waveform import (
     predict_fourier_gp,
     write_waveform_figdata,
 )
-from .whitenoise import WhiteNoiseResult, expected_squared_residuals, fit_white_noise
+from .whitenoise import (
+    KernelEcorrMoments,
+    WhiteNoiseResult,
+    expected_squared_residuals,
+    fit_white_noise,
+    kernel_ecorr_moments,
+)
 
 __all__ = [
     # orchestration
@@ -84,8 +98,13 @@ __all__ = [
     "BasisBlock",
     "VarianceGroup",
     "AssembledModel",
+    "LinearModel",
     "assemble",
     "INITIAL_TIMING_VARIANCE",
+    # factorization
+    "factorize",
+    "Factorization",
+    "FactoredModel",
     # group helpers
     "fourier_pair_groups",
     "per_column_groups",
@@ -95,10 +114,14 @@ __all__ = [
     "NoiseOperator",
     "DiagonalNoise",
     "ShermanMorrisonNoise",
+    "EpochKernelNoise",
+    "ecorr_from_kernel",
     # white-noise estimation
     "fit_white_noise",
     "WhiteNoiseResult",
     "expected_squared_residuals",
+    "kernel_ecorr_moments",
+    "KernelEcorrMoments",
     # projection
     "project_spectrum",
     "spectrum_objective",

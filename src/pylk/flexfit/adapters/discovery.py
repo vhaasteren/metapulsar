@@ -17,7 +17,12 @@ from typing import Callable
 import numpy as np
 
 from ..basis import BasisBlock, VarianceGroup, fourier_pair_groups
-from ..noise import DiagonalNoise, NoiseOperator, ShermanMorrisonNoise
+from ..noise import (
+    DiagonalNoise,
+    EpochKernelNoise,
+    NoiseOperator,
+    ecorr_from_kernel as ecorr_from_kernel,
+)
 from ..projection import SpectrumProjection, project_spectrum
 from ..waveform import WaveformAnalysis, analyze_waveforms, frequencies_from_blocks
 
@@ -227,47 +232,88 @@ def chromatic_noise_block(
     )
 
 
+def _selection_labels(psr, selection) -> np.ndarray:
+    """Resolve the backend/PTA label array that keys a release noisedict."""
+    if selection is None:
+        return np.asarray(psr.backend_flags)
+    if callable(selection):
+        return np.asarray(selection(psr))
+    return np.asarray(selection)
+
+
+def _equad_seconds(noisedict: dict, name: str, backend: str) -> tuple[float, bool]:
+    """Return ``(equad_seconds, is_tnequad)`` from a release noisedict entry."""
+    tn_key = f"{name}_{backend}_log10_tnequad"
+    t2_key = f"{name}_{backend}_log10_t2equad"
+    has_tn = tn_key in noisedict
+    has_t2 = t2_key in noisedict
+    if has_tn and has_t2:
+        raise ValueError(
+            f"noisedict has both tnequad and t2equad keys for {name}_{backend}"
+        )
+    if not has_tn and not has_t2:
+        raise KeyError(
+            f"noisedict missing equad key for {name}_{backend} "
+            f"(expected {tn_key!r} or {t2_key!r})"
+        )
+    if has_tn:
+        return float(10.0 ** noisedict[tn_key]), True
+    return float(10.0 ** noisedict[t2_key]), False
+
+
 def white_noise(
     psr,
     noisedict: dict,
     *,
     selection=None,
-    tnequad: bool = False,
-    enterprise: bool = True,
     ecorr: bool = False,
+    dt: float = 1.0,
+    ecorr_min: float = 1e-9,
 ) -> NoiseOperator:
-    """White-noise operator from Discovery ``makenoise_measurement``.
+    """Diagonal or kernel-ECORR white noise from a release noisedict.
 
-    With ``ecorr=False`` returns a :class:`DiagonalNoise`; with ``ecorr=True``
-    the ECORR is folded into ``N`` as a Sherman-Morrison update. Passing a
-    ``selection`` matches the notebook's per-backend efac/equad/ecorr mapping.
+    ``selection`` is the label array (or a callable returning one) that keys the
+    dict — PTA labels for AEI combinations, fine backends for per-backend dicts.
+    The same array is used for ``D`` and for the ECORR epochs. The equad
+    convention is read from the dict's own key, not from a flag.
+
+    With ``ecorr=True`` returns an :class:`~pylk.flexfit.noise.EpochKernelNoise`.
     """
-    import discovery as ds
-
-    kernel = ds.makenoise_measurement(
-        psr,
-        noisedict,
-        ecorr=ecorr,
-        enterprise=enterprise,
-        selection=selection,
-        tnequad=tnequad,
+    labels = _selection_labels(psr, selection)
+    sigma = np.asarray(psr.toaerrs, dtype=float)
+    name = psr.name
+    variance = np.empty_like(sigma)
+    backends = sorted({str(x) for x in labels.tolist() if str(x)})
+    if not any(f"{name}_{b}_efac" in noisedict for b in backends):
+        raise ValueError(
+            f"no {name}_<label>_efac key matches the selection labels "
+            f"{backends[:5]!r}{' ...' if len(backends) > 5 else ''} — selection "
+            "mismatch (pass selection= with the label array that keys this "
+            "noisedict, e.g. the -pta flags for a combination dict)"
+        )
+    for b in backends:
+        m = labels == b
+        efac = float(noisedict[f"{name}_{b}_efac"])
+        q, tn = _equad_seconds(noisedict, name, b)
+        # tnequad: N = efac^2 sigma^2 + q^2 ; t2equad: N = efac^2 (sigma^2 + q^2)
+        variance[m] = (
+            efac**2 * sigma[m] ** 2 + q**2 if tn else efac**2 * (sigma[m] ** 2 + q**2)
+        )
+    if not ecorr:
+        return DiagonalNoise(variance)
+    amps = {
+        b: float(10.0 ** noisedict[f"{name}_{b}_log10_ecorr"])
+        for b in backends
+        if f"{name}_{b}_log10_ecorr" in noisedict
+    }
+    return EpochKernelNoise.from_backends(
+        diagonal=variance,
+        toas=np.asarray(psr.toas, dtype=float),
+        backend_flags=labels,
+        ecorr=amps,
+        dt=dt,
+        ecorr_min=ecorr_min,
     )
-    diagonal = getattr(kernel, "N", None)
-    if diagonal is None:
-        diagonal = kernel.getN(noisedict)
-    diagonal = np.asarray(diagonal, dtype=float)
-
-    if ecorr and hasattr(kernel, "F") and hasattr(kernel, "P"):
-        from discovery.matrix import make_uind
-
-        u = np.asarray(make_uind(kernel.F), dtype=float)
-        jitter = getattr(kernel, "P", None)
-        if callable(getattr(kernel, "getP", None)):
-            jitter = kernel.getP(noisedict)
-        jitter = np.asarray(jitter, dtype=float)
-        return ShermanMorrisonNoise(diagonal=diagonal, u=u, jitter=jitter)
-
-    return DiagonalNoise(diagonal)
 
 
 def ecorr_blocks(
@@ -287,25 +333,38 @@ def ecorr_blocks(
     learns ``ecorr_b^2`` directly (in s^2) jointly with EFAC/EQUAD and the GP
     spectra. Backends with no multi-TOA epochs are skipped (no ECORR
     information). Bounds are ecorr amplitudes in seconds.
+
+    Quantization now runs on each backend's own TOAs through
+    :func:`pylk.flexfit.fasttnt.quantize` instead of Discovery's
+    ``quantize(toas * mask)``. The epoch partition is unchanged (verified
+    column-for-column on real data); the change drops a Discovery import and
+    makes these epochs byte-identical to
+    :meth:`~pylk.flexfit.noise.EpochKernelNoise.from_backends`, which is the
+    precondition for Topology-A/B parity.
     """
-    import discovery as ds
+    from ..fasttnt import quantize
 
     labels = np.asarray(selection_labels)
     toas = np.asarray(psr.toas, dtype=float)
     blocks: list[BasisBlock] = []
     for backend in [b for b in sorted(set(labels.tolist())) if b != ""]:
         mask = labels == backend
-        first_valid = 0 if mask.all() else 1
-        bins = ds.signals.quantize(toas * mask)
-        uniques, counts = np.unique(bins, return_counts=True)
-        epoch_masks = [
-            bins == i
-            for i, cnt in zip(uniques[first_valid:], counts[first_valid:])
-            if cnt > 1
-        ]
+        idx = np.flatnonzero(mask)
+        if idx.size == 0:
+            continue
+        # Quantize this backend's TOAs alone (same rule as EpochKernelNoise.from_backends).
+        bins_local = quantize(toas[idx])
+        uniques, counts = np.unique(bins_local, return_counts=True)
+        epoch_masks = []
+        for local_id, cnt in zip(uniques.tolist(), counts.tolist()):
+            if cnt <= 1:
+                continue
+            col = np.zeros(toas.shape[0], dtype=float)
+            col[idx[bins_local == local_id]] = 1.0
+            epoch_masks.append(col)
         if not epoch_masks:
             continue
-        U = np.vstack(epoch_masks).T.astype(float)
+        U = np.column_stack(epoch_masks)
         n_col = U.shape[1]
         group = VarianceGroup(
             f"ecorr_{backend}",
