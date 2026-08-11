@@ -431,6 +431,76 @@ def test_plot_waveform_panels_smoke():
 
 
 @pytest.mark.unit
+def test_plot_waveform_panels_auto_layout_no_dm():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    from pylk.flexfit.waveform_plot import plot_waveform_panels
+
+    t, y, variance, block, solve = _solve_red(n=60, n_freq=3, seed=9)
+    analysis = analyze_waveforms(
+        y,
+        variance,
+        solve,
+        toas=t,
+        toa_mjd=t / 86400.0,
+        block_kinds={"red": "red"},
+        block_frequencies=frequencies_from_blocks([block]),
+    )
+    panels = analysis.panel_arrays(n_grid=20)  # red only -> no DM band
+    axs = plot_waveform_panels(panels)
+    assert axs.shape == (3, 2)
+    assert all(ax.get_visible() for ax in axs.ravel())
+    assert {ax.get_title() for ax in axs.ravel()} == {
+        "(a) raw",
+        "(b) after timing",
+        "(c) red GP",
+        "(e) after all",
+        "(f) whitened z",
+        "(g) Q–Q of z",
+    }
+    plt.close(axs[0, 0].figure)
+
+
+@pytest.mark.unit
+def test_plot_waveform_panels_auto_layout_with_dm():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    from pylk.flexfit.waveform_plot import plot_waveform_panels
+
+    rng = np.random.default_rng(18)
+    n = 80
+    t = np.sort(rng.uniform(0.0, 1.0e8, n))
+    red = _fourier_block(t, 3, "red")
+    dm = _fourier_block(t, 3, "dm", kind="dm")
+    variance = np.full(n, 1e-14)
+    y = (
+        red.matrix @ (1e-7 * rng.standard_normal(red.matrix.shape[1]))
+        + dm.matrix @ (1e-7 * rng.standard_normal(dm.matrix.shape[1]))
+        + np.sqrt(variance) * rng.standard_normal(n)
+    )
+    solve = solve_flexible_phi(
+        y, assemble([red, dm]), DiagonalNoise(variance), n_sweeps=2
+    )
+    analysis = analyze_waveforms(
+        y,
+        variance,
+        solve,
+        toas=t,
+        toa_mjd=t / 86400.0,
+        block_kinds={"red": "red", "dm": "dm"},
+        block_frequencies=frequencies_from_blocks([red, dm]),
+    )
+    panels = analysis.panel_arrays(n_grid=20)
+    axs = plot_waveform_panels(panels)
+    assert axs.shape == (4, 2)
+    assert axs[1, 1].get_title() == "(d) DM / chromatic GP"
+    assert axs[1, 1].get_visible()
+    assert not axs[3, 1].get_visible()  # Q-Q occupies the left slot only
+    with pytest.raises(ValueError, match="at least 4x2"):
+        fig, small = plt.subplots(3, 2)
+        plot_waveform_panels(panels, axs=small)
+    plt.close("all")
+
+
+@pytest.mark.unit
 def test_standard_whitened_stage_differs_from_whitened_residuals():
     rng = np.random.default_rng(10)
     n = 150

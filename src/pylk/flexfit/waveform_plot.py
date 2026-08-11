@@ -19,11 +19,21 @@ def plot_waveform_panels(
 ) -> np.ndarray:
     """Draw panels (a)–(g) into a 4×2 or 3×2 Axes grid.
 
-    Layout (locked):
-      [a raw]     [b after timing]
-      [c red GP]  [d dm GP]          # d hidden if show_dm is False and dm arrays empty
-      [e after all] [f whitened z]
-      [g Q-Q of z spanning both columns]
+    With the DM panel drawn (``show_dm=True`` and non-empty DM arrays), 4×2:
+
+      [a raw]        [b after timing]
+      [c red GP]     [d dm GP]
+      [e after all]  [f whitened z]
+      [g Q-Q of z]   [hidden]
+
+    Without it (``show_dm=False`` or empty DM arrays), 3×2:
+
+      [a raw]        [b after timing]
+      [c red GP]     [e after all]
+      [f whitened z] [g Q-Q of z]
+
+    A caller-supplied 4×2 grid is accepted in both cases (the unused Axes are
+    hidden); a 3×2 grid only when the DM panel is not drawn.
 
     Returns the Axes array. Does not call ``plt.show()``.
     Requires matplotlib; use ``pytest.importorskip("matplotlib")`` in tests.
@@ -31,21 +41,40 @@ def plot_waveform_panels(
     import matplotlib.pyplot as plt
     from scipy.stats import probplot
 
-    dm_present = panels.dm_mean_us.size > 0
-    draw_dm = bool(show_dm and dm_present)
+    draw_dm = bool(show_dm and panels.dm_mean_us.size > 0)
+    nrows = 4 if draw_dm else 3
 
     if axs is None:
-        nrows = 4 if draw_dm else 3
         fig, axs = plt.subplots(nrows, 2, figsize=(8.0, 2.4 * nrows), squeeze=False)
         if title:
             fig.suptitle(title)
     else:
         axs = np.atleast_2d(axs)
+        if axs.shape[0] < nrows or axs.shape[1] < 2:
+            raise ValueError(
+                f"axs must be at least {nrows}x2 for this panel set; got {axs.shape}"
+            )
+
+    ax_a, ax_b = axs[0, 0], axs[0, 1]
+    ax_d = None
+    hidden: list = []
+    if axs.shape[0] >= 4:
+        ax_c, ax_e, ax_f = axs[1, 0], axs[2, 0], axs[2, 1]
+        ax_g, unused = axs[3, 0], axs[3, 1]
+        hidden.append(unused)
+        if draw_dm:
+            ax_d = axs[1, 1]
+        else:
+            hidden.append(axs[1, 1])
+    else:
+        ax_c, ax_e = axs[1, 0], axs[1, 1]
+        ax_f, ax_g = axs[2, 0], axs[2, 1]
+    for ax in hidden:
+        ax.set_visible(False)
 
     mjd = np.asarray(panels.mjd, dtype=float)
     sigma = np.asarray(panels.sigma_us, dtype=float)
 
-    ax_a, ax_b = axs[0, 0], axs[0, 1]
     ax_a.errorbar(
         mjd,
         panels.resid_us,
@@ -69,21 +98,6 @@ def plot_waveform_panels(
     )
     ax_b.set_title("(b) after timing")
 
-    if draw_dm:
-        ax_c, ax_d = axs[1, 0], axs[1, 1]
-        row_ef = 2
-        row_qq = 3
-    else:
-        ax_c = axs[1, 0]
-        ax_d = axs[1, 1]
-        ax_d.set_visible(False)
-        row_ef = 1 if axs.shape[0] == 3 else 2
-        row_qq = 2 if axs.shape[0] == 3 else 3
-        if axs.shape[0] >= 4:
-            # Caller supplied a 4×2 grid but DM is hidden: reuse row 1 for red only.
-            row_ef = 2
-            row_qq = 3
-
     if panels.red_mean_us.size:
         g = np.asarray(panels.grid_mjd, dtype=float)
         ax_c.plot(g, panels.red_mean_us, color="C0")
@@ -97,7 +111,7 @@ def plot_waveform_panels(
     ax_c.set_title("(c) red GP")
     ax_c.set_ylabel(r"delay (µs)")
 
-    if draw_dm:
+    if ax_d is not None:
         g = np.asarray(panels.grid_mjd, dtype=float)
         ax_d.plot(g, panels.dm_mean_us, color="C1")
         ax_d.fill_between(
@@ -109,7 +123,6 @@ def plot_waveform_panels(
         )
         ax_d.set_title("(d) DM / chromatic GP")
 
-    ax_e, ax_f = axs[row_ef, 0], axs[row_ef, 1]
     ax_e.errorbar(
         mjd,
         panels.after_all_us,
@@ -126,17 +139,13 @@ def plot_waveform_panels(
     ax_f.set_title("(f) whitened z")
     ax_f.set_ylabel("z")
 
-    # Q–Q spans both columns of the last row.
-    ax_g = axs[row_qq, 0]
-    if axs.shape[1] > 1:
-        axs[row_qq, 1].set_visible(False)
-        # Merge visually: draw Q–Q in left; hide right.
     probplot(np.asarray(panels.z, dtype=float), dist="norm", plot=ax_g)
     ax_g.set_title("(g) Q–Q of z")
 
-    for ax in (ax_a, ax_b, ax_c, ax_e, ax_f):
+    labeled = [ax_a, ax_b, ax_c, ax_e, ax_f]
+    if ax_d is not None:
+        labeled.append(ax_d)
+    for ax in labeled:
         ax.set_xlabel("MJD")
-    if draw_dm:
-        ax_d.set_xlabel("MJD")
 
     return axs
