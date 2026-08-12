@@ -129,9 +129,8 @@ the dual-engine canonical writer: every PTA leg is rewritten into a standalone
 Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload.
 
 This opt-in is intentional while the writer is still landing on real releases.
-The AEI-DR2 / AEI-DR3 rebuild entry points turn it on explicitly
-(`data/aei-dr2/rebuild_aei_product.py`, `data/aei-dr3/rebuild_aei_product.py`,
-backed by `scripts/rebuild_aei_product.py`).
+The AEI-DR2 / AEI-DR3 rebuild entry point turns it on explicitly
+(`data/aei-scripts/rebuild_aei_product.py --release-set dr2|dr3`).
 
 With `canonicalize_tim=True`:
 
