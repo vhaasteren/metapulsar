@@ -420,48 +420,28 @@ def test_plot_waveform_panels_smoke():
         solve,
         toas=t,
         toa_mjd=t / 86400.0,
+        freqs_mhz=np.full(t.size, 1400.0),
         block_kinds={"red": "red"},
         block_frequencies=frequencies_from_blocks([block]),
     )
     panels = analysis.panel_arrays(n_grid=20)
-    fig, axs = plt.subplots(4, 2)
-    out = plot_waveform_panels(panels, axs=axs)
-    assert out.shape == (4, 2)
+    fig = plot_waveform_panels(panels, pulsar_name="J0000+0000")
+    assert fig.get_axes()
+    titles = {ax.get_title() for ax in fig.axes}
+    assert any(t.startswith("(a) original par-file") for t in titles)
+    assert any(t.startswith("(b) timing-model subtracted") for t in titles)
+    assert "(c) red-noise GP prediction (mean ± 1σ)" in titles
+    assert any(t.startswith("(d) DM-variation") for t in titles)
+    assert any(t.startswith("(e) everything subtracted") for t in titles)
+    assert any(t.startswith("(f) normalized residuals") for t in titles)
+    assert "(g)" in titles
+    with pytest.raises(ValueError, match="no longer accepts"):
+        plot_waveform_panels(panels, axs=object())
     plt.close(fig)
 
 
 @pytest.mark.unit
-def test_plot_waveform_panels_auto_layout_no_dm():
-    plt = pytest.importorskip("matplotlib.pyplot")
-    from pylk.flexfit.waveform_plot import plot_waveform_panels
-
-    t, y, variance, block, solve = _solve_red(n=60, n_freq=3, seed=9)
-    analysis = analyze_waveforms(
-        y,
-        variance,
-        solve,
-        toas=t,
-        toa_mjd=t / 86400.0,
-        block_kinds={"red": "red"},
-        block_frequencies=frequencies_from_blocks([block]),
-    )
-    panels = analysis.panel_arrays(n_grid=20)  # red only -> no DM band
-    axs = plot_waveform_panels(panels)
-    assert axs.shape == (3, 2)
-    assert all(ax.get_visible() for ax in axs.ravel())
-    assert {ax.get_title() for ax in axs.ravel()} == {
-        "(a) raw",
-        "(b) after timing",
-        "(c) red GP",
-        "(e) after all",
-        "(f) whitened z",
-        "(g) Q–Q of z",
-    }
-    plt.close(axs[0, 0].figure)
-
-
-@pytest.mark.unit
-def test_plot_waveform_panels_auto_layout_with_dm():
+def test_plot_waveform_panels_with_dm():
     plt = pytest.importorskip("matplotlib.pyplot")
     from pylk.flexfit.waveform_plot import plot_waveform_panels
 
@@ -485,19 +465,18 @@ def test_plot_waveform_panels_auto_layout_with_dm():
         solve,
         toas=t,
         toa_mjd=t / 86400.0,
+        freqs_mhz=np.linspace(800.0, 1600.0, n),
         block_kinds={"red": "red", "dm": "dm"},
         block_frequencies=frequencies_from_blocks([red, dm]),
     )
     panels = analysis.panel_arrays(n_grid=20)
-    axs = plot_waveform_panels(panels)
-    assert axs.shape == (4, 2)
-    assert axs[1, 1].get_title() == "(d) DM / chromatic GP"
-    assert axs[1, 1].get_visible()
-    assert not axs[3, 1].get_visible()  # Q-Q occupies the left slot only
-    with pytest.raises(ValueError, match="at least 4x2"):
-        fig, small = plt.subplots(3, 2)
-        plot_waveform_panels(panels, axs=small)
-    plt.close("all")
+    fig = plot_waveform_panels(panels, pulsar_name="J0000+0000", fref_mhz=1400.0)
+    assert any(
+        "DM @ 1400 MHz" in (line.get_label() or "")
+        for ax in fig.axes
+        for line in ax.get_lines()
+    )
+    plt.close(fig)
 
 
 @pytest.mark.unit

@@ -1,151 +1,195 @@
 """Optional matplotlib helper for EB waveform panel arrays.
 
+Layout matches ``paper/code/figures/plots.py::plot_waveform_panels`` (the
+Kepler / Condor offline figure style): six x-aligned residual/GP panels with a
+frequency colorbar and a rotated N(0,1) density histogram for whitened
+residuals.
+
 Import only when matplotlib is available; not re-exported from ``pylk.flexfit``.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from .waveform import WaveformPanelArrays
+
+_CMAP = "viridis"
+
+
+def _scatter(ax, mjd, y, freq):
+    return ax.scatter(mjd, y, s=5, c=freq, cmap=_CMAP, alpha=0.5)
+
+
+def _rms_us(values: np.ndarray) -> float:
+    a = np.asarray(values, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    return float(np.sqrt(np.mean(a**2)))
 
 
 def plot_waveform_panels(
     panels: WaveformPanelArrays,
     *,
-    axs: np.ndarray | None = None,
-    show_dm: bool = True,
+    pulsar_name: str | None = None,
     title: str | None = None,
-) -> np.ndarray:
-    """Draw panels (a)–(g) into a 4×2 or 3×2 Axes grid.
+    fref_mhz: float = 1400.0,
+    axs: Any = None,
+):
+    """Draw the stacked (a)–(g) waveform figure used by the paper / Condor jobs.
 
-    With the DM panel drawn (``show_dm=True`` and non-empty DM arrays), 4×2:
+    Panels (top to bottom): (a) pre-fit residuals, (b) timing subtracted,
+    (c) red-noise GP, (d) DM delay @ ``fref_mhz``, (e) everything subtracted,
+    (f) normalized residuals. Panel (g) is a 90°-rotated density histogram of
+    the normalized residuals under the frequency colorbar.
 
-      [a raw]        [b after timing]
-      [c red GP]     [d dm GP]
-      [e after all]  [f whitened z]
-      [g Q-Q of z]   [hidden]
-
-    Without it (``show_dm=False`` or empty DM arrays), 3×2:
-
-      [a raw]        [b after timing]
-      [c red GP]     [e after all]
-      [f whitened z] [g Q-Q of z]
-
-    A caller-supplied 4×2 grid is accepted in both cases (the unused Axes are
-    hidden); a 3×2 grid only when the DM panel is not drawn.
-
-    Returns the Axes array. Does not call ``plt.show()``.
-    Requires matplotlib; use ``pytest.importorskip("matplotlib")`` in tests.
+    Returns the Matplotlib ``Figure``. Does not call ``plt.show()``.
+    ``axs`` is accepted only for backward compatibility and must be ``None``.
     """
+    if axs is not None:
+        raise ValueError(
+            "plot_waveform_panels no longer accepts a caller-supplied axs grid; "
+            "it builds the paper/Condor stacked layout itself"
+        )
+
     import matplotlib.pyplot as plt
-    from scipy.stats import probplot
-
-    draw_dm = bool(show_dm and panels.dm_mean_us.size > 0)
-    nrows = 4 if draw_dm else 3
-
-    if axs is None:
-        fig, axs = plt.subplots(nrows, 2, figsize=(8.0, 2.4 * nrows), squeeze=False)
-        if title:
-            fig.suptitle(title)
-    else:
-        axs = np.atleast_2d(axs)
-        if axs.shape[0] < nrows or axs.shape[1] < 2:
-            raise ValueError(
-                f"axs must be at least {nrows}x2 for this panel set; got {axs.shape}"
-            )
-
-    ax_a, ax_b = axs[0, 0], axs[0, 1]
-    ax_d = None
-    hidden: list = []
-    if axs.shape[0] >= 4:
-        ax_c, ax_e, ax_f = axs[1, 0], axs[2, 0], axs[2, 1]
-        ax_g, unused = axs[3, 0], axs[3, 1]
-        hidden.append(unused)
-        if draw_dm:
-            ax_d = axs[1, 1]
-        else:
-            hidden.append(axs[1, 1])
-    else:
-        ax_c, ax_e = axs[1, 0], axs[1, 1]
-        ax_f, ax_g = axs[2, 0], axs[2, 1]
-    for ax in hidden:
-        ax.set_visible(False)
+    from scipy import stats
 
     mjd = np.asarray(panels.mjd, dtype=float)
-    sigma = np.asarray(panels.sigma_us, dtype=float)
+    freq = np.asarray(panels.freq_mhz, dtype=float)
+    if not np.any(np.isfinite(freq)):
+        freq = np.zeros_like(mjd)
 
-    ax_a.errorbar(
-        mjd,
-        panels.resid_us,
-        yerr=sigma,
-        fmt=".",
-        ms=2,
-        elinewidth=0.4,
-        alpha=0.7,
+    stage_rms = dict(panels.stage_rms_us or {})
+    rms_a = stage_rms.get("raw", _rms_us(panels.resid_us))
+    rms_b = stage_rms.get("after_timing", _rms_us(panels.after_timing_us))
+    rms_e = stage_rms.get("after_all", _rms_us(panels.after_all_us))
+    z = np.asarray(panels.z, dtype=float)
+    z_finite = z[np.isfinite(z)]
+    z_mean = float(np.mean(z_finite)) if z_finite.size else 0.0
+    z_std = float(np.std(z_finite)) if z_finite.size else 1.0
+
+    fig = plt.figure(figsize=(12, 15))
+    gs = fig.add_gridspec(
+        6,
+        2,
+        width_ratios=[26, 1.5],
+        hspace=0.42,
+        wspace=0.03,
+        top=0.965,
+        bottom=0.045,
+        left=0.08,
+        right=0.99,
     )
-    ax_a.set_title("(a) raw")
-    ax_a.set_ylabel(r"residual (µs)")
+    ax = [fig.add_subplot(gs[i, 0]) for i in range(6)]
+    for a in ax[1:]:
+        a.sharex(ax[0])
+    cax = fig.add_subplot(gs[0:5, 1])
+    hax = fig.add_subplot(gs[5, 1], sharey=ax[5])
 
-    ax_b.errorbar(
-        mjd,
-        panels.after_timing_us,
-        yerr=sigma,
-        fmt=".",
-        ms=2,
-        elinewidth=0.4,
-        alpha=0.7,
+    sc = _scatter(ax[0], mjd, panels.resid_us, freq)
+    ax[0].set_title(
+        f"(a) original par-file pre-fit residuals   (RMS {rms_a:.2f} µs)",
+        fontsize=9,
     )
-    ax_b.set_title("(b) after timing")
+    ax[0].set_ylabel("residual (µs)")
 
-    if panels.red_mean_us.size:
-        g = np.asarray(panels.grid_mjd, dtype=float)
-        ax_c.plot(g, panels.red_mean_us, color="C0")
-        ax_c.fill_between(
-            g,
-            panels.red_mean_us - panels.red_std_us,
-            panels.red_mean_us + panels.red_std_us,
+    _scatter(ax[1], mjd, panels.after_timing_us, freq)
+    ax[1].set_title(
+        f"(b) timing-model subtracted   (RMS {rms_b:.2f} µs)",
+        fontsize=9,
+    )
+    ax[1].set_ylabel("residual (µs)")
+
+    gm = np.asarray(panels.grid_mjd, dtype=float)
+    red_mean = np.asarray(panels.red_mean_us, dtype=float)
+    red_std = np.asarray(panels.red_std_us, dtype=float)
+    if gm.size and red_mean.size:
+        ax[2].fill_between(
+            gm,
+            red_mean - red_std,
+            red_mean + red_std,
+            color="C3",
+            alpha=0.25,
+            label="±1σ",
+        )
+        ax[2].plot(gm, red_mean, "C3-", lw=1.2, label="RN mean")
+        ax[2].legend(loc="upper right", fontsize=7)
+    ax[2].set_title("(c) red-noise GP prediction (mean ± 1σ)", fontsize=9)
+    ax[2].set_ylabel("RN (µs)")
+
+    dm_mean = np.asarray(panels.dm_mean_us, dtype=float)
+    dm_std = np.asarray(panels.dm_std_us, dtype=float)
+    if gm.size and dm_mean.size:
+        ax[3].fill_between(
+            gm,
+            dm_mean - dm_std,
+            dm_mean + dm_std,
             color="C0",
             alpha=0.25,
+            label="±1σ",
         )
-    ax_c.set_title("(c) red GP")
-    ax_c.set_ylabel(r"delay (µs)")
-
-    if ax_d is not None:
-        g = np.asarray(panels.grid_mjd, dtype=float)
-        ax_d.plot(g, panels.dm_mean_us, color="C1")
-        ax_d.fill_between(
-            g,
-            panels.dm_mean_us - panels.dm_std_us,
-            panels.dm_mean_us + panels.dm_std_us,
-            color="C1",
-            alpha=0.25,
+        ax[3].plot(
+            gm,
+            dm_mean,
+            "C0-",
+            lw=1.2,
+            label=f"DM @ {fref_mhz:g} MHz",
         )
-        ax_d.set_title("(d) DM / chromatic GP")
-
-    ax_e.errorbar(
-        mjd,
-        panels.after_all_us,
-        yerr=sigma,
-        fmt=".",
-        ms=2,
-        elinewidth=0.4,
-        alpha=0.7,
+        ax[3].legend(loc="upper right", fontsize=7)
+    ax[3].set_title(
+        f"(d) DM-variation delay time series @ {fref_mhz:g} MHz (mean ± 1σ)",
+        fontsize=9,
     )
-    ax_e.set_title("(e) after all")
-    ax_e.set_ylabel(r"residual (µs)")
+    ax[3].set_ylabel("DM delay (µs)")
 
-    ax_f.plot(mjd, panels.z, ".", ms=2, alpha=0.7)
-    ax_f.set_title("(f) whitened z")
-    ax_f.set_ylabel("z")
+    _scatter(ax[4], mjd, panels.after_all_us, freq)
+    ax[4].set_title(
+        f"(e) everything subtracted (timing + RN + DM)   (RMS {rms_e:.2f} µs)",
+        fontsize=9,
+    )
+    ax[4].set_ylabel("residual (µs)")
 
-    probplot(np.asarray(panels.z, dtype=float), dist="norm", plot=ax_g)
-    ax_g.set_title("(g) Q–Q of z")
+    _scatter(ax[5], mjd, z, freq)
+    ax[5].set_title(
+        f"(f) normalized residuals   (mean {z_mean:.2f}, std {z_std:.2f})",
+        fontsize=9,
+    )
+    ax[5].set_ylabel(r"$r / \sigma_{\rm white}$")
+    ax[5].set_xlabel("MJD")
 
-    labeled = [ax_a, ax_b, ax_c, ax_e, ax_f]
-    if ax_d is not None:
-        labeled.append(ax_d)
-    for ax in labeled:
-        ax.set_xlabel("MJD")
+    for a in ax:
+        a.axhline(0.0, color="0.7", lw=0.6, zorder=0)
 
-    return axs
+    fig.colorbar(sc, cax=cax, label="observing frequency (MHz)")
+
+    if z_finite.size:
+        z_lo = float(np.min(z_finite))
+        z_hi = float(np.max(z_finite))
+        if z_hi <= z_lo:
+            z_hi = z_lo + 1.0
+        bins = np.linspace(z_lo, z_hi, 40)
+        hax.hist(
+            z_finite,
+            bins=bins,
+            density=True,
+            orientation="horizontal",
+            color="steelblue",
+            alpha=0.6,
+        )
+        zg = np.linspace(z_lo, z_hi, 200)
+        hax.plot(stats.norm.pdf(zg), zg, "r-", lw=1.2)
+    hax.tick_params(labelleft=False, labelbottom=False)
+    hax.set_xlabel("density", fontsize=8)
+    hax.set_title("(g)", fontsize=9, pad=4)
+
+    if title is None:
+        psr = pulsar_name or ""
+        title = f"{psr}: multi-PTA [timing + RN + DM] reconstruction".strip()
+        if title.startswith(":"):
+            title = title[1:].lstrip()
+    fig.suptitle(title, y=0.995, fontsize=11)
+    return fig
