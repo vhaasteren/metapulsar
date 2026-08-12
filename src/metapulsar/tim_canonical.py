@@ -16,8 +16,11 @@ dropped to match the release's own package and recorded as a
 :class:`DroppedTimLine`. Every TOA name is rewritten to a safe ``toaNNNNN``
 token. When the release par contains
 ``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
-flags on the selected (post-bake) TOAs. The AEI-DR2/DR3 rebuild scripts pass
-``canonicalize_tim=True`` explicitly.
+flags on the selected (post-bake) TOAs. Zero-valued ``JUMP MJD`` lines (delay
+``0`` / omitted) are dropped: they are not stamped and are removed from the
+engine par under ``convert_jump_mjd`` (PPTA DR1+DR2 v3 ships nested empty
+windows that would otherwise collide under flag conversion). The AEI-DR2/DR3
+rebuild scripts pass ``canonicalize_tim=True`` explicitly.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).
@@ -1235,6 +1238,9 @@ def parse_jump_mjd_windows(
     Skips blank/comment lines. A line is a JUMP MJD line iff, after strip+split,
     ``tokens[0].upper() == "JUMP"`` and ``tokens[1].upper() == "MJD"`` and
     ``len(tokens) >= 4``. ``SATJUMP`` is therefore excluded.
+
+    Includes zero-valued windows; call :func:`active_jump_mjd_windows` (or
+    :func:`jump_mjd_value_is_empty`) before stamping / conversion.
     """
     out: List[Tuple[Decimal, Decimal, Tuple[str, ...]]] = []
     for raw in par_text.splitlines():
@@ -1258,6 +1264,27 @@ def parse_jump_mjd_windows(
             ) from exc
         out.append((t1, t2, tuple(tokens[4:])))
     return out
+
+
+def jump_mjd_value_is_empty(value_tokens: Sequence[str]) -> bool:
+    """True when the JUMP delay is omitted or numerically zero.
+
+    Fit-flag / uncertainty tokens are ignored. Non-numeric value tokens are
+    treated as non-empty so the line stays visible to conversion matching.
+    """
+    if not value_tokens:
+        return True
+    try:
+        return Decimal(value_tokens[0]) == 0
+    except InvalidOperation:
+        return False
+
+
+def active_jump_mjd_windows(
+    windows: Sequence[Tuple[Decimal, Decimal, Tuple[str, ...]]],
+) -> List[Tuple[Decimal, Decimal, Tuple[str, ...]]]:
+    """Drop zero-valued ``JUMP MJD`` windows (product policy for flag conversion)."""
+    return [w for w in windows if not jump_mjd_value_is_empty(w[2])]
 
 
 def jump_mjd_flag_value(pta_name: str, index: int) -> str:
@@ -1449,12 +1476,15 @@ def convert_jump_mjd_par_text(
     """Replace engine-par ``JUMP MJD`` lines with flagged ``JUMP -mjd_jump_pta``.
 
     ``release_windows`` is the output of :func:`parse_jump_mjd_windows` on the
-    release par (assigns ``{pta}_{k}``). Engine lines are matched by equal
-    ``(t1, t2)`` Decimal values, consuming identical windows in document order.
-    Trailing value/fit/err tokens come from the **engine** line.
+    release par. Zero-valued windows are dropped (omitted from the engine par
+    and from ``{pta}_{k}`` numbering). Remaining engine lines are matched by
+    equal ``(t1, t2)`` Decimal values, consuming identical **active** release
+    windows in document order. Trailing value/fit/err tokens come from the
+    **engine** line.
     """
+    active_release = active_jump_mjd_windows(release_windows)
     queues: dict[Tuple[Decimal, Decimal], deque[int]] = defaultdict(deque)
-    for i, (t1, t2, _vals) in enumerate(release_windows):
+    for i, (t1, t2, _vals) in enumerate(active_release):
         queues[(t1, t2)].append(i)
 
     out_lines: List[str] = []
@@ -1479,6 +1509,10 @@ def convert_jump_mjd_par_text(
             raise TimCanonicalizationError(
                 f"Invalid JUMP MJD bounds in engine par line: {stripped!r}"
             ) from exc
+        value_tokens = tuple(tokens[4:])
+        if jump_mjd_value_is_empty(value_tokens):
+            # Product policy: empty JUMP MJD is a no-op; drop rather than convert.
+            continue
         key = (t1, t2)
         if not queues[key]:
             raise TimCanonicalizationError(
@@ -1601,12 +1635,12 @@ def write_canonical_tim(
         flattened.text, pta_name=pta_name, timing_package=timing_package
     )
     if par_text is not None:
-        raw_windows = parse_jump_mjd_windows(par_text)
-        if raw_windows:
+        active_windows = active_jump_mjd_windows(parse_jump_mjd_windows(par_text))
+        if active_windows:
             text = stamp_mjd_jump_pta_flags(
                 text,
                 pta_name=pta_name,
-                windows=[(t1, t2) for t1, t2, _ in raw_windows],
+                windows=[(t1, t2) for t1, t2, _ in active_windows],
                 timing_package=timing_package,
             )
     out_path.write_text(text, encoding="utf-8")

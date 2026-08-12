@@ -19,11 +19,13 @@ from metapulsar.tim_canonical import (
     _extract_sat_corrections,
     _format_fraction,
     _pint_legacy_heuristic_hit,
+    active_jump_mjd_windows,
     convert_jump_mjd_par_text,
     discover_effective_tim_mode,
     ensure_par_mode,
     flatten_tim,
     inject_pulse_numbers,
+    jump_mjd_value_is_empty,
     parse_jump_mjd_windows,
     stamp_metadata_flags,
     stamp_mjd_jump_pta_flags,
@@ -1079,6 +1081,49 @@ class TestJumpMjd:
             (Decimal("55000"), Decimal("56000"), ("0", "0")),
             (Decimal("56000"), Decimal("57000"), ("1e-7", "1")),
         ]
+        assert active_jump_mjd_windows(windows) == [
+            (Decimal("56000"), Decimal("57000"), ("1e-7", "1")),
+        ]
+
+    def test_jump_mjd_value_is_empty(self):
+        assert jump_mjd_value_is_empty(())
+        assert jump_mjd_value_is_empty(("0", "0"))
+        assert jump_mjd_value_is_empty(("0.0", "1"))
+        assert jump_mjd_value_is_empty(("0e-12",))
+        assert not jump_mjd_value_is_empty(("1e-7", "1"))
+        assert not jump_mjd_value_is_empty(("3.0311455846757e-07", "0"))
+
+    def test_empty_jump_mjd_not_stamped(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(f"FORMAT 1\n{_toa(58000.0)}\n", encoding="utf-8")
+        out = write_canonical_tim(
+            root,
+            pta_name="PPTA",
+            timing_package="tempo2",
+            out_path=tmp_path / "out.tim",
+            par_text=("JUMP MJD 55319 60000 0 0\n" "JUMP MJD 56152 60000 0 0\n"),
+        )
+        assert "-mjd_jump_pta" not in out.path.read_text(encoding="utf-8")
+
+    def test_nested_empty_jump_mjd_does_not_overlap_active(self, tmp_path):
+        """PPTA DR1+DR2 v3 style: outer nonzero + nested empty window."""
+        root = tmp_path / "root.tim"
+        root.write_text(
+            f"FORMAT 1\n{_toa(56000.0)}\n{_toa(57000.0)}\n", encoding="utf-8"
+        )
+        out = write_canonical_tim(
+            root,
+            pta_name="ppta_dr2",
+            timing_package="tempo2",
+            out_path=tmp_path / "out.tim",
+            par_text=(
+                "JUMP MJD 55319 60000 3.0311455846757e-07 0\n"
+                "JUMP MJD 56152 60000 0 0\n"
+            ),
+        )
+        text = out.path.read_text(encoding="utf-8")
+        assert text.count("-mjd_jump_pta ppta_dr2_1") == 2
+        assert "ppta_dr2_2" not in text
 
     def test_tempo2_selection_is_half_open(self):
         text = (
@@ -1233,14 +1278,52 @@ class TestJumpMjd:
                 release_windows=release,
             )
 
-    def test_convert_raises_on_extra_engine_window(self):
+    def test_convert_drops_empty_extra_engine_window(self):
+        release = parse_jump_mjd_windows("JUMP MJD 58925 65000 -2e-7 1\n")
+        out = convert_jump_mjd_par_text(
+            "JUMP MJD 58925 65000 -2e-7 1\nJUMP MJD 10000 20000 0 0\n",
+            pta_name="PPTA",
+            release_windows=release,
+        )
+        assert "JUMP -mjd_jump_pta PPTA_1 -2e-7 1" in out
+        assert "JUMP MJD" not in out
+
+    def test_convert_raises_on_extra_nonzero_engine_window(self):
         release = parse_jump_mjd_windows("JUMP MJD 58925 65000 -2e-7 1\n")
         with pytest.raises(TimCanonicalizationError, match="no matching release"):
             convert_jump_mjd_par_text(
-                "JUMP MJD 58925 65000 -2e-7 1\nJUMP MJD 10000 20000 0 0\n",
+                "JUMP MJD 58925 65000 -2e-7 1\nJUMP MJD 10000 20000 1e-7 0\n",
                 pta_name="PPTA",
                 release_windows=release,
             )
+
+    def test_convert_drops_all_empty_release_windows(self):
+        release = parse_jump_mjd_windows(
+            "JUMP MJD 55319 60000 0 0\nJUMP MJD 56152 60000 0 0\n"
+        )
+        engine = (
+            "PSRJ J1713+0747\n"
+            "JUMP MJD 55319 60000 0 0\n"
+            "JUMP MJD 56152 60000 0 0\n"
+            "F0 1\n"
+        )
+        out = convert_jump_mjd_par_text(
+            engine, pta_name="ppta_dr2", release_windows=release
+        )
+        assert "JUMP MJD" not in out
+        assert "mjd_jump_pta" not in out
+        assert "PSRJ J1713+0747" in out
+        assert "F0 1" in out
+
+    def test_convert_renumbers_after_dropping_empty(self):
+        release = parse_jump_mjd_windows(
+            "JUMP MJD 55319 60000 3e-7 0\nJUMP MJD 56152 60000 0 0\n"
+        )
+        engine = "JUMP MJD 55319 60000 3e-7 0\n" "JUMP MJD 56152 60000 0 0\n"
+        out = convert_jump_mjd_par_text(
+            engine, pta_name="ppta_dr2", release_windows=release
+        )
+        assert out.strip() == "JUMP -mjd_jump_pta ppta_dr2_1 3e-7 0"
 
     def test_flag_budget_includes_mjd_jump(self):
         # 36 existing + 3 metadata already stamped would leave room for one more;
