@@ -263,6 +263,42 @@ class TestFileDiscovery:
             for entry in entries
         )
 
+    def test_inpta_dr2_layout_selects_dmx_par_and_all_tim(self, tmp_path):
+        """InPTA DR2 publishes ``<PSR>.DMX.par`` plus ``<PSR>_all.tim``.
+
+        The release also ships a top-level ``DM12.par/`` tree and per-backend
+        ``tims/*.tim`` includes; discovery must ignore those neighbours.
+        """
+        release = tmp_path / "InPTA.DR2"
+        psr_dir = release / "J1713+0747"
+        (psr_dir / "tims").mkdir(parents=True)
+        (psr_dir / "J1713+0747.DMX.par").write_text(
+            "PSRJ J1713+0747\n", encoding="utf-8"
+        )
+        (psr_dir / "J1713+0747_all.tim").write_text(
+            "FORMAT 1\nINCLUDE tims/GM_GWB_1460_100.0_b1_pre36.tim\n",
+            encoding="utf-8",
+        )
+        (psr_dir / "tims" / "GM_GWB_1460_100.0_b1_pre36.tim").write_text(
+            "FORMAT 1\n", encoding="utf-8"
+        )
+        dm12 = release / "DM12.par"
+        dm12.mkdir()
+        (dm12 / "J1713+0747.nonesw.par").write_text(
+            "PSRJ J1713+0747\n", encoding="utf-8"
+        )
+
+        service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
+        found = service.discover_files(["inpta_dr2"])
+
+        assert [e["par"] for e in found["inpta_dr2"]] == [
+            psr_dir / "J1713+0747.DMX.par"
+        ]
+        assert [e["tim"] for e in found["inpta_dr2"]] == [
+            psr_dir / "J1713+0747_all.tim"
+        ]
+        assert found["inpta_dr2"][0]["timing_package"] == "tempo2"
+
     def test_validate_config_success(self):
         """Test validating valid configuration."""
         service = FileDiscovery()

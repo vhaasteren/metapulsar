@@ -655,7 +655,7 @@ def test_ecorr_in_stages_but_not_in_gp_bands():
 
 
 @pytest.mark.unit
-def test_chromatic_band_populates_dm_panel():
+def test_chromatic_band_is_not_lumped_into_dm_panel():
     rng = np.random.default_rng(15)
     n = 120
     t = np.sort(rng.uniform(0.0, 1.0e8, n))
@@ -676,10 +676,10 @@ def test_chromatic_band_populates_dm_panel():
         block_frequencies=frequencies_from_blocks([chrom]),
     )
     panels = analysis.panel_arrays(n_grid=40)
-    assert panels.dm_mean_us.shape == (40,)
-    assert panels.dm_std_us.shape == (40,)
+    assert panels.dm_mean_us.shape == (0,)
     assert panels.red_mean_us.shape == (0,)
-    assert np.any(np.abs(panels.dm_mean_us) > 0.0)
+    after = analysis.residuals_after_kinds("chromatic")
+    assert np.sqrt(np.mean(after**2)) < np.sqrt(np.mean(y**2))
 
 
 @pytest.mark.unit

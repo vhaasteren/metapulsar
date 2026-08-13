@@ -610,11 +610,14 @@ Contains regex patterns and directory structures for:
 - EPTA DR1 v2.2
 - EPTA DR2
 - InPTA DR1
+- InPTA DR2
 - MPTA DR1
+- MPTA DR2
 - NANOGrav 9-year
 - NANOGrav 12-year
 - NANOGrav 15-year
 - PPTA DR1+DR2
+- PPTA DR3
 
 ## Data Structures
 

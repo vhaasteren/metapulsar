@@ -57,6 +57,19 @@ def test_red_block_matches_discovery_basis():
     assert block.metadata["frequencies"].shape == (24,)
 
 
+def test_chromatic_block_matches_discovery_alpha4_basis():
+    psr, _ = _synthetic_pulsar()
+    basis = ds.make_dmfourierbasis(alpha=4.0)
+    freqs, df, fmat = basis(psr, 12, fref=1400.0)
+    block = dx.chromatic_noise_block(
+        psr, components=12, alpha=4.0, name="chrom", fref=1400.0
+    )
+    np.testing.assert_allclose(block.matrix, np.asarray(fmat, dtype=float))
+    assert block.kind == "chromatic"
+    assert block.metadata["alpha"] == 4.0
+    assert block.metadata["frequencies"].shape == freqs.shape
+
+
 def test_conditional_mean_matches_woodbury_covariance_form():
     # Cross-check the flexfit precision-form solve against the algebraically
     # distinct Woodbury covariance form mu = Phi F^T (N + F Phi F^T)^-1 y, using

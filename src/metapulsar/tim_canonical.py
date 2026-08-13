@@ -14,7 +14,9 @@ tim tree and transferred onto the engine-facing ``.par``. A data line with fewer
 than five fields — which tempo2 discards in silence and PINT raises on — is
 dropped to match the release's own package and recorded as a
 :class:`DroppedTimLine`. Every TOA name is rewritten to a safe ``toaNNNNN``
-token. When the release par contains
+token. Bare FORMAT 1 flags (InPTA ``-cycle_post34``, a trailing ``-chan``,
+EPTA ``-gis``) are rewritten as key/value pairs with dummy value ``1`` so
+Tempo2 cannot steal the following ``-pta`` / ``-pn``. When the release par contains
 ``JUMP MJD`` windows this module also stamps combination-safe ``-mjd_jump_pta``
 flags on the selected (post-bake) TOAs. Zero-valued ``JUMP MJD`` lines (delay
 ``0`` / omitted) are dropped: they are not stamped and are removed from the
@@ -52,6 +54,9 @@ from .tim_file_analyzer import (
 # renamed to ``<name>_orig`` so the release's own value stays auditable.
 CANONICAL_METADATA_FLAGS: Tuple[str, ...] = ("pta", "pta_dataset", "timing_package")
 MJD_JUMP_PTA_FLAG = "mjd_jump_pta"
+# Dummy value written for a valueless flag so the canonical line is strict
+# key/value pairs (Tempo2 always consumes the next token as the value).
+VALUELESS_FLAG_VALUE = "1"
 
 # tempo2 hard limits (tempo2.h). Overflow makes tempo2 call exit(1)
 # (readTimfile.C), which would kill the interpreter under in-process
@@ -558,6 +563,7 @@ def _render_canonical_toa_line(
     # implements neither) and Tempo2 read one arrival time. Precision matches the
     # TIME bake: exact Fraction, rounded once to >=17 MJD fractional digits.
     sat_shift_seconds, flag_tokens = _extract_sat_corrections(tokens[5:], f0=f0)
+    flag_tokens = _pair_flag_tokens(flag_tokens)
     mjd = _bake_mjd_token(tokens[2], accum, extra_seconds=sat_shift_seconds)
     flags = (" " + " ".join(flag_tokens)) if flag_tokens else ""
     for pad in range(_MAX_COLUMN_DODGE):
@@ -936,13 +942,80 @@ def ensure_par_mode(par_text: str, mode: int) -> str:
     return "\n".join(out) + ("\n" if par_text.endswith("\n") else "")
 
 
-def _flag_key_indices(n_tokens: int) -> List[int]:
-    """Return token indices holding flag keys (FORMAT 1: flags start at index 5).
+def _is_flag_key(token: str) -> bool:
+    """True if ``token`` is a FORMAT 1 flag name, not a numeric value.
 
-    Values may themselves start with '-' (e.g. ``-to -0.897e-6``), so pairs are
-    walked positionally rather than by looking for leading dashes.
+    Tempo2's test (``readTimfile.C``): a flag starts with ``-`` whose second
+    character is not a digit. That keeps ``-to -0.897e-6`` and ``-addsat -1``
+    as values while treating ``-pta`` / ``-cycle_post34`` as keys.
     """
-    return list(range(5, n_tokens - 1, 2))
+    return len(token) >= 2 and token[0] == "-" and not token[1].isdigit()
+
+
+def _iter_flag_pairs(
+    tokens: Sequence[str], *, start: int = 5
+) -> List[Tuple[int, Optional[int]]]:
+    """Return ``(key_index, value_index_or_None)`` for FORMAT 1 flags.
+
+    A key consumes the next token as its value only when that token is not
+    itself a flag key. Otherwise the flag is valueless (InPTA ``-cycle_post34``,
+    trailing ``-chan``, EPTA ``-gis``). Stray non-key tokens are skipped.
+    """
+    pairs: List[Tuple[int, Optional[int]]] = []
+    index = start
+    count = len(tokens)
+    while index < count:
+        if not _is_flag_key(tokens[index]):
+            index += 1
+            continue
+        key_index = index
+        if index + 1 < count and not _is_flag_key(tokens[index + 1]):
+            pairs.append((key_index, index + 1))
+            index += 2
+        else:
+            pairs.append((key_index, None))
+            index += 1
+    return pairs
+
+
+def _flag_key_indices(tokens: Sequence[str]) -> List[int]:
+    """Return token indices holding flag keys (FORMAT 1: flags start at index 5)."""
+    return [key_index for key_index, _ in _iter_flag_pairs(tokens)]
+
+
+def _pair_flag_tokens(flag_tokens: Sequence[str]) -> List[str]:
+    """Rewrite a flag-token list to strict key/value pairs.
+
+    Valueless flags receive :data:`VALUELESS_FLAG_VALUE` so Tempo2 cannot steal
+    the next ``-pta`` or ``-pn``.
+    """
+    paired: List[str] = []
+    for key_index, value_index in _iter_flag_pairs(flag_tokens, start=0):
+        paired.append(flag_tokens[key_index])
+        if value_index is None:
+            paired.append(VALUELESS_FLAG_VALUE)
+        else:
+            paired.append(flag_tokens[value_index])
+    return paired
+
+
+def _normalize_toa_flag_pairs(line: str) -> str:
+    """Rewrite a FORMAT 1 TOA so every flag is a key/value pair.
+
+    Pair-shaped lines are returned unchanged (spacing preserved). Bare flags
+    are filled with :data:`VALUELESS_FLAG_VALUE`.
+    """
+    spans = list(_TOKEN_RE.finditer(line))
+    if len(spans) < 5:
+        return line
+    tokens = [match.group(0) for match in spans]
+    pairs = _iter_flag_pairs(tokens)
+    if not pairs or all(value_index is not None for _, value_index in pairs):
+        return line
+    prefix = line[: spans[4].end()]
+    paired = _pair_flag_tokens(tokens[5:])
+    rebuilt = prefix if not paired else f"{prefix} {' '.join(paired)}"
+    return rebuilt.rstrip("\r")
 
 
 def _validate_flag_text(kind: str, text: str) -> None:
@@ -1009,24 +1082,25 @@ def stamp_metadata_flags(tim_text: str, *, pta_name: str, timing_package: str) -
 
 
 def _pn_occurrences(line: str) -> Tuple[List[Tuple[int, int]], List[str]]:
-    """Return source spans and values for positional, case-insensitive -pn pairs."""
+    """Return source spans and values for case-insensitive ``-pn`` pairs."""
     spans = [(m.start(), m.end()) for m in _TOKEN_RE.finditer(line)]
     tokens = [line[start:end] for start, end in spans]
     occurrences: List[Tuple[int, int]] = []
     values: List[str] = []
-    for index in _flag_key_indices(len(tokens)):
-        if tokens[index].lstrip("-").lower() != "pn":
+    for key_index, value_index in _iter_flag_pairs(tokens):
+        if tokens[key_index].lstrip("-").lower() != "pn" or value_index is None:
             continue
-        start = spans[index][0]
+        start = spans[key_index][0]
         while start > 0 and line[start - 1].isspace():
             start -= 1
-        occurrences.append((start, spans[index + 1][1]))
-        values.append(tokens[index + 1])
+        occurrences.append((start, spans[value_index][1]))
+        values.append(tokens[value_index])
     return occurrences, values
 
 
 def replace_pn_on_toa_line(line: str, pn_value: str) -> str:
     """Replace or append a single ``-pn`` flag on one TOA line."""
+    line = _normalize_toa_flag_pairs(line)
     occurrences, _ = _pn_occurrences(line)
     replaced = line
     for start, end in reversed(occurrences):
@@ -1058,7 +1132,7 @@ def _validate_injected_tim_text(text: str, affected_names: set[str]) -> None:
                 f"Injected TOA must contain exactly one -pn flag: {line.strip()!r}"
             )
         _validate_flag_text("-pn value", pn_values[0])
-        n_flags = len(_flag_key_indices(len(tokens))) + int(info_active)
+        n_flags = len(_flag_key_indices(tokens)) + int(info_active)
         if n_flags >= TEMPO2_MAX_FLAGS:
             raise TimCanonicalizationError(
                 f"Injecting -pn would give this TOA {n_flags} flags, reaching "
@@ -1166,10 +1240,13 @@ def inject_pulse_numbers(canonical_tim: Path, *, derived_tim: Path) -> int:
 def _stamp_toa_line(
     line: str, *, values: Dict[str, str], implicit_flag_count: int = 0
 ) -> str:
+    line = _normalize_toa_flag_pairs(line)
     spans = [(m.start(), m.end()) for m in _TOKEN_RE.finditer(line)]
     tokens = [line[start:end] for start, end in spans]
 
-    key_indices = _flag_key_indices(len(tokens))
+    pairs = _iter_flag_pairs(tokens)
+    key_indices = [key_index for key_index, _ in pairs]
+    value_at = {key_index: value_index for key_index, value_index in pairs}
     present: Dict[str, List[int]] = {}
 
     for index in key_indices:
@@ -1179,14 +1256,23 @@ def _stamp_toa_line(
         name = token.lstrip("-").lower()
         present.setdefault(name, []).append(index)
 
+    def _has_exact_pair(name: str, expected: str) -> bool:
+        occurrences = present.get(name, [])
+        if len(occurrences) != 1:
+            return False
+        key_index = occurrences[0]
+        value_index = value_at.get(key_index)
+        return (
+            tokens[key_index] == f"-{name}"
+            and value_index is not None
+            and tokens[value_index] == expected
+        )
+
     # Only the complete, exact lowercase trio identifies one of our artifacts.
     # A release flag that happens to have the same value (or uses different
     # case) is still release metadata and must become *_orig.
     already_canonical = all(
-        len(present.get(name, [])) == 1
-        and tokens[present[name][0]] == f"-{name}"
-        and tokens[present[name][0] + 1] == values[name]
-        for name in CANONICAL_METADATA_FLAGS
+        _has_exact_pair(name, values[name]) for name in CANONICAL_METADATA_FLAGS
     )
 
     renames: List[Tuple[int, int, str]] = []
@@ -1339,9 +1425,12 @@ def _stamp_mjd_jump_toa_line(
     implicit_flag_count: int = 0,
 ) -> str:
     """Apply ownership rename / exact-own-pair preserve for one TOA line."""
+    line = _normalize_toa_flag_pairs(line)
     spans = [(m.start(), m.end()) for m in _TOKEN_RE.finditer(line)]
     tokens = [line[start:end] for start, end in spans]
-    key_indices = _flag_key_indices(len(tokens))
+    pairs = _iter_flag_pairs(tokens)
+    key_indices = [key_index for key_index, _ in pairs]
+    value_at = {key_index: value_index for key_index, value_index in pairs}
     present: Dict[str, List[int]] = {}
     for index in key_indices:
         token = tokens[index]
@@ -1351,11 +1440,13 @@ def _stamp_mjd_jump_toa_line(
         present.setdefault(name, []).append(index)
 
     occurrences = present.get(MJD_JUMP_PTA_FLAG, [])
+    own_value_index = value_at.get(occurrences[0]) if len(occurrences) == 1 else None
     exact_own = (
         expected_flag_value is not None
         and len(occurrences) == 1
         and tokens[occurrences[0]] == f"-{MJD_JUMP_PTA_FLAG}"
-        and tokens[occurrences[0] + 1] == expected_flag_value
+        and own_value_index is not None
+        and tokens[own_value_index] == expected_flag_value
     )
 
     renames: List[Tuple[int, int, str]] = []

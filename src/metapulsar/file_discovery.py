@@ -56,6 +56,13 @@ PTA_DATA_RELEASES = {
         "timing_package": "tempo2",
         "description": "InPTA Data Release 1",
     },
+    "inpta_dr2": {
+        "base_dir": "InPTA.DR2/",
+        "par_pattern": r"([BJ]\d{4}[+-]\d{2,4})/\1\.DMX\.par$",
+        "tim_pattern": r"([BJ]\d{4}[+-]\d{2,4})/\1_all\.tim$",
+        "timing_package": "tempo2",
+        "description": "InPTA Data Release 2",
+    },
     "mpta_dr1": {
         "base_dir": "MPTA_DR1/",
         "par_pattern": r"MTMSP-([BJ]\d{4}[+-]\d{2,4})-\.par",

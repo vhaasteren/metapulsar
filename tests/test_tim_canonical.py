@@ -11,6 +11,7 @@ from loguru import logger
 
 from metapulsar.tim_canonical import (
     TEMPO2_MAX_TIM_LINE_BYTES,
+    VALUELESS_FLAG_VALUE,
     TimCanonicalizationError,
     TimIncludeScopeError,
     TimLegacyFormatError,
@@ -18,7 +19,12 @@ from metapulsar.tim_canonical import (
     _bake_mjd_token,
     _extract_sat_corrections,
     _format_fraction,
+    _is_flag_key,
+    _iter_flag_pairs,
+    _normalize_toa_flag_pairs,
+    _pair_flag_tokens,
     _pint_legacy_heuristic_hit,
+    _pn_occurrences,
     active_jump_mjd_windows,
     convert_jump_mjd_par_text,
     discover_effective_tim_mode,
@@ -141,6 +147,59 @@ class TestSatCorrections:
 
         assert "-padd 0.5" in text
         assert _toa_lines(text)[0].split()[2] == "58000.5"  # unbaked
+
+
+class TestFlagLexer:
+    """FORMAT 1 flag keys vs numeric values; valueless flags stay keys."""
+
+    def test_numeric_values_starting_with_dash_are_not_keys(self):
+        assert _is_flag_key("-to")
+        assert _is_flag_key("-cycle_post34")
+        assert _is_flag_key("-pn")
+        assert not _is_flag_key("-0.9e-6")
+        assert not _is_flag_key("-1")
+        assert not _is_flag_key("-")
+        assert not _is_flag_key("pta")
+
+    def test_negative_numeric_value_stays_a_value(self):
+        tokens = "a 1400 58000 1 g -to -0.9e-6 -pn 8".split()
+        pairs = _iter_flag_pairs(tokens)
+        keys = [tokens[k] for k, _ in pairs]
+        values = [None if v is None else tokens[v] for _, v in pairs]
+        assert keys == ["-to", "-pn"]
+        assert values == ["-0.9e-6", "8"]
+
+    def test_valueless_flag_does_not_eat_the_next_key(self):
+        tokens = "a 1400 58000 1 g -chan 0 -cycle_post34 -pta inpta_dr2 -pn 0".split()
+        pairs = _iter_flag_pairs(tokens)
+        keys = [tokens[k] for k, _ in pairs]
+        values = [None if v is None else tokens[v] for _, v in pairs]
+        assert keys == ["-chan", "-cycle_post34", "-pta", "-pn"]
+        assert values == ["0", None, "inpta_dr2", "0"]
+
+    def test_pn_occurrences_finds_pn_after_valueless_flag(self):
+        line = (
+            " toa00001 1400 58000 1 g -cycle_post34 -pta inpta_dr2 "
+            "-timing_package tempo2 -pn 0"
+        )
+        _, values = _pn_occurrences(line)
+        assert values == ["0"]
+
+    def test_pair_tokens_fill_dummy_value(self):
+        assert _pair_flag_tokens(["-cycle_post34", "-pta", "x"]) == [
+            "-cycle_post34",
+            VALUELESS_FLAG_VALUE,
+            "-pta",
+            "x",
+        ]
+
+    def test_normalize_fills_only_when_needed(self):
+        paired = " toa00001 1400 58000 1 g -sys a -pn 8"
+        assert _normalize_toa_flag_pairs(paired) == paired
+        bare = " toa00001 1400 58000 1 g -chan 0 -cycle_post34"
+        out = _normalize_toa_flag_pairs(bare)
+        assert f"-cycle_post34 {VALUELESS_FLAG_VALUE}" in out
+        assert "-chan 0" in out
 
 
 class TestFlatten:
@@ -472,6 +531,22 @@ class TestFlatten:
         assert "END" in text
         assert "58001.0" in text
         assert "58002.0" not in text
+
+    def test_valueless_flags_become_pairs(self, tmp_path):
+        root = tmp_path / "root.tim"
+        root.write_text(
+            "FORMAT 1\n" f"{_toa(58000.0, ' -chan 0 -cycle_post34 -sys GM_GWB')}\n",
+            encoding="utf-8",
+        )
+
+        text = flatten_tim(root).text
+        line = _toa_lines(text)[0]
+        assert f"-cycle_post34 {VALUELESS_FLAG_VALUE}" in line
+        assert "-chan 0" in line
+        assert "-sys GM_GWB" in line
+        tokens = line.split()
+        pairs = _iter_flag_pairs(tokens)
+        assert all(value_i is not None for _, value_i in pairs)
 
 
 class TestIncludeScopeGuard:
@@ -822,6 +897,17 @@ class TestStamping:
         with pytest.raises(TimCanonicalizationError, match="safely read"):
             stamp_metadata_flags(text, pta_name="x", timing_package="tempo2")
 
+    def test_valueless_flag_does_not_steal_stamped_pta(self):
+        text = "FORMAT 1\n" + _toa(58000.0, " -chan 0 -cycle_post34") + "\n"
+
+        out = stamp_metadata_flags(text, pta_name="inpta_dr2", timing_package="tempo2")
+        line = _toa_lines(out)[0]
+        tokens = line.split()
+        pairs = {tokens[k]: tokens[v] for k, v in _iter_flag_pairs(tokens)}
+        assert pairs["-pta"] == "inpta_dr2"
+        assert pairs["-cycle_post34"] == VALUELESS_FLAG_VALUE
+        assert pairs["-chan"] == "0"
+
 
 class TestWriteCanonicalTim:
     def test_writes_stamped_standalone_file(self, tmp_path):
@@ -1063,6 +1149,35 @@ class TestInjectPulseNumbers:
             inject_pulse_numbers(canonical, derived_tim=derived)
 
         assert canonical.read_bytes() == before
+
+    def test_inpta_valueless_cycle_flag_keeps_injected_pn(self, tmp_path):
+        """InPTA DR2 ``-cycle_post34`` must not hide the injected ``-pn``."""
+        flags = (
+            " -fe uGMRT_B5 -be GWB -f uGMRT_B5_GWB -bw 50 -tobs 1500.2 "
+            "-tmplt J1857+0943_b5.none.0001 -gof 0.782 -nbin 64 -nch 512 "
+            "-prof_snr 24.87 -pta_orig InPTA -sys GM_GWB_1460_100.0_b1 "
+            "-group GM_GWB_1460_100.0_b1_pre36 -bandno 5 -chan 0 "
+            "-cycle_post34 -pta inpta_dr2 -pta_dataset inpta_dr2 "
+            "-timing_package tempo2"
+        )
+        canonical = self._write(
+            tmp_path / "canonical.tim",
+            f" toa00001 1384.95117200 58241.9 6.57 gmrt{flags}",
+        )
+        derived = self._write(
+            tmp_path / "derived.tim",
+            " toa00001 1384.95117200 58241.9 6.57 gmrt -pn 0",
+        )
+
+        assert inject_pulse_numbers(canonical, derived_tim=derived) == 1
+        line = _toa_lines(canonical.read_text(encoding="utf-8"))[0]
+        _, pn_values = _pn_occurrences(line)
+        assert pn_values == ["0"]
+        tokens = line.split()
+        pairs = {tokens[k]: tokens[v] for k, v in _iter_flag_pairs(tokens)}
+        assert pairs["-pta"] == "inpta_dr2"
+        assert pairs["-cycle_post34"] == VALUELESS_FLAG_VALUE
+        assert pairs["-pn"] == "0"
 
 
 class TestJumpMjd:

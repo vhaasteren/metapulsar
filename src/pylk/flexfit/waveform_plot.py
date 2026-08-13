@@ -148,7 +148,7 @@ def plot_waveform_panels(
 
     _scatter(ax[4], mjd, panels.after_all_us, freq)
     ax[4].set_title(
-        f"(e) everything subtracted (timing + RN + DM)   (RMS {rms_e:.2f} µs)",
+        f"(e) everything subtracted (timing + GPs)   (RMS {rms_e:.2f} µs)",
         fontsize=9,
     )
     ax[4].set_ylabel("residual (µs)")

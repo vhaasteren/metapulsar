@@ -525,7 +525,7 @@ class WaveformAnalysis:
             [b for b in bands if b.kind == "red"], name="red", kind="red"
         )
         dm = aggregate_bands(
-            [b for b in bands if b.kind in ("dm", "chromatic")],
+            [b for b in bands if b.kind == "dm"],
             name="dm",
             kind="dm",
         )
