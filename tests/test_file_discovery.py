@@ -3,8 +3,17 @@
 import pytest
 from pathlib import Path
 from unittest.mock import patch
-from metapulsar.file_discovery import FileDiscovery, PTA_DATA_RELEASES
+from metapulsar.file_discovery import (
+    FileDiscovery,
+    PTA_DATA_RELEASES,
+    AmbiguousFileError,
+    FileSelectionError,
+    MissingOverrideError,
+    _normalize_precedence,
+    select_release_file,
+)
 from metapulsar import discover_files
+from metapulsar.layout_discovery import discover_layout
 from tests.helpers import make_tim_metadata
 
 
@@ -14,6 +23,25 @@ def _with_catalog_aliases(file_entry, catalog_names, path_name=None):
     enriched["catalog_names"] = list(catalog_names)
     enriched["path_name"] = path_name or catalog_names[0]
     return enriched
+
+
+def _write_release(root, name, files):
+    """Create a release tree; ``files`` maps release-relative path -> text."""
+    for relative, text in files.items():
+        path = root / name / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return root / name
+
+
+def _sole_selection(path):
+    """Provenance dict for a mocked single-candidate file pair."""
+    return {
+        "chosen": path,
+        "candidates": [path],
+        "reason": "sole",
+        "rule": None,
+    }
 
 
 class TestFileDiscovery:
@@ -90,6 +118,8 @@ class TestFileDiscovery:
                     "timing_package": "tempo2",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                     "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
+                    "par_selection": _sole_selection(Path("/test/J1857+0943.par")),
+                    "tim_selection": _sole_selection(Path("/test/J1857+0943.tim")),
                 }
             ]
 
@@ -131,6 +161,8 @@ class TestFileDiscovery:
                     "tim": Path("/test/J1857+0943.tim"),
                     "timing_package": "tempo2",
                     "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                    "par_selection": _sole_selection(Path("/test/J1857+0943.par")),
+                    "tim_selection": _sole_selection(Path("/test/J1857+0943.tim")),
                 }
             ]
 
@@ -153,6 +185,8 @@ class TestFileDiscovery:
                         "tim": Path("test1.tim"),
                         "timing_package": "tempo2",
                         "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                        "par_selection": _sole_selection(Path("test1.par")),
+                        "tim_selection": _sole_selection(Path("test1.tim")),
                     }
                 ],
                 "ppta_dr2": [],
@@ -311,7 +345,7 @@ class TestFileDiscovery:
         }
 
         # Should not raise any exception
-        service._validate_data_release(valid_config)
+        service._validate_data_release(valid_config, "test_release")
 
     def test_validate_config_missing_keys(self):
         """Test validating configuration with missing keys."""
@@ -323,7 +357,7 @@ class TestFileDiscovery:
         }
 
         with pytest.raises(ValueError, match="Missing required keys"):
-            service._validate_data_release(invalid_config)
+            service._validate_data_release(invalid_config, "test_release")
 
     def test_validate_config_invalid_timing_package(self):
         """Test validating configuration with invalid timing package."""
@@ -337,7 +371,7 @@ class TestFileDiscovery:
         }
 
         with pytest.raises(ValueError, match="Invalid timing_package"):
-            service._validate_data_release(invalid_config)
+            service._validate_data_release(invalid_config, "test_release")
 
     def test_validate_config_invalid_regex(self):
         """Test validating configuration with invalid regex patterns."""
@@ -351,7 +385,7 @@ class TestFileDiscovery:
         }
 
         with pytest.raises(ValueError, match="Invalid regex pattern"):
-            service._validate_data_release(invalid_config)
+            service._validate_data_release(invalid_config, "test_release")
 
     @patch("pathlib.Path.exists")
     @patch("pathlib.Path.rglob")
@@ -417,7 +451,9 @@ class TestFileDiscovery:
             "timing_package": "tempo2",
         }
 
-        result = service._discover_all_file_pairs_in_data_release(config)
+        result = service._discover_all_file_pairs_in_data_release(
+            config, "test_release"
+        )
 
         assert len(result) == 1
         assert result[0]["par"] == Path("/test/J1857+0943.par")
@@ -438,9 +474,499 @@ class TestFileDiscovery:
             "tim_pattern": r"([BJ]\d{4}[+-]\d{2,4})\.tim",
         }
 
-        result = service._discover_all_file_pairs_in_data_release(config)
+        result = service._discover_all_file_pairs_in_data_release(
+            config, "test_release"
+        )
 
         assert result == []
+
+    def test_sole_candidate_records_provenance(self, tmp_path):
+        """One candidate per kind: reason 'sole', rule None, candidates listed."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})\.par$",
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        entry = service.discover_files("r", verbose=False)["r"][0]
+
+        assert entry["par_selection"]["reason"] == "sole"
+        assert entry["par_selection"]["rule"] is None
+        assert entry["par_selection"]["chosen"] == entry["par"]
+        assert entry["par_selection"]["candidates"] == [entry["par"]]
+        assert entry["tim_selection"]["reason"] == "sole"
+
+    def test_ambiguous_par_without_precedence_raises(self, tmp_path):
+        """Two equally-ranked pars must never be resolved silently."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747_a.par": "PSRJ J1713+0747\n",
+                "par/J1713+0747_b.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})_[ab]\.par$",
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+
+        with pytest.raises(AmbiguousFileError) as excinfo:
+            service.discover_files("r", verbose=False)
+        message = str(excinfo.value)
+        assert "par/J1713+0747_a.par" in message
+        assert "par/J1713+0747_b.par" in message
+        assert "par_precedence" in message and "par_overrides" in message
+
+    def test_par_precedence_ranks_variant_first(self, tmp_path):
+        """First matching precedence entry wins; provenance names the rule."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747.gls.par": "PSRJ J1713+0747\n",
+                "par/J1713+0747.t2.gls.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})(?:\.t2)?\.gls\.par$",
+            "par_precedence": [r"\.t2\.gls\.par$", r"(?<!\.t2)\.gls\.par$"],
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        entry = service.discover_files("r", verbose=False)["r"][0]
+
+        assert entry["par"].name == "J1713+0747.t2.gls.par"
+        assert entry["par_selection"]["reason"] == "precedence"
+        assert entry["par_selection"]["rule"] == r"\.t2\.gls\.par$"
+        assert len(entry["par_selection"]["candidates"]) == 2
+
+    @pytest.mark.parametrize(
+        "timing_package,expected",
+        [("tempo2", "J1909-3744.par"), ("pint", "J1909-3744_pint.par")],
+    )
+    def test_precedence_entry_can_key_off_timing_package(
+        self, tmp_path, timing_package, expected
+    ):
+        """A qualified entry applies only for the spec's own timing package."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "J1909-3744.par": "PSRJ J1909-3744\n",
+                "J1909-3744_pint.par": "PSRJ J1909-3744\n",
+                "J1909-3744.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"REL/([BJ]\d{4}[+-]\d{2,4})(?:_pint)?\.par$",
+            "par_precedence": [
+                {"pattern": r"_pint\.par$", "timing_package": "pint"},
+                r"(?<!_pint)\.par$",
+            ],
+            "tim_pattern": r"REL/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": timing_package,
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        entry = service.discover_files("r", verbose=False)["r"][0]
+
+        assert entry["par"].name == expected
+        assert entry["par_selection"]["reason"] == "precedence"
+
+    def test_override_wins_over_precedence_and_bypasses_the_pattern(self, tmp_path):
+        """An override may name a file the pattern never matches."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747.par": "PSRJ J1713+0747\n",
+                "alternate/hand_fit.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})\.par$",
+            "par_overrides": {"J1713+0747": "alternate/hand_fit.par"},
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        entry = service.discover_files("r", verbose=False)["r"][0]
+
+        assert entry["par"].name == "hand_fit.par"
+        assert entry["par_selection"]["reason"] == "override"
+        assert entry["par_selection"]["rule"] == "alternate/hand_fit.par"
+        # the pattern candidate is still reported, so the audit shows what was overridden
+        assert [p.name for p in entry["par_selection"]["candidates"]] == [
+            "J1713+0747.par"
+        ]
+
+    def test_override_seeds_a_pulsar_with_no_pattern_candidates(self, tmp_path):
+        """A pulsar invisible to par_pattern is still discoverable via an override."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "alternate/J1713+0747_handfit.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})\.par$",  # matches nothing
+            "par_overrides": {"J1713+0747": "alternate/J1713+0747_handfit.par"},
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        entries = service.discover_files("r", verbose=False)["r"]
+
+        assert len(entries) == 1
+        assert entries[0]["par"].name == "J1713+0747_handfit.par"
+        assert entries[0]["par_selection"]["reason"] == "override"
+        assert entries[0]["par_selection"]["candidates"] == []
+
+    def test_missing_override_raises(self, tmp_path):
+        """A stale override must fail loudly, never fall back to the pattern."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})\.par$",
+            "par_overrides": {"J1713+0747": "par/does_not_exist.par"},
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+
+        with pytest.raises(MissingOverrideError, match="does_not_exist"):
+            service.discover_files("r", verbose=False)
+
+    def test_tim_selection_is_symmetric(self, tmp_path):
+        """Precedence and ambiguity apply identically to the tim side."""
+        _write_release(
+            tmp_path,
+            "REL",
+            {
+                "par/J1713+0747.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747.tim": "FORMAT 1\n",
+                "tim/J1713+0747_all.tim": "FORMAT 1\n",
+            },
+        )
+        spec = {
+            "base_dir": "REL/",
+            "par_pattern": r"par/([BJ]\d{4}[+-]\d{2,4})\.par$",
+            "tim_pattern": r"tim/([BJ]\d{4}[+-]\d{2,4})(?:_all)?\.tim$",
+            "timing_package": "tempo2",
+        }
+        service = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        )
+        with pytest.raises(AmbiguousFileError, match="tim_precedence"):
+            service.discover_files("r", verbose=False)
+
+        spec["tim_precedence"] = [r"_all\.tim$", r"(?<!_all)\.tim$"]
+        entry = FileDiscovery(
+            working_dir=str(tmp_path), pta_data_releases={"r": spec}
+        ).discover_files("r", verbose=False)["r"][0]
+        assert entry["tim"].name == "J1713+0747_all.tim"
+        assert entry["tim_selection"]["rule"] == r"_all\.tim$"
+
+    def test_select_release_file_rejects_an_empty_candidate_list(self, tmp_path):
+        """Nothing to choose from is a FileSelectionError, not a bare min() crash."""
+        with pytest.raises(FileSelectionError, match="no par candidates"):
+            select_release_file(
+                [],
+                pulsar_name="J1713+0747",
+                kind="par",
+                release_name="rel",
+                base_path=tmp_path,
+                rules=(),
+                override=None,
+                timing_package="pint",
+            )
+
+    def test_select_release_file_override_precedes_ranking(self, tmp_path):
+        """The override branch returns before any rank is computed."""
+        chosen_path = tmp_path / "alt.par"
+        chosen_path.write_text("PSRJ J1713+0747\n", encoding="utf-8")
+        ranked_path = tmp_path / "ranked.par"
+
+        chosen, provenance = select_release_file(
+            [ranked_path],
+            pulsar_name="J1713+0747",
+            kind="par",
+            release_name="rel",
+            base_path=tmp_path,
+            rules=_normalize_precedence([r"ranked\.par$"], "par", "rel"),
+            override="alt.par",
+            timing_package="pint",
+        )
+
+        assert chosen == chosen_path
+        assert provenance == {
+            "chosen": chosen_path,
+            "candidates": [ranked_path],
+            "reason": "override",
+            "rule": "alt.par",
+        }
+
+    @pytest.mark.parametrize(
+        "precedence,match",
+        [
+            ([{"patern": r"x"}], "unknown keys"),
+            ([{"timing_package": "pint"}], "missing required key 'pattern'"),
+            ([{"pattern": r"x", "timing_package": "tempo1"}], "invalid timing_package"),
+            ([r"("], "invalid regex"),
+            ([42], "expected a regex string or a dict"),
+        ],
+    )
+    def test_add_data_release_rejects_bad_precedence(self, precedence, match):
+        """add_data_release validates precedence through the discovery helpers."""
+        service = FileDiscovery()
+        with pytest.raises(ValueError, match=match):
+            service.add_data_release(
+                "broken",
+                {
+                    "base_dir": "X/",
+                    "par_pattern": r"([BJ]\d{4}[+-]\d{2,4})\.par$",
+                    "par_precedence": precedence,
+                    "tim_pattern": r"([BJ]\d{4}[+-]\d{2,4})\.tim$",
+                    "timing_package": "tempo2",
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "overrides,match",
+        [
+            (["J1713+0747"], "expected a dict"),
+            ({"J1713+0747": 42}, "expected str -> str"),
+        ],
+    )
+    def test_add_data_release_rejects_bad_overrides(self, overrides, match):
+        """add_data_release validates overrides through the discovery helpers."""
+        service = FileDiscovery()
+        with pytest.raises(ValueError, match=match):
+            service.add_data_release(
+                "broken",
+                {
+                    "base_dir": "X/",
+                    "par_pattern": r"([BJ]\d{4}[+-]\d{2,4})\.par$",
+                    "par_overrides": overrides,
+                    "tim_pattern": r"([BJ]\d{4}[+-]\d{2,4})\.tim$",
+                    "timing_package": "tempo2",
+                },
+            )
+
+    def test_shipped_precedence_rules_are_disjoint(self):
+        """No shipped release may rely on rule order to break an overlap.
+
+        Overlapping rules still give the right answer, but only by accident of
+        ordering: reversing them raises AmbiguousFileError instead of choosing
+        the other variant. Disjointness is per (path, timing_package), so two
+        rules sharing a regex but carrying complementary timing_package
+        qualifiers are legal.
+        """
+        probes = [
+            "J1713+0747_NANOGrav_9yv1.gls.par",
+            "J1713+0747_NANOGrav_9yv1.t2.gls.par",
+            "J1909-3744.par",
+            "J1909-3744_pint.par",
+        ]
+        for release_name, spec in PTA_DATA_RELEASES.items():
+            for kind in ("par", "tim"):
+                rules = _normalize_precedence(
+                    spec.get(f"{kind}_precedence") or (), kind, release_name
+                )
+                for probe in probes:
+                    for package in ("pint", "tempo2"):
+                        matched = [
+                            r.pattern
+                            for r in rules
+                            if r.timing_package in (None, package)
+                            and r.regex.search(probe)
+                        ]
+                        assert len(matched) <= 1, (
+                            f"{release_name} {kind}_precedence rules overlap on "
+                            f"{probe} under {package}: {matched}"
+                        )
+
+    @pytest.mark.requires_ipta_data
+    @pytest.mark.parametrize("data_root", ["data/ipta-dr2", "data-check"])
+    def test_shipped_releases_resolve_without_ambiguity(self, data_root):
+        """The M1 no-op claim, as a test: no shipped release ties on real trees."""
+        repo_root = Path(__file__).resolve().parents[1]
+        root = repo_root / data_root
+        if not root.exists():
+            pytest.skip(f"{data_root} not present")
+
+        service = FileDiscovery(working_dir=str(root), verbose=False)
+        present = [
+            key
+            for key, spec in PTA_DATA_RELEASES.items()
+            if (root / spec["base_dir"]).exists()
+        ]
+        if not present:
+            pytest.skip(f"no known release layouts under {data_root}")
+
+        # raises AmbiguousFileError / MissingOverrideError if any release is unresolvable
+        found = service.discover_files(present)
+        assert any(found[key] for key in present)
+
+    def test_auto_discovered_layout_ties_are_ambiguous(self, tmp_path):
+        """discover_layout emits no precedence, so a variant release must raise.
+
+        The inferred pattern deliberately matches every ``<PSR>*.par`` and an
+        inferred spec has no way to rank them, so the selection is genuinely
+        ambiguous and must not silently last-win. Callers of discover_layout on
+        a variant-shipping release have to supply par_precedence themselves.
+        """
+        release = _write_release(
+            tmp_path,
+            "FLAT",
+            {
+                "J1909-3744.par": "PSRJ J1909-3744\n",
+                "J1909-3744_pint.par": "PSRJ J1909-3744\n",
+                "J1909-3744.tim": "FORMAT 1\n",
+            },
+        )
+        layout = discover_layout(str(release), verbose=False, name="flat")
+
+        with pytest.raises(AmbiguousFileError, match=r"_pint\.par"):
+            discover_files(layout, working_dir=str(tmp_path), verbose=False)
+
+    def test_nanograv_9y_spec_selects_the_t2_par_for_j1713(self, tmp_path):
+        """Regression lock: the shipped NG9 spec must pick the engine-runnable par.
+
+        The tempo1 par carries PAASCNODE, which neither PINT nor tempo2
+        implements; the t2 par is the solution both engines can evaluate.
+        """
+        _write_release(
+            tmp_path,
+            "NANOGrav_9y",
+            {
+                "par/J1713+0747_NANOGrav_9yv1.gls.par": "PSRJ J1713+0747\n",
+                "par/J1713+0747_NANOGrav_9yv1.t2.gls.par": "PSRJ J1713+0747\n",
+                "par/B1855+09_NANOGrav_9yv1.gls.par": "PSRJ B1855+09\n",
+                "tim/J1713+0747_NANOGrav_9yv1.tim": "FORMAT 1\n",
+                "tim/B1855+09_NANOGrav_9yv1.tim": "FORMAT 1\n",
+            },
+        )
+        service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
+        entries = {
+            e["par"].name.split("_NANOGrav")[0]: e
+            for e in service.discover_files("nanograv_9y")["nanograv_9y"]
+        }
+
+        assert entries["J1713+0747"]["par"].name.endswith(".t2.gls.par")
+        assert entries["J1713+0747"]["par_selection"]["reason"] == "precedence"
+        # every other pulsar is untouched
+        assert entries["B1855+09"]["par_selection"]["reason"] == "sole"
+
+    def test_ppta_dr3_spec_follows_the_timing_package(self, tmp_path):
+        """The shipped PPTA_DR3 spec selects the par matching its engine."""
+        _write_release(
+            tmp_path,
+            "PPTA_DR3",
+            {
+                "J1909-3744.par": "PSRJ J1909-3744\n",
+                "J1909-3744_pint.par": "PSRJ J1909-3744\n",
+                "J1909-3744.tim": "FORMAT 1\n",
+            },
+        )
+        service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
+        assert (
+            service.discover_files("ppta_dr3")["ppta_dr3"][0]["par"].name
+            == "J1909-3744.par"
+        )
+
+        spec = dict(PTA_DATA_RELEASES["ppta_dr3"])
+        spec["timing_package"] = "pint"
+        pint_service = FileDiscovery(
+            working_dir=str(tmp_path),
+            pta_data_releases={"ppta_dr3": spec},
+            verbose=False,
+        )
+        assert (
+            pint_service.discover_files("ppta_dr3")["ppta_dr3"][0]["par"].name
+            == "J1909-3744_pint.par"
+        )
+
+    def test_nanograv_12y_still_excludes_its_t2_par(self, tmp_path):
+        """NG12 is deliberately NOT converted.
+
+        Its default par is already BINARY DDK with the Kopeikin term fitted, and
+        the spec is timing_package='pint', so the lookahead is correct. Note the
+        real variant suffix is '.gls.t2.par', not the 9y '.t2.gls.par'.
+        """
+        _write_release(
+            tmp_path,
+            "NANOGrav_12y",
+            {
+                "par/J1713+0747_NANOGrav_12yv2.gls.par": "PSRJ J1713+0747\n",
+                "par/J1713+0747_NANOGrav_12yv2.gls.t2.par": "PSRJ J1713+0747\n",
+                "tim/J1713+0747_NANOGrav_12yv2.tim": "FORMAT 1\n",
+            },
+        )
+        service = FileDiscovery(working_dir=str(tmp_path), verbose=False)
+        entry = service.discover_files("nanograv_12y")["nanograv_12y"][0]
+
+        assert entry["par"].name == "J1713+0747_NANOGrav_12yv2.gls.par"
+        assert entry["par_selection"]["reason"] == "sole"
+
+    @pytest.mark.requires_ipta_data
+    def test_nanograv_9y_real_tree_selects_the_t2_par(self):
+        """Real-data lock: on the actual release, NG9 J1713 is the t2 par."""
+        repo_root = Path(__file__).resolve().parents[1]
+        root = repo_root / "data" / "ipta-dr2"
+        if not (root / "NANOGrav_9y" / "par").is_dir():
+            pytest.skip("data/ipta-dr2 not present")
+
+        service = FileDiscovery(working_dir=str(root), verbose=False)
+        chosen = {
+            entry["par"].name
+            for entry in service.discover_files("nanograv_9y")["nanograv_9y"]
+            if "J1713+0747" in entry["par"].name
+        }
+        assert chosen == {"J1713+0747_NANOGrav_9yv1.t2.gls.par"}
 
 
 class TestConvenienceFunctions:

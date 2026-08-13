@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from metapulsar.file_discovery import filter_file_data_by_pulsars
-from metapulsar.layout_discovery import combine_layouts, discover_layout
 from metapulsar.position_helpers import (
     build_alias_map,
     discover_pulsars_by_position,
@@ -166,12 +165,16 @@ def test_data_check_j0557_and_j1824_filter_regression():
     if not (data_check / "NANOGrav_15y").is_dir():
         pytest.skip("data-check not available")
 
-    ng = discover_layout(str(data_check / "NANOGrav_15y"), verbose=False, name="NG15")
-    ppta = discover_layout(str(data_check / "PPTA_DR3"), verbose=False, name="PPTA_DR3")
-    layouts = combine_layouts(ng, ppta)
-    from metapulsar.file_discovery import discover_files
+    # Canned layouts, not discover_layout: the inferred PPTA_DR3 / NG15 patterns
+    # match <PSR>.par, <PSR>_pint.par and the ao/gbt siblings alike, which is an
+    # ambiguous selection by design. This test is about pulsar-name filtering.
+    from metapulsar.file_discovery import PTA_DATA_RELEASES, discover_files
 
-    files = discover_files(layouts, working_dir=str(data_check), verbose=False)
+    files = discover_files(
+        {k: PTA_DATA_RELEASES[k] for k in ("nanograv_15y", "ppta_dr3")},
+        working_dir=str(data_check),
+        verbose=False,
+    )
 
     out = filter_file_data_by_pulsars(files, "J0557+1551")
     assert any("J0557+1551" in str(f["par"]) for fl in out.values() for f in fl)

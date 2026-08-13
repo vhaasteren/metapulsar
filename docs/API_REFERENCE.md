@@ -596,6 +596,17 @@ class PINTDiscoveryError(Exception):
     """Raised when PINT model discovery fails."""
 ```
 
+```python
+class FileSelectionError(ValueError):
+    """Raised when a release layout cannot name exactly one file for a pulsar."""
+
+class AmbiguousFileError(FileSelectionError):
+    """Several release files match one pulsar with equal precedence."""
+
+class MissingOverrideError(FileSelectionError):
+    """A release override names a file that is not on disk."""
+```
+
 ## Constants
 
 ### PTA_DATA_RELEASES
@@ -619,6 +630,19 @@ Contains regex patterns and directory structures for:
 - PPTA DR1+DR2
 - PPTA DR3
 
+Each release spec has four required keys (`base_dir`, `par_pattern`, `tim_pattern`,
+`timing_package`) and four optional selection keys, used when a release ships more than
+one par or tim per pulsar:
+
+- `par_precedence` / `tim_precedence` — ordered selectors, first match wins. An entry is
+  a regex string, or `{"pattern": ..., "timing_package": ...}` to apply only when the
+  spec's `timing_package` matches. Rules must be mutually disjoint.
+- `par_overrides` / `tim_overrides` — `{pulsar_name: release-relative path}`. Highest
+  precedence, may name a file the pattern does not match, and must exist on disk.
+
+When several files remain tied at the best rank, discovery raises `AmbiguousFileError`
+rather than picking one.
+
 ## Data Structures
 
 ### File Data Format
@@ -629,10 +653,18 @@ The standard file data format used throughout MetaPulsar:
 file_data = {
     "pta_name": [
         {
-            "par": "path/to/file.par",
-            "tim": "path/to/file.tim", 
+            "par": Path("path/to/file.par"),
+            "tim": Path("path/to/file.tim"),
             "timing_package": "tempo2",  # or "pint"
-            "parfile_content": "par file content as string",  # optional
+            "par_content": "par file content as string",
+            "tim_metadata": TimMetadata(...),
+            "par_selection": {           # how the par was chosen
+                "chosen": Path(...),
+                "candidates": [Path(...), ...],
+                "reason": "sole",        # or "precedence" / "override"
+                "rule": None,            # matched pattern or override string
+            },
+            "tim_selection": {...},      # same shape
         }
     ]
 }
