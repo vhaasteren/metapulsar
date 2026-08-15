@@ -134,10 +134,10 @@ def test_engine_validator_rejects_design_row_mismatch(fake_timing_pulsar):
 def _build_real_pulsar(mock_metapulsar):
     pulsars = {
         "pta_a": create_mock_libstempo(
-            n_toas=20, name="J1857+0943", telescope="pta_a", seed=11
+            n_toas=20, name="J1857+0943", telescope="ao", seed=11
         ),
         "pta_b": create_mock_libstempo(
-            n_toas=20, name="J1857+0943", telescope="pta_b", seed=22
+            n_toas=20, name="J1857+0943", telescope="gbt", seed=22
         ),
     }
     return mock_metapulsar(pulsars, combination_strategy="per_pta")
@@ -151,11 +151,21 @@ def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip(mock_metapulsar):
     # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
     native_engines = {"tempo2": "libstempo", "pint": "jug"}
     assert pulsar.can_use_engines(native_engines)
-    assert not pulsar.can_use_engines("jug")
-    assert not pulsar.can_use_engines({"tempo2": "jug", "pint": "pint"})
+    # Both of these resolve to the JUG family for a tempo2-origin leg (the
+    # "pint" entry never applies), and a nonlinear JUG engine reloads the
+    # retained par/tim -- so the answer tracks whether JUG is installed, these
+    # legs having real files.
+    jug_available = pulsar._can_import_jug()
+    assert pulsar.can_use_engines("jug") is jug_available
+    assert pulsar.can_use_engines({"tempo2": "jug", "pint": "pint"}) is jug_available
     assert pulsar.can_use_engines(native_engines, linearized=True)
     assert pulsar.can_use_engines("jug", linearized=True)
     assert pulsar.can_use_engines({"tempo2": "jug", "pint": "pint"}, linearized=True)
+
+    if jug_available:
+        nonlinear = pulsar.timing_engine("jug", prime_sessions=False)
+        assert tuple(pulsar.fitpars) == nonlinear.fitpars
+        validate_engine_against_pulsar(nonlinear, pulsar)
 
     native_backend = pulsar.timing_engine(native_engines)
     assert tuple(pulsar.fitpars) == native_backend.fitpars

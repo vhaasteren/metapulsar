@@ -17,6 +17,7 @@ reverse — so MetaPulsar owns its own copy rather than importing nltiming's.
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
@@ -69,6 +70,82 @@ def _get_all_components():
     avoiding the ~10ms creation cost on subsequent calls.
     """
     return AllComponents()
+
+
+# FDJUMP has two par-file spellings (Tempo2 FDJUMPp vs PINT FDpJUMP). PINT
+# cannot register them as ordinary aliases (mask index vs prefix index collide),
+# so MetaPulsar owns the fold for chart / fit-column matching. Canonical id
+# matches JUG: FDJUMP{p}_{q} (omitted mask → 1) and FDJUMPDM_{k}.
+_FDJUMP_TEMPO2_INSTANCE_RE = re.compile(r"^FDJUMP(\d+)_(\d+)$", re.I)
+_FDJUMP_TEMPO2_BARE_RE = re.compile(r"^FDJUMP(\d+)$", re.I)
+_FDJUMP_PINT_INSTANCE_RE = re.compile(r"^FD(\d+)JUMP(\d+)$", re.I)
+_FDJUMP_PINT_BARE_RE = re.compile(r"^FD(\d+)JUMP$", re.I)
+_FDJUMPDM_RE = re.compile(r"^FDJUMPDM(?:_(\d+)|(\d+))?$", re.I)
+_FDJUMP_CONTROL_KEYS = frozenset({"FDJUMP_SCALE", "FDJUMPLOG"})
+
+
+def canonicalize_fdjump_name(name: str) -> str | None:
+    """Return the canonical FDJUMP id, or None if ``name`` is not an FDJUMP.
+
+    Canonical form is ``FDJUMP{p}_{q}`` or ``FDJUMPDM_{k}``. Accepted
+    spellings: ``FDJUMP1`` / ``FD1JUMP`` (par keyword), ``FDJUMP1_1`` /
+    ``FD1JUMP1`` (instance), ``FDJUMPDM`` / ``FDJUMPDM1`` / ``FDJUMPDM_1``.
+    """
+    key = name.strip()
+    if key.upper() in _FDJUMP_CONTROL_KEYS:
+        return None
+    dm = _FDJUMPDM_RE.fullmatch(key)
+    if dm:
+        idx = dm.group(1) or dm.group(2) or "1"
+        return f"FDJUMPDM_{int(idx)}"
+    match = _FDJUMP_TEMPO2_INSTANCE_RE.fullmatch(key)
+    if match:
+        return f"FDJUMP{int(match.group(1))}_{int(match.group(2))}"
+    match = _FDJUMP_PINT_INSTANCE_RE.fullmatch(key)
+    if match:
+        return f"FDJUMP{int(match.group(1))}_{int(match.group(2))}"
+    match = _FDJUMP_TEMPO2_BARE_RE.fullmatch(key)
+    if match:
+        return f"FDJUMP{int(match.group(1))}_1"
+    match = _FDJUMP_PINT_BARE_RE.fullmatch(key)
+    if match:
+        return f"FDJUMP{int(match.group(1))}_1"
+    return None
+
+
+def fdjump_aliases(name: str) -> tuple[str, ...]:
+    """Return unambiguous spellings of one FDJUMP, or () if not an FDJUMP."""
+    canonical = canonicalize_fdjump_name(name)
+    if canonical is None:
+        return ()
+    if canonical.startswith("FDJUMPDM_"):
+        index = int(canonical.rsplit("_", 1)[1])
+        aliases = (f"FDJUMPDM_{index}", f"FDJUMPDM{index}")
+        return aliases + (("FDJUMPDM",) if index == 1 else ())
+    match = _FDJUMP_TEMPO2_INSTANCE_RE.fullmatch(canonical)
+    if match is None:
+        return (canonical,)
+    prefix, mask = int(match.group(1)), int(match.group(2))
+    aliases = (
+        f"FDJUMP{prefix}_{mask}",
+        f"FD{prefix}JUMP{mask}",
+    )
+    if mask == 1:
+        aliases += (f"FDJUMP{prefix}", f"FD{prefix}JUMP")
+    return aliases
+
+
+def resolve_fit_column_name(param_name: str) -> str:
+    """Resolve a PTA fit-column name for chart matching.
+
+    Folds FDJUMP dual spelling to ``FDJUMP{p}_{q}`` / ``FDJUMPDM_{k}``, then
+    falls back to :func:`resolve_parameter_alias`. PINT's alias table does
+    not map ``FDJUMP1`` ↔ ``FD1JUMP1``.
+    """
+    fdjump = canonicalize_fdjump_name(param_name)
+    if fdjump is not None:
+        return fdjump
+    return resolve_parameter_alias(param_name)
 
 
 def resolve_parameter_alias(param_name: str) -> str:
@@ -129,10 +206,17 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
         if canonical_param == "EDOT" and "ECCDOT" not in aliases:
             aliases.append("ECCDOT")
 
+        for extra in fdjump_aliases(canonical_param):
+            if extra not in aliases:
+                aliases.append(extra)
+
         return aliases
     except Exception:
-        # If anything fails, just return the canonical name
-        return [canonical_param]
+        aliases = [canonical_param]
+        for extra in fdjump_aliases(canonical_param):
+            if extra not in aliases:
+                aliases.append(extra)
+        return aliases
 
 
 def get_parameters_by_type_from_models(

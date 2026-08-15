@@ -361,14 +361,14 @@ class MetaPulsar:
 
     def _setup_canonical_parameters(self):
         """Setup canonical parameter lists for each PTA timing record."""
-        from .pint_helpers import resolve_parameter_alias
+        from .pint_helpers import resolve_fit_column_name
 
         for pta_name, record in self._pta_data.items():
             record.fitpars_canonical = [
-                resolve_parameter_alias(name) for name in record.fitpars
+                resolve_fit_column_name(name) for name in record.fitpars
             ]
             record.setpars_canonical = [
-                resolve_parameter_alias(name) for name in record.setpars
+                resolve_fit_column_name(name) for name in record.setpars
             ]
 
     def _assert_engine_chart_consistency(self) -> None:
@@ -384,14 +384,14 @@ class MetaPulsar:
         ``MetaPulsar(...)`` directly with pre-built engine objects instead of
         ``create_metapulsar()``.
         """
-        from .pint_helpers import resolve_parameter_alias
+        from .pint_helpers import resolve_fit_column_name, resolve_parameter_alias
 
         for meta_param, owners in self._fitparameters.items():
             for pta_name, provisional in owners.items():
                 record = self._pta_data.get(pta_name)
                 if record is None or not record.fitpars_canonical:
                     continue
-                if resolve_parameter_alias(provisional) in record.fitpars_canonical:
+                if resolve_fit_column_name(provisional) in record.fitpars_canonical:
                     continue
                 hint = ""
                 if resolve_parameter_alias(provisional).upper().startswith("FB"):
@@ -602,10 +602,10 @@ class MetaPulsar:
                     full_parname
                 ].items():
                     if mapped_pta == pta:
-                        from .pint_helpers import resolve_parameter_alias
+                        from .pint_helpers import resolve_fit_column_name
 
                         par_idx = record.fitpars_canonical.index(
-                            resolve_parameter_alias(mapped_param)
+                            resolve_fit_column_name(mapped_param)
                         )
                         column[slice_obj] = dm[:, par_idx]
                         break

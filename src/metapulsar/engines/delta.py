@@ -226,12 +226,24 @@ def infer_jug_param_mapping(
     engine_names: Sequence[str] | set[str],
 ) -> dict[str, str]:
     """Map canonical fit parameter names to JUG engine keys when they differ."""
+    from metapulsar.pint_compat import canonicalize_fdjump_name, fdjump_aliases
+
     known = set(engine_names)
     mapping: dict[str, str] = {}
     for canon in canonical_names:
         if canon in known:
             continue
-        for candidate in _CANONICAL_TO_ENGINE_ALIASES.get(canon, (canon,)):
+        candidates = list(_CANONICAL_TO_ENGINE_ALIASES.get(canon, (canon,)))
+        candidates.extend(fdjump_aliases(canon))
+        fd_id = canonicalize_fdjump_name(canon)
+        if fd_id is not None:
+            for engine_name in known:
+                if canonicalize_fdjump_name(engine_name) == fd_id:
+                    mapping[canon] = engine_name
+                    break
+            if canon in mapping:
+                continue
+        for candidate in candidates:
             if candidate in known:
                 mapping[canon] = candidate
                 break

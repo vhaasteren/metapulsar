@@ -11,6 +11,9 @@ from metapulsar.pint_helpers import (
     get_parameter_identifiability_from_model,
     get_parameters_by_type_from_parfiles,
     create_pint_model,
+    canonicalize_fdjump_name,
+    fdjump_aliases,
+    resolve_fit_column_name,
     resolve_parameter_alias,
     resolve_parfile_parameter_name,
     PINTDiscoveryError,
@@ -107,6 +110,55 @@ class TestResolveParameterAlias:
             "F0": ["316.12397933185408713"],
         }
         assert resolve_parfile_parameter_name("EDOT", parfile_dict) == "ECCDOT"
+
+
+class TestFdjumpFitColumnNames:
+    """PINT cannot alias FDJUMPp ↔ FDpJUMP; MetaPulsar owns the fold."""
+
+    def test_canonicalize_fdjump_spellings(self):
+        assert canonicalize_fdjump_name("FDJUMP1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FD1JUMP") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FDJUMP1_1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FD1JUMP1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FDJUMPDM1") == "FDJUMPDM_1"
+        assert canonicalize_fdjump_name("F0") is None
+
+    def test_fdjump_aliases_cover_both_conventions(self):
+        assert set(fdjump_aliases("FD1JUMP1")) == {
+            "FDJUMP1_1",
+            "FD1JUMP1",
+            "FDJUMP1",
+            "FD1JUMP",
+        }
+        assert set(fdjump_aliases("FD1JUMP2")) == {
+            "FDJUMP1_2",
+            "FD1JUMP2",
+        }
+        assert set(fdjump_aliases("FDJUMPDM2")) == {
+            "FDJUMPDM_2",
+            "FDJUMPDM2",
+        }
+
+    def test_resolve_fit_column_matches_tempo2_and_pint(self):
+        assert resolve_fit_column_name("FD1JUMP1") == resolve_fit_column_name("FDJUMP1")
+        assert resolve_fit_column_name("FD1JUMP1") == "FDJUMP1_1"
+        assert resolve_fit_column_name("FDJUMPDM1") == resolve_fit_column_name(
+            "FDJUMPDM_1"
+        )
+        assert resolve_fit_column_name("F0") == "F0"
+        assert resolve_fit_column_name("ECCDOT") == "EDOT"
+
+    def test_chart_check_finds_tempo2_fdjump_in_fitpars(self):
+        fitpars = ["Offset", "ELONG", "F0", "FDJUMP1", "FDJUMPDM1"]
+        fitpars_canonical = [resolve_fit_column_name(name) for name in fitpars]
+        assert resolve_fit_column_name("FD1JUMP1") in fitpars_canonical
+        assert resolve_fit_column_name("FDJUMPDM1") in fitpars_canonical
+
+    def test_get_aliases_include_fdjump_spellings(self):
+        aliases = get_aliases_for_parameter("FD1JUMP1")
+        assert "FD1JUMP1" in aliases
+        assert "FDJUMP1" in aliases
+        assert "FDJUMP1_1" in aliases
 
 
 #

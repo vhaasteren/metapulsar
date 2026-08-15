@@ -325,3 +325,18 @@ def test_libstempo_from_contribution_marks_unsettable_jump_exact_linear():
         engine.residual_delta(np.array([0.0, 0.5], dtype=float)),
         -(model.design[:, 1] * 0.5),
     )
+
+
+def test_infer_jug_param_mapping_fdjump_spellings():
+    from metapulsar.engines.delta import infer_jug_param_mapping
+
+    mapping = infer_jug_param_mapping(
+        ["F0", "FD1JUMP1", "FDJUMPDM1"],
+        {"F0", "FDJUMP1_1", "FDJUMPDM_1"},
+    )
+    assert mapping["FD1JUMP1"] == "FDJUMP1_1"
+    assert mapping["FDJUMPDM1"] == "FDJUMPDM_1"
+    assert "F0" not in mapping
+
+    # A bare spelling is mask 1 and must never capture a later mask.
+    assert infer_jug_param_mapping(["FD1JUMP2"], {"FDJUMP1"}) == {}
