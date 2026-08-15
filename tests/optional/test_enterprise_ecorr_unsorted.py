@@ -10,10 +10,13 @@ import enterprise.signals.parameter as parameter  # noqa: E402
 from enterprise.signals import white_signals  # noqa: E402
 
 from metapulsar.metapulsar import MetaPulsar  # noqa: E402
-from metapulsar.mockpulsar import create_mock_libstempo  # noqa: E402
+from metapulsar.mockpulsar import (  # noqa: E402
+    create_mock_libstempo,
+    write_mock_pta_files,
+)
 
 
-def _build_unsorted_pulsar():
+def _build_unsorted_pulsar(directory):
     pulsars = {}
     for idx, pta in enumerate(["pta_a", "pta_b"], start=1):
         psr = create_mock_libstempo(
@@ -34,7 +37,11 @@ def _build_unsorted_pulsar():
         psr._designmatrix = psr._designmatrix[permutation, :]
         psr._psrPos = psr._psrPos[permutation, :]
         pulsars[pta] = psr
-    return MetaPulsar(pulsars, combination_strategy="per_pta")
+    return MetaPulsar(
+        pulsars,
+        combination_strategy="per_pta",
+        pta_files=write_mock_pta_files(pulsars, directory),
+    )
 
 
 def _build_permuted_pulsars():
@@ -62,8 +69,8 @@ def _build_permuted_pulsars():
     return pulsars
 
 
-def test_ecorr_sherman_morrison_constructs_on_unsorted_pulsar():
-    pulsar = _build_unsorted_pulsar()
+def test_ecorr_sherman_morrison_constructs_on_unsorted_pulsar(tmp_path):
+    pulsar = _build_unsorted_pulsar(tmp_path)
     ecorr = white_signals.EcorrKernelNoise(
         log10_ecorr=parameter.Constant(-7.0),
         method="sherman-morrison",
@@ -74,8 +81,8 @@ def test_ecorr_sherman_morrison_constructs_on_unsorted_pulsar():
     assert signal is not None
 
 
-def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_pulsar():
-    pulsar = _build_unsorted_pulsar()
+def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_pulsar(tmp_path):
+    pulsar = _build_unsorted_pulsar(tmp_path)
     ecorr = white_signals.EcorrKernelNoise(
         log10_ecorr=parameter.Constant(-7.0),
         method="fast-sherman-morrison",
@@ -87,10 +94,15 @@ def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_pulsar():
 
 
 @pytest.mark.parametrize("method", ["sherman-morrison", "fast-sherman-morrison"])
-def test_ecorr_unsorted_solve_matches_sorted_equivalent(method):
+def test_ecorr_unsorted_solve_matches_sorted_equivalent(method, tmp_path):
     pulsars = _build_permuted_pulsars()
-    unsorted_pulsar = MetaPulsar(pulsars, combination_strategy="per_pta", sort=False)
-    sorted_pulsar = MetaPulsar(pulsars, combination_strategy="per_pta", sort=True)
+    pta_files = write_mock_pta_files(pulsars, tmp_path / "pta_files")
+    unsorted_pulsar = MetaPulsar(
+        pulsars, combination_strategy="per_pta", sort=False, pta_files=pta_files
+    )
+    sorted_pulsar = MetaPulsar(
+        pulsars, combination_strategy="per_pta", sort=True, pta_files=pta_files
+    )
     permutation = np.argsort(unsorted_pulsar.toas, kind="mergesort")
     np.testing.assert_allclose(sorted_pulsar.toas, unsorted_pulsar.toas[permutation])
 

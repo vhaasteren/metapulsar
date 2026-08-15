@@ -1,3 +1,4 @@
+import itertools
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,28 @@ def suppress_sandbox_tempo2_debug_logs(request):
     finally:
         sandbox_tempo2.logger.debug = original_debug
         sandbox_tempo2.logger.info = original_info
+
+
+@pytest.fixture
+def mock_metapulsar(tmp_path):
+    """Build a ``MetaPulsar`` from mock pulsars, with its retained pars on disk.
+
+    ``MetaPulsar`` requires ``pta_files`` for every PTA -- it reads par text
+    from those files and never re-serializes an engine object -- so mock-backed
+    construction has to materialize the mocks' own pars first. Use this instead
+    of calling ``MetaPulsar(mocks, ...)`` directly.
+    """
+    from metapulsar.metapulsar import MetaPulsar
+    from metapulsar.mockpulsar import write_mock_pta_files
+
+    counter = itertools.count()
+
+    def _build(pulsars, **kwargs):
+        directory = tmp_path / f"pta_files_{next(counter)}"
+        kwargs.setdefault("pta_files", write_mock_pta_files(pulsars, directory))
+        return MetaPulsar(pulsars, **kwargs)
+
+    return _build
 
 
 @pytest.fixture(scope="session")

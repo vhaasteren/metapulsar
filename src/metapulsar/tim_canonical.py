@@ -43,6 +43,12 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import numpy as np
 from loguru import logger
 
+from .parfile_lines import (
+    is_active_par_line,
+    is_flag_token,
+    iter_active_par_lines,
+    join_par_lines,
+)
 from .tim_file_analyzer import (
     TimFileAnalyzer,
     TimMetadata,
@@ -410,11 +416,8 @@ def _first_par_f0(par_text: str) -> Optional[Fraction]:
     Needed only to bake ``-padd`` (a phase offset) into the arrival time as
     ``padd / F0`` seconds; ``-addsat`` (seconds) needs no model quantity.
     """
-    for line in par_text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or s.upper().startswith("C "):
-            continue
-        parts = s.split()
+    for _index, line in iter_active_par_lines(par_text):
+        parts = line.split()
         if len(parts) >= 2 and parts[0].upper() == "F0":
             try:
                 value = Decimal(parts[1].replace("D", "E").replace("d", "E"))
@@ -939,17 +942,14 @@ def ensure_par_mode(par_text: str, mode: int) -> str:
         if not (raw.split() and raw.split()[0].upper() in _PAR_MODE_ALIASES)
     ]
     out.append(f"MODE {mode}")
-    return "\n".join(out) + ("\n" if par_text.endswith("\n") else "")
+    return join_par_lines(out, like=par_text)
 
 
-def _is_flag_key(token: str) -> bool:
-    """True if ``token`` is a FORMAT 1 flag name, not a numeric value.
-
-    Tempo2's test (``readTimfile.C``): a flag starts with ``-`` whose second
-    character is not a digit. That keeps ``-to -0.897e-6`` and ``-addsat -1``
-    as values while treating ``-pta`` / ``-cycle_post34`` as keys.
-    """
-    return len(token) >= 2 and token[0] == "-" and not token[1].isdigit()
+# The .tim and .par flag rules are the same tempo2 test (``readTimfile.C`` /
+# ``readParfile.C``): a flag starts with ``-`` whose second character is not a
+# digit, keeping ``-to -0.897e-6`` and ``-addsat -1`` as values while treating
+# ``-pta`` / ``-cycle_post34`` as keys. Keep one definition.
+_is_flag_key = is_flag_token
 
 
 def _iter_flag_pairs(
@@ -1329,13 +1329,8 @@ def parse_jump_mjd_windows(
     :func:`jump_mjd_value_is_empty`) before stamping / conversion.
     """
     out: List[Tuple[Decimal, Decimal, Tuple[str, ...]]] = []
-    for raw in par_text.splitlines():
+    for _index, raw in iter_active_par_lines(par_text):
         stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        upper = stripped.upper()
-        if upper == "C" or upper.startswith("C "):
-            continue
         tokens = stripped.split()
         if len(tokens) < 4:
             continue
@@ -1586,9 +1581,7 @@ def convert_jump_mjd_par_text(
             len(tokens) >= 4
             and tokens[0].upper() == "JUMP"
             and tokens[1].upper() == "MJD"
-            and not stripped.startswith("#")
-            and stripped.upper() != "C"
-            and not stripped.upper().startswith("C ")
+            and is_active_par_line(raw)
         )
         if not is_jump_mjd:
             out_lines.append(raw)

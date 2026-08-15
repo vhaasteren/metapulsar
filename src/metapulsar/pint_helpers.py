@@ -29,6 +29,12 @@ from io import StringIO
 import re
 import numpy as np
 
+from .parfile_lines import (
+    is_active_par_line,
+    join_par_lines,
+    par_line_key,
+)
+
 # Pure PINT parameter-name/unit utilities, MetaPulsar-owned so the core
 # combination path never imports ``nltiming``; re-exported here for the rest of
 # MetaPulsar. See :mod:`metapulsar.pint_compat`.
@@ -570,10 +576,10 @@ def dedupe_nonrepeatable_par_lines(par_text: str) -> str:
     first_values: Dict[str, Optional[str]] = {}
     out_lines: List[str] = []
     for line in par_text.splitlines():
-        tokens = line.split()
-        if not tokens or line.lstrip().startswith("#") or line.startswith("C "):
+        if not is_active_par_line(line):
             out_lines.append(line)
             continue
+        tokens = line.split()
         name = tokens[0]
         canonical = _canonical(name)
         if canonical is None or name in repeatable or canonical in repeatable:
@@ -595,7 +601,7 @@ def dedupe_nonrepeatable_par_lines(par_text: str) -> str:
             f"{canonical}: first value {first_values[canonical]!r} vs "
             f"duplicate line {line.strip()!r}"
         )
-    return "\n".join(out_lines) + ("\n" if par_text.endswith("\n") else "")
+    return join_par_lines(out_lines, like=par_text)
 
 
 # ----------------------- Pulse-number helper utilities ----------------------- #
@@ -1174,13 +1180,9 @@ def align_orbital_chart(
     # first non-comment line whose leading token is PB is unambiguous.
     out_lines = par_text.splitlines()
     for index, line in enumerate(out_lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not is_active_par_line(line):
             continue
-        tokens = stripped.split()
-        if tokens[0].upper() == "C":
-            continue
-        if tokens[0].upper() == "PB":
+        if par_line_key(line) == "PB":
             prefix = line[: len(line) - len(line.lstrip())]
             out_lines[index] = f"{prefix}{'FB0':<15}{' '.join(new_tokens)}"
             break
@@ -1190,9 +1192,7 @@ def align_orbital_chart(
             f"PB line found in the text"
         )
 
-    result = "\n".join(out_lines)
-    if par_text.endswith("\n"):
-        result += "\n"
+    result = join_par_lines(out_lines, like=par_text)
 
     loguru_logger.info(
         f"PTA {pta_name!r}: aligned orbital chart to canonical FBX: "
@@ -1219,16 +1219,10 @@ def par_text_with_track_minus_2(par_text: str) -> str:
     out_lines: List[str] = []
     replaced = False
     for line in par_text.splitlines():
-        stripped = line.strip()
-        if (
-            not stripped
-            or stripped.startswith("#")
-            or stripped.upper().startswith("C ")
-        ):
+        if not is_active_par_line(line):
             out_lines.append(line)
             continue
-        first_token = stripped.split()[0]
-        if first_token.upper() == "TRACK":
+        if par_line_key(line) == "TRACK":
             prefix = line[: len(line) - len(line.lstrip())]
             out_lines.append(f"{prefix}TRACK -2")
             replaced = True
@@ -1236,10 +1230,7 @@ def par_text_with_track_minus_2(par_text: str) -> str:
             out_lines.append(line)
     if not replaced:
         out_lines.append("TRACK -2")
-    result = "\n".join(out_lines)
-    if par_text.endswith("\n"):
-        result += "\n"
-    return result
+    return join_par_lines(out_lines, like=par_text)
 
 
 @contextmanager

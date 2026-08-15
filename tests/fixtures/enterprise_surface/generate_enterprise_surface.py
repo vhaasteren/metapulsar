@@ -11,6 +11,7 @@ import argparse
 import json
 import platform
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     enterprise = _require_enterprise()
     from enterprise.pulsar import Tempo2Pulsar
     from metapulsar.metapulsar import MetaPulsar
-    from metapulsar.mockpulsar import create_mock_libstempo
+    from metapulsar.mockpulsar import create_mock_libstempo, write_mock_pta_files
 
     targets = {
         "pint_equatorial.npz": FIXTURE_DIR / "pint_equatorial.npz",
@@ -165,8 +166,15 @@ def main(argv: list[str] | None = None) -> int:
             n_toas=30, name="J1857+0943", telescope="pta_b", seed=20
         ),
     }
-    mp = MetaPulsar(pulsars, combination_strategy="per_pta")
-    _save_public_surface(targets["metapulsar_tempo2_pair.npz"], mp)
+    # The retained pars must outlive every read: MetaPulsar loads par text
+    # lazily, so keep the directory alive for the whole surface dump.
+    with tempfile.TemporaryDirectory(prefix="metapulsar_surface_") as pta_file_dir:
+        mp = MetaPulsar(
+            pulsars,
+            combination_strategy="per_pta",
+            pta_files=write_mock_pta_files(pulsars, pta_file_dir),
+        )
+        _save_public_surface(targets["metapulsar_tempo2_pair.npz"], mp)
 
     manifest = {
         "enterprise_version": enterprise.__version__,

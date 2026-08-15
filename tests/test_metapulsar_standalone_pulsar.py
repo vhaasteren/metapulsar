@@ -30,22 +30,22 @@ def _build_unsorted_mock(name: str, telescope: str, seed: int):
     return psr
 
 
-def test_metapulsar_is_standalone_pulsar():
+def test_metapulsar_is_standalone_pulsar(mock_metapulsar):
     pulsars = {
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    mp = MetaPulsar(pulsars, combination_strategy="per_pta")
+    mp = mock_metapulsar(pulsars, combination_strategy="per_pta")
 
     assert type(mp).__mro__ == (MetaPulsar, object)
 
 
-def test_metapulsar_preserves_storage_row_order_by_default():
+def test_metapulsar_preserves_storage_row_order_by_default(mock_metapulsar):
     pulsars = {
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
+    metapulsar = mock_metapulsar(pulsars, combination_strategy="per_pta")
 
     assert isinstance(metapulsar.isort, slice)
     assert metapulsar.isort == slice(None, None, None)
@@ -58,12 +58,12 @@ def test_metapulsar_preserves_storage_row_order_by_default():
     np.testing.assert_array_equal(metapulsar.Mmat, metapulsar._designmatrix)
 
 
-def test_metapulsar_surface_arrays_are_row_aligned():
+def test_metapulsar_surface_arrays_are_row_aligned(mock_metapulsar):
     pulsars = {
         "pta_a": _build_unsorted_mock("J1857+0943", "pta_a", seed=10),
         "pta_b": _build_unsorted_mock("J1857+0943", "pta_b", seed=20),
     }
-    metapulsar = MetaPulsar(pulsars, combination_strategy="per_pta")
+    metapulsar = mock_metapulsar(pulsars, combination_strategy="per_pta")
 
     ntoas = len(metapulsar._toas)
     assert len(metapulsar.toas) == ntoas

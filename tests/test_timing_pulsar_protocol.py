@@ -131,7 +131,7 @@ def test_engine_validator_rejects_design_row_mismatch(fake_timing_pulsar):
         validate_engine_against_pulsar(BadBackend(), fake_timing_pulsar)
 
 
-def _build_real_pulsar():
+def _build_real_pulsar(mock_metapulsar):
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=20, name="J1857+0943", telescope="pta_a", seed=11
@@ -140,11 +140,11 @@ def _build_real_pulsar():
             n_toas=20, name="J1857+0943", telescope="pta_b", seed=22
         ),
     }
-    return MetaPulsar(pulsars, combination_strategy="per_pta")
+    return mock_metapulsar(pulsars, combination_strategy="per_pta")
 
 
-def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip():
-    pulsar = _build_real_pulsar()
+def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip(mock_metapulsar):
+    pulsar = _build_real_pulsar(mock_metapulsar)
     assert isinstance(pulsar, TimingPulsar)
     validate_pulsar_surface(pulsar)
 
@@ -169,8 +169,8 @@ def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip():
     assert pulsar.state_id() == pulsar.state_id()
 
 
-def test_metapulsar_pint_model_and_engine_error_paths():
-    pulsar = _build_real_pulsar()
+def test_metapulsar_pint_model_and_engine_error_paths(mock_metapulsar):
+    pulsar = _build_real_pulsar(mock_metapulsar)
     model = pulsar.pint_model()
     assert model is not None
 
@@ -178,8 +178,8 @@ def test_metapulsar_pint_model_and_engine_error_paths():
     assert getattr(engine._contributions[0].engine, "engine_name") == "jug"
 
 
-def test_metapulsar_reference_theta_missing_values_raise():
-    pulsar = _build_real_pulsar()
+def test_metapulsar_reference_theta_missing_values_raise(mock_metapulsar):
+    pulsar = _build_real_pulsar(mock_metapulsar)
     pta = next(iter(pulsar._pta_data))
     pulsar._parfile_dicts[pta] = {}
     pulsar._invalidate_timing_caches()
@@ -188,8 +188,8 @@ def test_metapulsar_reference_theta_missing_values_raise():
         pulsar.timing_engine({"tempo2": "libstempo", "pint": "jug"}, linearized=True)
 
 
-def test_metapulsar_timing_engine_cache_tracks_pulsar_state():
-    pulsar = _build_real_pulsar()
+def test_metapulsar_timing_engine_cache_tracks_pulsar_state(mock_metapulsar):
+    pulsar = _build_real_pulsar(mock_metapulsar)
     native_engines = {"tempo2": "libstempo", "pint": "jug"}
     engine = pulsar.timing_engine(native_engines, linearized=True)
     token = pulsar.state_id()
@@ -234,10 +234,10 @@ def test_build_jug_session_forwards_nonlinear_params(monkeypatch, tmp_path):
     assert captured["nonlinear_params"] == "binary+"
 
 
-def test_metapulsar_timing_opens_nltiming_evaluator():
+def test_metapulsar_timing_opens_nltiming_evaluator(mock_metapulsar):
     from nltiming import TimingEvaluator
 
-    pulsar = _build_real_pulsar()
+    pulsar = _build_real_pulsar(mock_metapulsar)
     timing = pulsar.timing(
         {"tempo2": "libstempo", "pint": "jug"},
         linearized=True,
@@ -332,8 +332,8 @@ def test_public_mapping_ecc_e_enables_unsuffixed_kepler_chart():
     assert cand.engine_names == ("ECC", "OM", "T0")
 
 
-def test_filtered_pulsar_rejects_unaligned_live_timing_contributions():
-    pulsar = _build_real_pulsar()
+def test_filtered_pulsar_rejects_unaligned_live_timing_contributions(mock_metapulsar):
+    pulsar = _build_real_pulsar(mock_metapulsar)
     pulsar.filter_data(mask=np.arange(len(pulsar.toas)) % 2 == 0)
 
     assert not pulsar.can_use_engines(

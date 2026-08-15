@@ -15,8 +15,13 @@ from metapulsar.mockpulsar import create_mock_libstempo
 class TestMetaPulsarPositionAndFinalization:
     """Test class for MetaPulsar position setup and finalization functionality."""
 
-    def setup_method(self):
-        """Set up test fixtures."""
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_metapulsar):
+        """Set up test fixtures.
+
+        An autouse fixture rather than ``setup_method`` because MetaPulsar needs
+        retained pta_files, and ``mock_metapulsar`` writes them under tmp_path.
+        """
         self.pulsars = {
             "test_pta1": create_mock_libstempo(
                 n_toas=30, name="J1857+0943", telescope="test_pta1", seed=10
@@ -25,7 +30,8 @@ class TestMetaPulsarPositionAndFinalization:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.metapulsar = MetaPulsar(self.pulsars, combination_strategy="per_pta")
+        self.build = mock_metapulsar
+        self.metapulsar = mock_metapulsar(self.pulsars, combination_strategy="per_pta")
 
     def test_setup_position_and_planets_basic(self):
         """Test basic position and planetary data setup."""
@@ -67,7 +73,7 @@ class TestMetaPulsarPositionAndFinalization:
 
     def test_validate_consistency_different_pulsars(self):
         """Different catalog names fail validate_consistency()."""
-        inconsistent_mp = MetaPulsar(
+        inconsistent_mp = self.build(
             {
                 "pta1": create_mock_libstempo(
                     n_toas=10, name="J1857+0943", telescope="test_pta1", seed=1
@@ -164,7 +170,7 @@ class TestMetaPulsarPositionAndFinalization:
 
         # This should raise an AttributeError when trying to access the missing name
         with pytest.raises(AttributeError):
-            MetaPulsar({"test_pta": adapted_pulsar}, combination_strategy="per_pta")
+            self.build({"test_pta": adapted_pulsar}, combination_strategy="per_pta")
 
     def test_all_equal_helper_method(self):
         """Test the _all_equal helper method."""

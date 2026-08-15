@@ -126,7 +126,7 @@ class TestMetaPulsarFactory:
         assert len({slash, question, underscore}) == 3
         assert "/" not in slash
 
-    def test_create_metapulsar_success(self):
+    def test_create_metapulsar_success(self, mock_metapulsar):
         """Test successful MetaPulsar creation using MockLibstempo directly."""
         from metapulsar.mockpulsar import create_mock_libstempo
 
@@ -140,10 +140,8 @@ class TestMetaPulsarFactory:
         )
 
         # Create MetaPulsar with raw MockLibstempo
-        from metapulsar.metapulsar import MetaPulsar
-
         pulsars = {"test_pta": mock_psr}
-        metapulsar = MetaPulsar(pulsars=pulsars, combination_strategy="per_pta")
+        metapulsar = mock_metapulsar(pulsars, combination_strategy="per_pta")
 
         assert metapulsar is not None
         assert hasattr(metapulsar, "_pulsars")

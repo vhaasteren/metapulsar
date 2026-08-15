@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 
 from metapulsar.metapulsar import MetaPulsar
-from metapulsar.mockpulsar import create_mock_libstempo
+from metapulsar.mockpulsar import create_mock_libstempo, write_mock_pta_files
 from nltiming.nonlinear_timing_model import GaugeColumnMissingError
 
 
-def _build_mp():
+def _build_mp(directory):
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=20, name="J1857+0943", telescope="pta_a", seed=11
@@ -19,11 +19,15 @@ def _build_mp():
             n_toas=20, name="J1857+0943", telescope="pta_b", seed=22
         ),
     }
-    return MetaPulsar(pulsars, combination_strategy="per_pta")
+    return MetaPulsar(
+        pulsars,
+        combination_strategy="per_pta",
+        pta_files=write_mock_pta_files(pulsars, directory),
+    )
 
 
-def test_combined_mmat_has_one_constant_column_per_pta():
-    mp = _build_mp()
+def test_combined_mmat_has_one_constant_column_per_pta(tmp_path):
+    mp = _build_mp(tmp_path)
     gauge_names = [p for p in mp.fitpars if p == "Offset" or p.startswith("Offset_")]
     assert len(gauge_names) >= len(mp._pta_data)
     # Per-PTA layout uses suffixed offsets.
@@ -39,8 +43,8 @@ def test_combined_mmat_has_one_constant_column_per_pta():
         assert np.std(block) / max(np.mean(np.abs(block)), 1e-300) < 1e-8
 
 
-def test_remove_nonidentifiable_never_silently_drops_gauge_column():
-    mp = _build_mp()
+def test_remove_nonidentifiable_never_silently_drops_gauge_column(tmp_path):
+    mp = _build_mp(tmp_path)
     gauge_cols = [i for i, name in enumerate(mp.fitpars) if name.startswith("Offset_")]
     assert gauge_cols
     # Zero one gauge column and re-run removal + assertion: must raise, not drop.

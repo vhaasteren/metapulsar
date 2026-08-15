@@ -139,7 +139,7 @@ def test_tempo2_mock_equatorial_parity():
     _assert_record_parity(record, _load_fixture("tempo2_mock_equatorial.npz"))
 
 
-def test_metapulsar_public_surface_parity():
+def test_metapulsar_public_surface_parity(mock_metapulsar):
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta_a", seed=10
@@ -148,7 +148,7 @@ def test_metapulsar_public_surface_parity():
             n_toas=30, name="J1857+0943", telescope="pta_b", seed=20
         ),
     }
-    mp = MetaPulsar(pulsars, combination_strategy="per_pta")
+    mp = mock_metapulsar(pulsars, combination_strategy="per_pta")
     npz = _load_fixture("metapulsar_tempo2_pair.npz")
 
     assert mp.name == str(npz["name"])

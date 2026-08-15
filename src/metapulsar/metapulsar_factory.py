@@ -223,6 +223,12 @@ class MetaPulsarFactory:
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
+        This is the supported way to build a MetaPulsar: it retains the exact
+        par/tim each engine was constructed from and hands them over as
+        ``pta_files``, which MetaPulsar requires and reads every leg's par text
+        from. Constructing ``MetaPulsar(...)`` directly means supplying those
+        files yourself.
+
         Args:
             file_data: File data from FileDiscovery (should contain data for single pulsar only)
             combination_strategy: Strategy for combining PTAs:

@@ -37,6 +37,50 @@ def test_strip_and_ensure_replace_header():
     assert "PSR J0000+0000" in out
 
 
+class TestStripLeadingHeaderBlock:
+    """The whole leading MetaPulsar ``#`` block goes, extras included."""
+
+    def test_removes_product_extras_with_the_trio(self):
+        body = (
+            "# Created: old\n"
+            "# Format:  PINT\n"
+            "# By:      MetaPulsar\n"
+            "# Product: combination\n"
+            "# reference_pta: nanograv_9y\n"
+            "# alignment_policy.ephem: DE421\n"
+            "\n"
+            "PSR J0000+0000\n"
+        )
+        assert strip_metapulsar_par_header(body) == "PSR J0000+0000\n"
+
+    def test_foreign_leading_comment_is_kept(self):
+        body = "# Simple pulsar parfile for testing\nPSR J0000+0000\n"
+        assert strip_metapulsar_par_header(body) == body
+
+    def test_body_comments_survive(self):
+        body = (
+            "# Created: old\n"
+            "# Format:  PINT\n"
+            "# By:      MetaPulsar\n"
+            "PSR J0000+0000\n"
+            "\n"
+            "# MetaPulsar combination: JUMP from all PTAs\n"
+            "JUMP -pta ppta_dr2 0.0 1\n"
+        )
+        stripped = strip_metapulsar_par_header(body)
+        assert stripped.startswith("PSR J0000+0000")
+        assert "# MetaPulsar combination: JUMP from all PTAs" in stripped
+
+    def test_ensure_is_idempotent(self):
+        body = "PSR J0000+0000\n"
+        once = ensure_metapulsar_par_header(body, extra={"Product": "combination"})
+        twice = ensure_metapulsar_par_header(once, extra={"Product": "gls-optimized"})
+        assert twice.count("# Created:") == 1
+        assert twice.count("# Product:") == 1
+        assert "# Product: gls-optimized" in twice
+        assert "# Product: combination" not in twice
+
+
 def test_combination_options_include_alignment_policy():
     policy = AlignmentPolicy(unsupported="error", ephem="DE440")
     items = combination_options_header_items(

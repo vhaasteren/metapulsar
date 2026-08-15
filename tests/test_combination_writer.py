@@ -125,6 +125,40 @@ def test_write_combination_par_shape(tmp_path):
 
 
 @pytest.mark.unit
+def test_write_combination_par_drops_source_header_extras(tmp_path):
+    """A reference par that already carries a MetaPulsar header contributes none of it.
+
+    ``strip_metapulsar_par_header`` consumes the whole leading ``#`` block, so
+    the merged file's provenance is its own -- a strip regression would leak the
+    source's ``# Product:`` / ``# alignment_policy.*`` lines into the body.
+    """
+    from metapulsar.parfile_header import ensure_metapulsar_par_header
+
+    stamped_reference = ensure_metapulsar_par_header(
+        PTA_A_PAR,
+        extra={
+            "Product": "shared",
+            "reference_pta": "somewhere_else",
+            "alignment_policy.ephem": "DE421",
+        },
+    )
+    write_combination_par(
+        reference_pta="pta_a",
+        pta_par_texts={"pta_a": stamped_reference, "pta_b": PTA_B_PAR},
+        out_path=tmp_path / "X.par",
+    )
+    body = (tmp_path / "X.par").read_text()
+
+    assert body.count("# Created:") == 1
+    assert "# Product: combination" in body
+    assert "# reference_pta: pta_a" in body
+    assert "# Product: shared" not in body
+    assert "# reference_pta: somewhere_else" not in body
+    assert "# alignment_policy.ephem: DE421" not in body
+    assert "PSR J1234+5678" in body
+
+
+@pytest.mark.unit
 def test_write_combination_par_fdjumpdm_delta(tmp_path):
     pta_a = PTA_A_PAR.replace("DM 10.0", "DM 10.0")
     pta_b = PTA_B_PAR.replace("DM 10.0", "DM 10.25")

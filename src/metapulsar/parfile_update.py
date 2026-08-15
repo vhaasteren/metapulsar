@@ -10,9 +10,8 @@ Two design-matrix conventions are supported:
   heterogeneous units PINT returns (e.g. ``1/(Hz mas)``). Apply with
   :func:`apply_pint_designmatrix_deltas`, matching ``pint.fitter.WLSFitter``.
 
-GLS MPE writeback for AEI combination products goes through
-:func:`gls_update_and_write_par` so unit handling and validate/revert live in
-one place.
+GLS MPE writeback goes through :func:`gls_update_and_write_par` so unit
+handling, validate/revert and the dual-engine par write live in one place.
 """
 
 from __future__ import annotations
@@ -21,15 +20,20 @@ import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Final, Iterable, Literal, Mapping, Sequence
 
 import astropy.units as u
 import numpy as np
 
 from .parfile_header import ensure_metapulsar_par_header
-from .pint_helpers import par_text_with_track_minus_2
+from .parfile_lines import iter_active_par_lines, join_par_lines, replace_token
+from .pint_helpers import resolve_parameter_alias
 
 DeltaConvention = Literal["native", "pint_designmatrix"]
+
+
+class ParTransplantError(ValueError):
+    """A model parameter could not be matched to exactly one source par line."""
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ class ParUpdateResult:
     reverted: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
     convention: DeltaConvention = "pint_designmatrix"
+    # (name, old_token, new_token) for every line the writer actually edited.
+    changed_tokens: tuple[tuple[str, str, str], ...] = ()
 
 
 def apply_native_delta_to_param(param: Any, delta: float) -> None:
@@ -190,34 +196,232 @@ def _solve_wls(
         return np.linalg.lstsq(ata, atr, rcond=None)[0]
 
 
+# PINT stores FDJUMPs internally as ``FDpJUMPq`` and only respells them
+# ``FDJUMPp`` in ``FDJump.print_par(format="tempo2")`` -- component level, so a
+# line-level editor has to reconcile the two spellings itself (pint/models/
+# fdjump.py:66,195). Everything else goes through PINT's alias table.
+_FDJUMP_PINT_RE: Final[re.Pattern[str]] = re.compile(r"^FD(\d+)JUMP(\d+)?$", re.I)
+_FDJUMP_TEMPO2_RE: Final[re.Pattern[str]] = re.compile(r"^FDJUMP(\d+)$", re.I)
+
+
+def _normalized_par_key(name: str) -> str:
+    """Dialect-free key for one par line or PINT parameter name."""
+    match = _FDJUMP_TEMPO2_RE.match(name) or _FDJUMP_PINT_RE.match(name)
+    if match:
+        return f"FD{int(match.group(1))}JUMP"
+    return resolve_parameter_alias(name.upper()).upper()
+
+
+def _render_key_value(key_value: Any) -> str:
+    """Spell one mask key-value the way PINT's own writer does.
+
+    Mirrors ``maskParameter.as_parfile_line`` (pint/models/parameter.py:2062):
+    ``Time`` via ``time_to_mjd_string``, ``Quantity`` via its bare ``.value``,
+    everything else via ``str``. Needed because ``key_identifier``
+    (parameter.py:1866) parses ``FREQ`` into a ``Quantity`` (``str(kv)`` would
+    be ``"1400.0 MHz"``) and ``MJD`` into a ``float``.
+    """
+    from astropy.time import Time
+    from pint.pulsar_mjd import time_to_mjd_string
+
+    if isinstance(key_value, Time):
+        return time_to_mjd_string(key_value)
+    if isinstance(key_value, u.Quantity):
+        return str(key_value.value)
+    return str(key_value)
+
+
+def _key_values_match(
+    tokens: Sequence[str], key_values: Sequence[Any], key: str
+) -> bool:
+    """Compare a source line's key-value tokens against a parameter's.
+
+    By key type:
+
+    * ``MJD`` / ``FREQ`` -- numeric, compared as a **sorted multiset**, because
+      ``maskParameter.__init__`` sorts ``key_value`` (parameter.py:1895): a par
+      line reading ``JUMP MJD 56000 55000`` is stored as ``[55000.0, 56000.0]``.
+    * ``TEL`` -- PINT normalizes the code through the observatory registry
+      (``_get_observatory_name``, parameter.py:77), so ``TEL ao`` is stored as
+      ``arecibo``; compare via the same lookup, falling back to text.
+    * flags (``-pta``, ``-fe``, ``-sys``, ...) and ``NAME`` -- case-insensitive
+      text.
+    """
+    rendered = [_render_key_value(kv) for kv in key_values]
+    if len(tokens) != len(rendered):
+        return False
+
+    key_lower = str(key).lower()
+    if key_lower in ("mjd", "freq"):
+        try:
+            return sorted(float(t) for t in tokens) == sorted(
+                float(r) for r in rendered
+            )
+        except (TypeError, ValueError):
+            return False
+
+    if key_lower == "tel":
+        from pint.observatory import get_observatory
+
+        try:
+            return [get_observatory(t).name for t in tokens] == [
+                get_observatory(r).name for r in rendered
+            ]
+        except Exception:  # noqa: BLE001 - unknown code: fall through to text
+            pass
+
+    return [t.upper() for t in tokens] == [r.upper() for r in rendered]
+
+
+@dataclass(frozen=True)
+class _ParLineSlot:
+    """Where one parameter's value token sits in the source text."""
+
+    line_index: int
+    value_index: int
+
+
+def _find_par_line_slot(par_text: str, param: Any) -> _ParLineSlot:
+    """Locate the single active line that carries ``param``'s value.
+
+    Plain parameters match on the alias-resolved key alone. Mask parameters
+    (``JUMP``, ``FDJUMPn``, ``EFAC``...) must also match their key and every
+    key-value, and their value token sits at ``2 + len(key_value)``.
+
+    Zero or multiple matches raise rather than guess -- the same posture as
+    :class:`~metapulsar.file_discovery.AmbiguousFileError`.
+    """
+    name = str(getattr(param, "origin_name", None) or param.name)
+    key = _normalized_par_key(name)
+    mask_key = getattr(param, "key", None)
+    key_values = list(getattr(param, "key_value", None) or [])
+
+    hits: list[_ParLineSlot] = []
+    for index, line in iter_active_par_lines(par_text):
+        tokens = line.split()
+        if _normalized_par_key(tokens[0]) != key:
+            continue
+        if not mask_key:
+            if len(tokens) < 2:
+                continue
+            hits.append(_ParLineSlot(index, 1))
+            continue
+        value_index = 2 + len(key_values)
+        if len(tokens) <= value_index:
+            continue
+        if tokens[1].upper() != str(mask_key).upper():
+            continue
+        if not _key_values_match(tokens[2:value_index], key_values, mask_key):
+            continue
+        hits.append(_ParLineSlot(index, value_index))
+
+    if len(hits) != 1:
+        detail = f"key={key!r}"
+        if mask_key:
+            detail += f" mask={mask_key!r} key_value={key_values!r}"
+        raise ParTransplantError(
+            f"parameter {name!r} matches {len(hits)} active par lines ({detail}); "
+            "require exactly one to transplant its value"
+        )
+    return hits[0]
+
+
+def _value_token(param: Any) -> str:
+    """New value token, formatted exactly as PINT would print it."""
+    return str(param.str_quantity(param.quantity)).strip()
+
+
+def transplant_param_values(
+    par_text: str,
+    model: Any,
+    names: Iterable[str],
+) -> tuple[str, dict[str, tuple[str, str]]]:
+    """Return ``par_text`` with ``names``' value tokens taken from ``model``.
+
+    Every other byte of the source is preserved: line order, whitespace, fit
+    flags, uncertainties, and tempo2-only spelling (``FDJUMPn``, ``MODE 1``,
+    ``TZRMJD``/``TZRFRQ``/``TZRSITE``, ``TRACK -2``, ``T2CMETHOD``). That is
+    what keeps the product readable by both engines; a PINT re-serialization
+    does not.
+
+    ``names`` are PINT parameter names (``ECC``, ``FD1JUMP1``), not source
+    spellings (``E``, ``FDJUMP1``); an unknown name raises ``KeyError`` from
+    PINT's ``TimingModel.__getitem__``. :class:`ParTransplantError` is reserved
+    for line matching -- a name PINT knows but the source par does not carry, or
+    carries twice.
+
+    Parameters whose formatted token is unchanged are left untouched. That is a
+    backstop only: PINT reprints many unchanged quantities differently
+    (``0.0000216340`` -> ``2.1634e-05``), so callers must pass only parameters
+    whose *value* moved -- see :func:`gls_update_and_write_par`.
+
+    Returns ``(text, changed)`` where ``changed`` maps parameter name to
+    ``(old_token, new_token)``.
+    """
+    lines = par_text.splitlines()
+    changed: dict[str, tuple[str, str]] = {}
+    for name in names:
+        param = model[name]
+        # Resolved against the original text; line indices are stable because a
+        # splice never adds or removes lines.
+        slot = _find_par_line_slot(par_text, param)
+        line = lines[slot.line_index]
+        old_token = line.split()[slot.value_index]
+        new_token = _value_token(param)
+        if new_token == old_token:
+            continue
+        lines[slot.line_index] = replace_token(line, slot.value_index, new_token)
+        changed[str(name)] = (old_token, new_token)
+    return join_par_lines(lines, like=par_text), changed
+
+
 def write_timing_model_par(
     model: Any,
     out_par: Path,
     *,
     source_par: Path | str | None = None,
+    updated_params: Sequence[str] | None = None,
     header_extra: Mapping[str, Any] | None = None,
     header_notes: Sequence[str] | None = None,
-    preserve_track_minus_2: bool = True,
     include_info: bool = False,
-) -> Path:
-    """Write ``model`` to ``out_par`` with a MetaPulsar comment header."""
+) -> tuple[Path, dict[str, tuple[str, str]]]:
+    """Write ``model`` to ``out_par`` with a MetaPulsar comment header.
+
+    With ``source_par`` the source text is *edited*: only ``updated_params``'
+    value tokens change (:func:`transplant_param_values`), so the file keeps the
+    source's dialect -- including ``TRACK -2`` -- and stays readable by both
+    PINT and tempo2. Without a source par the model is serialized by PINT, which
+    yields a PINT-dialect file that tempo2 will open but only partly understand.
+    ``# writer:`` in the header records which path ran.
+
+    Returns ``(path, changed)``; ``changed`` is empty on the PINT-dump path.
+    """
     out_par = Path(out_par)
     out_par.parent.mkdir(parents=True, exist_ok=True)
-    model.write_parfile(str(out_par), include_info=include_info)
-    body = out_par.read_text(encoding="utf-8")
-    if preserve_track_minus_2 and source_par is not None:
-        src = Path(source_par).read_text(encoding="utf-8")
-        if re.search(r"^TRACK\s+-2\b", src, re.M) and not re.search(
-            r"^TRACK\s+-2\b", body, re.M
-        ):
-            body = par_text_with_track_minus_2(body)
+
+    if source_par is not None:
+        source_text = Path(source_par).read_text(encoding="utf-8")
+        body, changed = transplant_param_values(
+            source_text, model, list(updated_params or ())
+        )
+        writer = "transplant"
+    else:
+        model.write_parfile(str(out_par), include_info=include_info)
+        body = out_par.read_text(encoding="utf-8")
+        changed = {}
+        writer = "pint-dump"
+
+    # ``writer`` is stamped last: it records which path actually ran, so a
+    # caller's header_extra must not be able to misreport it.
+    extra = {**(dict(header_extra) if header_extra else {}), "writer": writer}
+    if source_par is not None:
+        extra.setdefault("source_par", str(source_par))
+        extra["changed_params"] = len(changed)
     body = ensure_metapulsar_par_header(
-        body,
-        extra=header_extra,
-        notes=header_notes,
+        body, format="PINT", extra=extra, notes=header_notes
     )
     out_par.write_text(body, encoding="utf-8")
-    return out_par
+    return out_par, changed
 
 
 def gls_update_and_write_par(
@@ -233,7 +437,6 @@ def gls_update_and_write_par(
     header_extra: Mapping[str, Any] | None = None,
     header_notes: Sequence[str] | None = None,
     validate: bool = True,
-    preserve_track_minus_2: bool = True,
 ) -> ParUpdateResult:
     """WLS-update free timing params from ``par``+``tim`` and write ``out_par``.
 
@@ -242,6 +445,10 @@ def gls_update_and_write_par(
 
     Pass a MetaPulsar / nltiming engine design matrix with
     ``delta_convention='native'`` to apply engine-native deltas.
+
+    The product is written by value transplant onto ``par_path``
+    (:func:`write_timing_model_par`), so it keeps that file's dialect and stays
+    readable by both engines. Only parameters whose *value* moved are spliced.
     """
     from pint.models import get_model_and_toas
     from pint.residuals import Residuals
@@ -285,16 +492,24 @@ def gls_update_and_write_par(
             )
             convention = delta_convention if delta_convention is not None else "native"
 
+        # Built once, before the empty-designmatrix return, so both products
+        # carry identical provenance.
+        extras = {
+            "Product": "gls-optimized",
+            "gls_delta_convention": convention,
+            **(dict(header_extra) if header_extra else {}),
+        }
+
         if M.size == 0 or M.ndim != 2 or not names:
-            text = par_path.read_text(encoding="utf-8")
-            out_par.parent.mkdir(parents=True, exist_ok=True)
-            out_par.write_text(
-                ensure_metapulsar_par_header(
-                    text, extra=header_extra, notes=header_notes
-                ),
-                encoding="utf-8",
+            out_path, _changed = write_timing_model_par(
+                model,
+                out_par,
+                source_par=par_path,
+                updated_params=(),
+                header_extra=extras,
+                header_notes=header_notes,
             )
-            return ParUpdateResult(path=out_par, applied={}, convention=convention)
+            return ParUpdateResult(path=out_path, applied={}, convention=convention)
 
         if M.shape[0] != res.size:
             raise RuntimeError(
@@ -351,23 +566,31 @@ def gls_update_and_write_par(
                     f"updated parameters: {final_err}; reverted={reverted}"
                 )
 
-        extras = {
-            "Product": "gls-optimized",
-            "gls_delta_convention": convention,
-            **(dict(header_extra) if header_extra else {}),
-        }
-        write_timing_model_par(
+        # Only parameters whose value actually moved are spliced: the revert
+        # sentinels must never reach the transplant, and a zero-delta free
+        # parameter would otherwise be rewritten purely cosmetically (PINT
+        # reprints 0.0000216340 as 2.1634e-05).
+        updated_names = [
+            name
+            for name in deltas
+            if name not in set(reverted) and applied[name] != before[name]
+        ]
+
+        out_path, changed = write_timing_model_par(
             model,
             out_par,
-            source_par=par_path if preserve_track_minus_2 else None,
+            source_par=par_path,
+            updated_params=updated_names,
             header_extra=extras,
             header_notes=header_notes,
-            preserve_track_minus_2=preserve_track_minus_2,
         )
         return ParUpdateResult(
-            path=out_par,
+            path=out_path,
             applied=applied,
             reverted=tuple(reverted),
             skipped=tuple(skipped),
             convention=convention,
+            changed_tokens=tuple(
+                (name, old, new) for name, (old, new) in changed.items()
+            ),
         )

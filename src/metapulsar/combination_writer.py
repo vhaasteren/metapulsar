@@ -20,6 +20,12 @@ from .parfile_header import (
     ensure_metapulsar_par_header,
     strip_metapulsar_par_header,
 )
+from .parfile_lines import (
+    is_active_par_line,
+    iter_active_par_lines,
+    join_par_lines,
+    par_line_key,
+)
 from .pint_helpers import par_text_with_track_minus_2
 from .tim_canonical import (
     _pn_occurrences,
@@ -82,12 +88,9 @@ def sanitize_fortran_exponents(text: str) -> str:
 def _first_par_decimal(par_text: str, key: str) -> Decimal:
     """Return the exact value from the first active line whose first token is key."""
     want = key.upper()
-    for line in par_text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or s.upper().startswith("C "):
-            continue
-        parts = s.split()
-        if parts and parts[0].upper() == want:
+    for _index, line in iter_active_par_lines(par_text):
+        parts = line.split()
+        if parts[0].upper() == want:
             try:
                 return Decimal(parts[1].replace("D", "E").replace("d", "E"))
             except (IndexError, InvalidOperation) as exc:
@@ -104,22 +107,16 @@ def _strip_track_lines(text: str) -> str:
     """Drop non-comment TRACK lines; preserve trailing-newline policy."""
     kept: list[str] = []
     for line in text.splitlines():
-        s = line.strip()
-        if s and not s.startswith("#") and not s.upper().startswith("C "):
-            if s.split()[0].upper() == "TRACK":
-                continue
+        if is_active_par_line(line) and par_line_key(line) == "TRACK":
+            continue
         kept.append(line)
-    result = "\n".join(kept)
-    if text.endswith("\n"):
-        result += "\n"
-    return result
+    return join_par_lines(kept, like=text)
 
 
 def _is_noise_line(line: str) -> bool:
-    s = line.strip()
-    if not s or s.startswith("#") or s.upper().startswith("C "):
+    if not is_active_par_line(line):
         return False
-    key = s.split()[0].upper()
+    key = par_line_key(line)
     if key in _NOISE_KEYS:
         return True
     # Catch TN* / RN* families without swallowing TRACK / TIMEEPH / etc.
@@ -371,9 +368,8 @@ def align_combination_tzr(
     seen: set[str] = set()
     out_lines: list[str] = []
     for line in text.splitlines():
-        s = line.strip()
-        if s and not s.startswith("#") and not s.upper().startswith("C "):
-            key = s.split()[0].upper()
+        if is_active_par_line(line):
+            key = par_line_key(line)
             if key in wanted:
                 out_lines.append(f"{key} {wanted[key]}")
                 seen.add(key)
@@ -382,8 +378,8 @@ def align_combination_tzr(
     for key, value in wanted.items():
         if key not in seen:
             out_lines.append(f"{key} {value}")
-    result = "\n".join(out_lines)
-    if text.endswith("\n") or not text:
+    result = join_par_lines(out_lines, like=text)
+    if not text:
         result += "\n"
     Path(par_path).write_text(result, encoding="utf-8")
 

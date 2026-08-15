@@ -532,4 +532,14 @@ def test_direct_construction_with_hybrid_chart_fails_loudly():
     assert "PB" in t2_psr.pars()
 
     with pytest.raises(ValueError, match=r"hybrid PB\+FBn orbital chart"):
-        MetaPulsar({"PPTA": t2_psr}, combination_strategy="per_pta")
+        MetaPulsar(
+            {"PPTA": t2_psr},
+            combination_strategy="per_pta",
+            pta_files={
+                "PPTA": {
+                    "par_path": par,
+                    "tim_path": tim,
+                    "timing_package": "tempo2",
+                }
+            },
+        )

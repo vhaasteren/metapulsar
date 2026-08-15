@@ -74,10 +74,21 @@ def _is_standard_header_line(line: str) -> bool:
 
 
 def strip_metapulsar_par_header(text: str) -> str:
-    """Remove a leading MetaPulsar Created/Format/By block (and blank gap)."""
+    """Remove a leading MetaPulsar header block (and blank gap).
+
+    Consumes the whole contiguous leading ``#`` block -- the
+    ``Created``/``Format``/``By`` trio *and* the product's own
+    ``# key: value`` extras (``# Product: combination``,
+    ``# alignment_policy.*``, ...) -- so a rewritten product never carries the
+    source product's provenance under its own header. Text whose first line is
+    not one of ours is returned unchanged, so a foreign leading comment
+    survives.
+    """
     lines = text.splitlines()
+    if not lines or not _is_standard_header_line(lines[0]):
+        return text
     i = 0
-    while i < len(lines) and _is_standard_header_line(lines[i]):
+    while i < len(lines) and lines[i].strip().startswith("#"):
         i += 1
     while i < len(lines) and not lines[i].strip():
         i += 1
@@ -95,7 +106,7 @@ def ensure_metapulsar_par_header(
     extra: Mapping[str, Any] | None = None,
     notes: Sequence[str] | None = None,
 ) -> str:
-    """Prepend a fresh MetaPulsar header, replacing any prior Created/Format/By."""
+    """Prepend a fresh MetaPulsar header, replacing any prior leading ``#`` block."""
     body = strip_metapulsar_par_header(text)
     if body and not body.endswith("\n"):
         body += "\n"

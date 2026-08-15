@@ -65,9 +65,19 @@ class MetaPulsar:
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
             add_dm_derivatives: Whether to ensure DM1, DM2 are present (shared strategy only)
+            pta_files: Required, one entry per PTA:
+                {pta: {"par_path": ..., "tim_path": ..., "timing_package": ...}}.
+                Every leg's par text is read from par_path; MetaPulsar never
+                re-serializes an engine object to recover it, so a PTA without a
+                retained par is rejected. create_metapulsar() supplies this.
             sort: Whether to sort data by time
         """
 ```
+
+`MetaPulsar` is a view over the files it is given: prefer
+[`create_metapulsar()`](#create_metapulsar), which retains the engine inputs and
+passes `pta_files` for you. Constructing it directly means supplying those files
+yourself (tests can use `metapulsar.mockpulsar.write_mock_pta_files`).
 
 ### Interactive timing evaluation
 

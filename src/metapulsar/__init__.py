@@ -63,6 +63,7 @@ from .mockpulsar import (
     MockLibstempo,
     MockParameter,
     create_mock_libstempo,
+    write_mock_pta_files,
     create_mock_timing_data,
     create_mock_flags,
     validate_mock_data,
@@ -78,9 +79,11 @@ from .parfile_header import (
     format_metapulsar_par_header,
 )
 from .parfile_update import (
+    ParTransplantError,
     ParUpdateResult,
     apply_native_deltas,
     gls_update_and_write_par,
+    transplant_param_values,
 )
 
 _TIMING_LAZY_EXPORTS = {
@@ -163,6 +166,7 @@ __all__ = [
     "MockLibstempo",
     "MockParameter",
     "create_mock_libstempo",
+    "write_mock_pta_files",
     "create_mock_timing_data",
     "create_mock_flags",
     "validate_mock_data",
@@ -172,9 +176,11 @@ __all__ = [
     "PINTDiscoveryError",
     "format_metapulsar_par_header",
     "ensure_metapulsar_par_header",
+    "ParTransplantError",
     "ParUpdateResult",
     "apply_native_deltas",
     "gls_update_and_write_par",
+    "transplant_param_values",
     # Convenience functions
     "discover_files",
     "discover_layout",

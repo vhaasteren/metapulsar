@@ -17,6 +17,7 @@ from pint.toa import TOAs
 
 # Import our supporting infrastructure
 from .parameter_manager import ParameterInconsistencyError, ParameterManager
+from .parfile_lines import iter_active_par_lines
 from .position_helpers import (
     assert_catalog_suffixes_compatible,
     bj_name_from_pulsar,
@@ -120,7 +121,20 @@ class MetaPulsar:
                 Defaults to ("DM",) so each PTA keeps its own reference DM while
                 shared dispersion still shares DM1/DM2. Pass an empty list to
                 merge all parameters in selected components.
+            pta_files: **Required, one entry per PTA in ``pulsars``:**
+                ``{pta: {"par_path": ..., "tim_path": ..., "timing_package": ...}}``.
+                MetaPulsar reads every leg's par text from ``par_path`` and never
+                re-serializes an engine object to recover it, so a PTA without a
+                retained par is rejected here rather than silently answered from
+                a different document. ``create_metapulsar()`` retains the engine
+                inputs and passes this for you; mock-backed tests can build it
+                with :func:`metapulsar.mockpulsar.write_mock_pta_files`. Only an
+                empty ``pulsars`` map may omit it.
             sort: Whether to sort data by time
+
+        Raises:
+            ValueError: If ``pta_files`` is missing an entry for any PTA, or an
+                entry lacks ``par_path`` / ``tim_path`` / ``timing_package``.
         """
         self._pulsars = pulsars
         self.combination_strategy = normalize_combination_strategy(combination_strategy)
@@ -132,7 +146,7 @@ class MetaPulsar:
         # Retained per-PTA par/tim must be available before reference-theta lookup:
         # pulse-number tracking uses temporary TRACK -2 par paths that are deleted
         # after libstempo construction.
-        self._pta_files = self._normalize_pta_files(pta_files)
+        self._pta_files = self._normalize_pta_files(pta_files, pulsars)
         self._parfile_dicts = self._get_parfile_data(pulsars)
         self._clock_dir = None if clock_dir is None else Path(clock_dir)
         self._sort = sort
@@ -175,11 +189,44 @@ class MetaPulsar:
     @staticmethod
     def _normalize_pta_files(
         pta_files: dict[str, dict] | None,
+        pulsars: Mapping[str, Any],
     ) -> dict[str, PtaFiles]:
-        if pta_files is None:
-            return {}
+        """Normalize ``pta_files``, requiring one entry per PTA.
+
+        MetaPulsar is a view over files it was given: par text is read from
+        them, never re-serialized out of an engine object (see
+        :meth:`_parfile_content_for_pta`). A PTA with no retained par has no
+        authority to answer "what is this PTA's par?", so construction fails
+        here rather than silently falling back to a different document.
+        """
+        entries = dict(pta_files or {})
+        missing = [name for name in pulsars if name not in entries]
+        if missing:
+            raise ValueError(
+                "MetaPulsar requires pta_files for every PTA; missing: "
+                f"{sorted(missing)}. Build through create_metapulsar(), which "
+                "retains the engine inputs, or pass "
+                "{'<pta>': {'par_path': ..., 'tim_path': ..., "
+                "'timing_package': ...}} explicitly."
+            )
+        extra = [name for name in entries if name not in pulsars]
+        if extra:
+            raise ValueError(
+                f"pta_files has entries for PTAs absent from pulsars: {sorted(extra)}; "
+                "the two must describe the same set of PTAs."
+            )
         normalized: dict[str, PtaFiles] = {}
-        for pta_name, files in pta_files.items():
+        for pta_name, files in entries.items():
+            absent = [
+                key
+                for key in ("par_path", "tim_path", "timing_package")
+                if key not in files
+            ]
+            if absent:
+                raise ValueError(
+                    f"pta_files[{pta_name!r}] is missing {sorted(absent)}; each "
+                    "entry needs par_path, tim_path and timing_package."
+                )
             normalized[pta_name] = PtaFiles(
                 par_path=Path(files["par_path"]),
                 tim_path=Path(files["tim_path"]),
@@ -279,69 +326,24 @@ class MetaPulsar:
         g = groupby(iterable)
         return next(g, True) and not next(g, False)
 
-    def _get_libstempo_parfile_content(self, lt_psr):
-        """Get parfile content as string from libstempo pulsar object.
-
-        Args:
-            lt_psr: libstempo tempopulsar object
-
-        Returns:
-            str: Parfile content as string
-        """
-        import tempfile
-        import os
-
-        # Create temporary file for libstempo to write to
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".par", delete=False
-        ) as temp_file:
-            temp_parfile = temp_file.name
-
-        try:
-            # Use libstempo's savepar method to write parfile content
-            lt_psr.savepar(temp_parfile)
-
-            # Read the content back
-            with open(temp_parfile, "r") as f:
-                return f.read()
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_parfile):
-                os.unlink(temp_parfile)
-
     def _setup_parameters(self):
         """Setup parameter management using existing infrastructure."""
-        # Get both PINT models and libstempo pulsars from the unpacked data
         pint_models, _, lt_pulsars = self._unpack_pulsar_data()
 
-        # Convert individual merge flags to combine_components list
-        # Use combine_components from constructor
-        combine_components = self.combine_components
-
-        # Create file data for ParameterManager
+        # One source per PTA: the retained session par, for both engines
+        # (:meth:`_parfile_content_for_pta`).
         file_data = {}
-
-        # Handle PINT models
-        for pta_name, model in pint_models.items():
+        for pta_name in list(pint_models) + list(lt_pulsars):
             file_data[pta_name] = {
                 "par": None,
-                "par_content": model.as_parfile(),
-                "timing_package": "pint",
-            }
-
-        # Handle libstempo pulsars
-        for pta_name, lt_psr in lt_pulsars.items():
-            parfile_content = self._get_libstempo_parfile_content(lt_psr)
-            file_data[pta_name] = {
-                "par": None,
-                "par_content": parfile_content,
-                "timing_package": "tempo2",
+                "par_content": self._parfile_content_for_pta(pta_name),
+                "timing_package": "pint" if pta_name in pint_models else "tempo2",
             }
 
         # Create ParameterManager for parameter mapping
         parameter_manager = ParameterManager(
             file_data=file_data,
-            combine_components=combine_components,
+            combine_components=self.combine_components,
             add_dm_derivatives=self.add_dm_derivatives,
             exclude_from_shared=self.exclude_from_shared,
         )
@@ -673,66 +675,41 @@ class MetaPulsar:
         self._pos = ref_record._pos
 
     def _parfile_content_for_pta(self, pta_name: str) -> str:
-        """Return canonical parfile content for one PTA.
+        """Return the retained par text for one PTA.
 
-        Priority:
-        1. Pulsar-retained per-PTA par file (exact runtime input, possibly TRACK-modified)
-        2. In-memory PINT model as_parfile()
-        3. libstempo savepar() dump
+        The retained file is the *only* answer: it is the exact input the engine
+        was built from, so every derived view (parameter mapping, exact-string
+        lookup, reference metadata) describes the same par. Re-serializing an
+        engine object instead -- PINT ``as_parfile()`` or libstempo
+        ``savepar()`` -- yields a different document (reordered, dialect-shifted,
+        and in tempo2's case with a recomputed ``TZRMJD`` that can be ``-nan``),
+        which is how one MetaPulsar ended up holding two disagreeing notions of
+        its own par.
         """
-        pta_file = getattr(self, "_pta_files", {}).get(pta_name)
-        if pta_file is not None and pta_file.par_path.is_file():
-            return pta_file.par_path.read_text(encoding="utf-8")
-
-        source = self._pulsars.get(pta_name)
-        if isinstance(source, tuple) and len(source) == 2:
-            model = source[0]
-            if isinstance(model, TimingModel):
-                return model.as_parfile()
-        if source is not None:
-            # Test doubles and legacy callers may surface dict-like par metadata
-            # via ``pulsar.parfile``; normalize that into valid parfile text.
-            parfile_attr = getattr(source, "parfile", None)
-            if isinstance(parfile_attr, dict):
-                from .pint_helpers import dict_to_parfile_string
-
-                return dict_to_parfile_string(parfile_attr, format="pint")
-            if isinstance(parfile_attr, str):
-                if "\n" in parfile_attr or parfile_attr.lstrip().startswith("PSR"):
-                    return parfile_attr
-                par_path = Path(parfile_attr)
-                if par_path.is_file():
-                    return par_path.read_text(encoding="utf-8")
-            return self._get_libstempo_parfile_content(source)
-
-        raise KeyError(f"No PTA source available for {pta_name!r}")
+        pta_file = self._pta_files.get(pta_name)
+        if pta_file is None:
+            raise KeyError(
+                f"No retained par file for PTA {pta_name!r}; MetaPulsar requires "
+                "pta_files for every PTA (see MetaPulsar.__init__)"
+            )
+        if not pta_file.par_path.is_file():
+            raise FileNotFoundError(
+                f"Retained par file for PTA {pta_name!r} is missing: "
+                f"{pta_file.par_path}"
+            )
+        return pta_file.par_path.read_text(encoding="utf-8")
 
     def _get_parfile_data(self, pulsars):
-        """Extract per-PTA parfile dictionaries for reference-theta lookup.
+        """Per-PTA parfile dictionaries, parsed from the retained pars.
 
-        This uses ``_parfile_content_for_pta`` as the single source of truth for
-        non-PINT engines, so retained per-PTA par files (e.g. TRACK-modified
-        pulse-number tracking inputs) are preferred over transient object paths.
+        Same single source as :meth:`_parfile_content_for_pta`, including for
+        PINT legs: the engine's in-memory model is a re-serialization of this
+        file, not an independent authority.
         """
         from .pint_helpers import create_pint_model
 
-        if not hasattr(self, "_pulsars") or not self._pulsars:
-            self._pulsars = pulsars
-
         parfile_dicts = {}
-        for pta_name, pulsar in pulsars.items():
-            if isinstance(pulsar, tuple) and len(pulsar) == 2:
-                # PINT tuple (model, toas) - preserve direct metadata extraction.
-                model, _ = pulsar
-                parfile_dicts[pta_name] = model.get_params_dict()
-                continue
-
-            par_attr = getattr(pulsar, "parfile", None)
-            if isinstance(par_attr, dict):
-                # Test doubles and legacy paths may expose dict-like metadata.
-                parfile_dicts[pta_name] = par_attr
-                continue
-
+        for pta_name in pulsars:
             par_content = self._parfile_content_for_pta(pta_name)
             try:
                 parfile_dicts[pta_name] = create_pint_model(
@@ -741,7 +718,7 @@ class MetaPulsar:
             except Exception as exc:
                 raise ValueError(
                     "Failed to extract parfile metadata for "
-                    f"pta={pta_name!r} from canonical par content: {exc}"
+                    f"pta={pta_name!r} from retained par content: {exc}"
                 ) from exc
         return parfile_dicts
 
@@ -897,17 +874,8 @@ class MetaPulsar:
         mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
         content = self._parfile_content_for_pta(pta_name)
         matches: list[str] = []
-        for line in content.splitlines():
-            stripped = line.lstrip()
-            if not stripped:
-                continue
-            if stripped.startswith("#"):
-                continue
-            if stripped.upper().startswith("C ") or stripped.upper() == "C":
-                continue
-            tokens = stripped.split()
-            if not tokens:
-                continue
+        for _index, line in iter_active_par_lines(content):
+            tokens = line.split()
             if tokens[0].upper() != str(mapped_name).upper():
                 continue
             if len(tokens) < 2:

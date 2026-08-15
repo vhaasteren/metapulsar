@@ -208,7 +208,7 @@ class TestCoordinateBasedDiscovery:
         assert len(pulsar_info["test_data_release2"]) > 0
 
     def test_create_metapulsar_with_canonical_name(
-        self, mock_file_discovery, mock_file_system
+        self, mock_file_discovery, mock_file_system, mock_metapulsar
     ):
         """Test MetaPulsar creation includes canonical name."""
         from metapulsar.mockpulsar import create_mock_libstempo
@@ -231,8 +231,8 @@ class TestCoordinateBasedDiscovery:
                 seed=20,
             ),
         }
-        metapulsar = MetaPulsar(
-            pulsars=adapted_pulsars,
+        metapulsar = mock_metapulsar(
+            adapted_pulsars,
             combination_strategy="per_pta",
         )
 

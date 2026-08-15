@@ -3,20 +3,19 @@
 import numpy as np
 import pytest
 
-from metapulsar.metapulsar import MetaPulsar
 from metapulsar.mockpulsar import create_mock_libstempo
 
 
 class TestMockLibstempoMetaPulsarIntegration:
     @pytest.fixture
-    def two_pta_metapulsar(self):
+    def two_pta_metapulsar(self, mock_metapulsar):
         mock_lt1 = create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta1", seed=10
         )
         mock_lt2 = create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta2", seed=20
         )
-        return MetaPulsar(
+        return mock_metapulsar(
             {"pta1": mock_lt1, "pta2": mock_lt2},
             combination_strategy="per_pta",
         )
@@ -47,14 +46,14 @@ class TestMockLibstempoMetaPulsarIntegration:
         assert np.all(mp._flags["pta_dataset"][:30] == "pta1")
         assert np.all(mp._flags["pta_dataset"][30:] == "pta2")
 
-    def test_shared_strategy(self):
+    def test_shared_strategy(self, mock_metapulsar):
         mock_lt1 = create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta1", seed=10
         )
         mock_lt2 = create_mock_libstempo(
             n_toas=30, name="J1857+0943", telescope="pta2", seed=20
         )
-        mp = MetaPulsar(
+        mp = mock_metapulsar(
             {"pta1": mock_lt1, "pta2": mock_lt2},
             combination_strategy="shared",
         )

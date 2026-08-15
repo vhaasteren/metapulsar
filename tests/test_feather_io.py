@@ -12,7 +12,7 @@ import pytest
 
 from metapulsar.feather_io import read_pulsar_feather, save_pulsar_feather
 from metapulsar.metapulsar import MetaPulsar
-from metapulsar.mockpulsar import create_mock_libstempo
+from metapulsar.mockpulsar import create_mock_libstempo, write_mock_pta_files
 
 
 def _minimal_duck(*, n: int = 5, npar: int = 3, name: str = "J0000+0000"):
@@ -44,7 +44,7 @@ def _minimal_duck(*, n: int = 5, npar: int = 3, name: str = "J0000+0000"):
     )
 
 
-def _build_metapulsar(*, n_toas: int = 20) -> MetaPulsar:
+def _build_metapulsar(directory, *, n_toas: int = 20) -> MetaPulsar:
     pulsars = {
         "pta_a": create_mock_libstempo(
             n_toas=n_toas, name="J1857+0943", telescope="pta_a", seed=11
@@ -53,7 +53,11 @@ def _build_metapulsar(*, n_toas: int = 20) -> MetaPulsar:
             n_toas=n_toas, name="J1857+0943", telescope="pta_b", seed=22
         ),
     }
-    return MetaPulsar(pulsars, combination_strategy="per_pta")
+    return MetaPulsar(
+        pulsars,
+        combination_strategy="per_pta",
+        pta_files=write_mock_pta_files(pulsars, directory),
+    )
 
 
 def test_feather_io_round_trip_minimal_duck(tmp_path):
@@ -97,7 +101,7 @@ def test_feather_io_mmat_column_index_ordering(tmp_path):
 
 
 def test_metapulsar_to_feather_round_trip(tmp_path):
-    mp = _build_metapulsar()
+    mp = _build_metapulsar(tmp_path / "pta_files")
     path = tmp_path / "mp.feather"
     mp.to_feather(path)
 
@@ -119,8 +123,8 @@ def test_metapulsar_to_feather_round_trip(tmp_path):
     assert out.dm == pytest.approx(mp.dm)
 
 
-def test_metapulsar_dm_lazy_and_cache_invalidation():
-    mp = _build_metapulsar()
+def test_metapulsar_dm_lazy_and_cache_invalidation(tmp_path):
+    mp = _build_metapulsar(tmp_path / "pta_files")
     assert mp._dispersion_metadata_ready is False
     dm = mp.dm
     assert mp._dispersion_metadata_ready is True
@@ -133,7 +137,7 @@ def test_metapulsar_dm_lazy_and_cache_invalidation():
 
 def test_to_feather_survives_unavailable_dispersion_metadata(tmp_path):
     """dm/dmx are best effort: a broken reference model must not lose the snapshot."""
-    mp = _build_metapulsar()
+    mp = _build_metapulsar(tmp_path / "pta_files")
 
     def _unparseable():
         raise ValueError("PINT cannot parse retained par content")
@@ -153,7 +157,7 @@ def test_to_feather_survives_unavailable_dispersion_metadata(tmp_path):
 
 def test_discovery_feather_round_trip(tmp_path):
     discovery = pytest.importorskip("discovery")
-    mp = _build_metapulsar()
+    mp = _build_metapulsar(tmp_path / "pta_files")
     path = tmp_path / "discovery.feather"
     mp.to_feather(path)
 
@@ -169,7 +173,7 @@ def test_enterprise_feather_round_trip(tmp_path):
     pytest.importorskip("enterprise")
     from enterprise.pulsar import FeatherPulsar
 
-    mp = _build_metapulsar()
+    mp = _build_metapulsar(tmp_path / "pta_files")
     path = tmp_path / "enterprise.feather"
     mp.to_feather(path)
 

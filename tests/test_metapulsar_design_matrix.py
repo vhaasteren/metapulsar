@@ -11,7 +11,10 @@ from metapulsar.pint_helpers import resolve_parameter_alias
 class TestMetaPulsarDesignMatrix:
     """Design matrix behavior using MockLibstempo -> Enterprise pipeline."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_metapulsar):
+        """An autouse fixture rather than ``setup_method``: MetaPulsar needs
+        retained pta_files, which ``mock_metapulsar`` writes under tmp_path."""
         self.pulsars = {
             "test_pta1": create_mock_libstempo(
                 n_toas=30, name="J1857+0943", telescope="test_pta1", seed=10
@@ -20,8 +23,12 @@ class TestMetaPulsarDesignMatrix:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.composite_mp = MetaPulsar(self.pulsars, combination_strategy="per_pta")
-        self.consistent_mp = MetaPulsar(self.pulsars, combination_strategy="shared")
+        self.composite_mp = mock_metapulsar(
+            self.pulsars, combination_strategy="per_pta"
+        )
+        self.consistent_mp = mock_metapulsar(
+            self.pulsars, combination_strategy="shared"
+        )
 
     def test_design_matrix_creation(self):
         """Test that design matrix is created correctly for both strategies."""

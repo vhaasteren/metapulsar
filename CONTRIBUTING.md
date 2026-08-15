@@ -146,12 +146,19 @@ Use `MockLibstempo` for testing timing-object integration:
 ```python
 from metapulsar.mockpulsar import create_mock_libstempo
 
-def test_metapulsar_creation():
-    """Test MetaPulsar creation with MockLibstempo."""
+def test_metapulsar_creation(mock_metapulsar):
+    """Test MetaPulsar creation with MockLibstempo.
+
+    MetaPulsar requires `pta_files` for every PTA -- it reads each leg's par
+    text from that file and never re-serializes an engine object. The
+    `mock_metapulsar` fixture (tests/conftest.py) writes the mocks' own pars
+    under tmp_path and passes them; `mockpulsar.write_mock_pta_files()` does the
+    same outside a pytest fixture.
+    """
     mock_lt = create_mock_libstempo(
         n_toas=100, name="J1857+0943", telescope="test", seed=42
     )
-    metapulsar = MetaPulsar({"test": mock_lt})
+    metapulsar = mock_metapulsar({"test": mock_lt})
     assert len(metapulsar._toas) == 100
 ```
 

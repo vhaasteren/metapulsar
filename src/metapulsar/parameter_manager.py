@@ -23,6 +23,7 @@ from pint.models.model_builder import parse_parfile
 from pint.models.timing_model import TimingModel
 from pint.models.binary_ell1 import BinaryELL1H
 
+from .parfile_lines import iter_active_par_lines
 from .pint_helpers import (
     Ell1hShapiroMode,
     resolve_parameter_alias,
@@ -867,14 +868,7 @@ class ParameterManager:
     @staticmethod
     def _iter_active_par_lines(content: str):
         """Yield non-comment active parfile lines (tempo2 ``C `` / ``#`` skipped)."""
-        for line in content.splitlines():
-            stripped = line.lstrip()
-            if not stripped:
-                continue
-            if stripped.startswith("#"):
-                continue
-            if stripped.upper().startswith("C ") or stripped.upper() == "C":
-                continue
+        for _index, line in iter_active_par_lines(content):
             yield line
 
     @classmethod

@@ -25,7 +25,10 @@ pytest.importorskip("nltiming")
 pytest.importorskip("metapulsar")
 
 from metapulsar.metapulsar import MetaPulsar  # noqa: E402
-from metapulsar.mockpulsar import create_mock_libstempo  # noqa: E402
+from metapulsar.mockpulsar import (  # noqa: E402
+    create_mock_libstempo,
+    write_mock_pta_files,
+)
 from nltiming.bijectors import PriorBijector  # noqa: E402
 from nltiming.space import ParameterSpace  # noqa: E402
 
@@ -36,11 +39,16 @@ ENGINES = {"tempo2": "libstempo", "pint": "jug"}
 
 
 @pytest.fixture(scope="module")
-def pulsar():
+def pulsar(tmp_path_factory):
     psr = create_mock_libstempo(
         n_toas=200, name="J1857+0943", telescope="pta_a", seed=11
     )
-    return MetaPulsar({"pta_a": psr}, combination_strategy="per_pta")
+    pulsars = {"pta_a": psr}
+    return MetaPulsar(
+        pulsars,
+        combination_strategy="per_pta",
+        pta_files=write_mock_pta_files(pulsars, tmp_path_factory.mktemp("pta_files")),
+    )
 
 
 def _plan(fitpars, sampled):

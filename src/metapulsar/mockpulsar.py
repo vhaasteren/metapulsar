@@ -351,6 +351,42 @@ def create_mock_libstempo(
     )
 
 
+def write_mock_pta_files(pulsars, directory):
+    """Materialize ``pta_files`` for mock pulsars, one par/tim pair per PTA.
+
+    :class:`~metapulsar.metapulsar.MetaPulsar` reads every PTA's par from the
+    file it was handed and never re-serializes an engine object, so mock-backed
+    construction has to put the mock's own par on disk first. The ``.tim`` is a
+    ``FORMAT 1`` stub: mocks carry their TOAs in memory, and nothing reads it
+    back for a mock leg.
+
+    Args:
+        pulsars: ``{pta_name: MockLibstempo}``
+        directory: Destination directory (created if absent).
+
+    Returns:
+        ``{pta_name: {"par_path": ..., "tim_path": ..., "timing_package": ...}}``,
+        ready to pass as ``MetaPulsar(pta_files=...)``.
+    """
+    from pathlib import Path
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    pta_files = {}
+    for pta_name, pulsar in pulsars.items():
+        par_path = directory / f"{pta_name}.par"
+        tim_path = directory / f"{pta_name}.tim"
+        pulsar.savepar(str(par_path))
+        tim_path.write_text("FORMAT 1\n", encoding="utf-8")
+        pta_files[pta_name] = {
+            "par_path": par_path,
+            "tim_path": tim_path,
+            "timing_package": "tempo2",
+        }
+    return pta_files
+
+
 def validate_mock_data(toas, residuals, errors, freqs, flags=None):
     n_toas = len(toas)
     if len(residuals) != n_toas:

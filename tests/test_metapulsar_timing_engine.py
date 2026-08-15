@@ -22,7 +22,10 @@ def _par_text(*, px: str = "0.5123456789012345", dm: str = "13.299") -> str:
         "PMRA -2.5644 1\n"
         "PMDEC -5.0575 1\n"
         f"PX {px} 1\n"
-        f"DM {dm}\n"
+        # DM carries its fit flag: parameter mapping reads these retained pars
+        # (not the mock's savepar dump), so a frozen DM would never become a
+        # PTA-specific fitparameter.
+        f"DM {dm} 1\n"
         "POSEPOCH 55000\n"
         "DMEPOCH 55000\n"
         "UNITS TDB\n"
