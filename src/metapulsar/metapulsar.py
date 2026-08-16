@@ -1368,11 +1368,18 @@ class MetaPulsar:
                     name: self._native_param(name, pta_name).pint_name
                     for name in pta_fitpars
                 }
+                # A Vela leg is PINT-native, so the leg's own (model, toas)
+                # pair spares pyvela's empty-mask sweep a second TOA read.
+                source = self._pulsars.get(pta_name)
+                mask_reference = (
+                    source if isinstance(source, tuple) and len(source) == 2 else None
+                )
                 engine = VelaEngine.from_files(
                     files.par_path,
                     files.tim_path,
                     linear_model=linear_model,
                     param_mapping=session_mapping,
+                    mask_reference=mask_reference,
                 )
             elif family == "pint":
                 source = self._pulsars[pta_name]

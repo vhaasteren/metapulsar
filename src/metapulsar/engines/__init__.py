@@ -26,7 +26,7 @@ from .delta import (
 from .jug import JugEngine, LinearizedJugEngine, verify_jug_native_chain
 from .pint import LinearizedPintEngine, PintEngine
 from .tempo2 import LinearizedLibstempoEngine, LibstempoEngine
-from .vela import VelaDeltaEngine, VelaEngine
+from .vela import EmptyMaskParameterError, VelaDeltaEngine, VelaEngine
 
 
 def build_engine(*, fitpars, nrows, contributions, design_matrix=None):
@@ -63,4 +63,5 @@ __all__ = [
     "verify_jug_native_chain",
     "VelaDeltaEngine",
     "VelaEngine",
+    "EmptyMaskParameterError",
 ]

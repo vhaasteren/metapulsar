@@ -253,6 +253,37 @@ class TestPublicMappingRendersParKey:
         )
 
 
+class TestNltimingAcceptsTheRenderedMapping:
+    """The consumer side of the par-spelling contract.
+
+    ``nltiming.selection`` compares a host fitpar against the mapping's native
+    value. The combined host keys FDJUMP columns by the PINT attribute while
+    the mapping renders the par spelling, so only the shared FDJUMP fold sees
+    them as one coefficient -- PINT cannot alias ``FDpJUMPq`` <-> ``FDJUMPp_q``.
+    """
+
+    def test_fitpar_suffix_accepts_combined_fdjump_columns(self):
+        from nltiming.selection import validated_parameter_mapping_view
+
+        result = _combined_fitparameters()
+        pulsar = _bare_pulsar(result.fitparameters)
+
+        # Total validation over every fitpar: this is the gate for_pulsar hits.
+        view = validated_parameter_mapping_view(pulsar, tuple(pulsar.fitpars))
+        assert view.mapping["FD1JUMP1_combined"] == {"combined": "FDJUMP1"}
+
+    def test_selectors_reach_the_combined_fdjump_columns(self):
+        from nltiming.selection import match_fitpars
+
+        result = _combined_fitparameters()
+        pulsar = _bare_pulsar(result.fitparameters)
+        fitpars = tuple(pulsar.fitpars)
+
+        # Instance stays specific across the spelling fold.
+        assert match_fitpars(pulsar, "FDJUMP1", fitpars) == ("FD1JUMP1_combined",)
+        assert match_fitpars(pulsar, "FD2JUMP1", fitpars) == ("FD2JUMP1_combined",)
+
+
 # ===== D5: per-family engine override spelling =====
 
 

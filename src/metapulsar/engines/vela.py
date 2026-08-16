@@ -25,18 +25,141 @@ from nltiming.engine_support import LinearModel, is_exact_linear_param
 from .delta import _is_zero_delta
 
 
-def _ensure_par_uncertainties(par_file) -> Path:
-    """Return a par file where every fitted parameter carries an uncertainty.
+class EmptyMaskParameterError(ValueError):
+    """A *fitted* mask parameter selects no TOAs, so it has no design column."""
 
-    pyvela refuses to construct an ``SPNTA`` when a fitted parameter lacks a
-    frequentist uncertainty (it cannot build its default cheat prior). The
-    engine only evaluates residuals — priors never enter — so fitted lines
-    missing an uncertainty get a placeholder one in a patched temp copy.
+
+def _normalized_key_value(value) -> float | str:
+    """Put a raw par token and a parsed PINT key value on equal footing.
+
+    PINT parses ``MJD``/``FREQ`` key values to numbers (a ``Quantity`` for
+    ``FREQ``) and sorts them, so the par text ``56160`` and the parsed
+    ``56160.0`` are the same selector written two ways.
+    """
+    value = getattr(value, "value", value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value).lower()
+
+
+def _mask_signature(key, key_values) -> tuple[str, tuple]:
+    """Selector identity of a mask parameter: its key and its key values."""
+    normalized = sorted((_normalized_key_value(v) for v in key_values), key=repr)
+    return (str(key).lower(), tuple(normalized))
+
+
+def _empty_jump_masks(model, toas):
+    """Split JUMPs that select no TOA into ``(frozen, fitted)``."""
+    component = model.components.get("PhaseJump")
+    if component is None:
+        return [], []
+    frozen, fitted = [], []
+    for param in component.get_jump_param_objects():
+        if param.key is None:
+            continue
+        if len(param.select_toa_mask(toas)):
+            continue
+        (frozen if param.frozen else fitted).append(param)
+    return frozen, fitted
+
+
+def _is_jump_line(line: str) -> bool:
+    tokens = line.split()
+    return bool(tokens) and tokens[0].upper() == "JUMP"
+
+
+def _line_matches_signature(tokens, signature) -> bool:
+    key, values = signature
+    end = 2 + len(values)
+    if len(tokens) < end:
+        return False
+    return _mask_signature(tokens[1], tokens[2:end]) == signature
+
+
+def _strip_empty_frozen_jumps(lines, model, toas) -> tuple[list[str], bool]:
+    """Drop par lines for frozen JUMPs that select no TOA.
+
+    ``pyvela.model.read_mask`` asserts that every mask parameter selects at
+    least one TOA. Release pars carry leftover backend flag JUMPs (PPTA-style
+    keys surviving into IPTA/AEI combined products, including flags named for
+    another pulsar) that match nothing in the combined TOA set; tempo2 accepts
+    them and they contribute nothing to residuals. A frozen empty JUMP is
+    therefore dropped, while a *fitted* one is a real model error — it would
+    be an all-zero design column — and raises.
+    """
+    frozen, fitted = _empty_jump_masks(model, toas)
+    if fitted:
+        raise EmptyMaskParameterError(
+            "fitted JUMP parameters select no TOAs, so they carry no design "
+            f"column: {sorted(p.name for p in fitted)}. Freeze or remove them "
+            "in the par file."
+        )
+    if not frozen:
+        return list(lines), False
+
+    wanted = {_mask_signature(p.key, p.key_value) for p in frozen}
+    kept: list[str] = []
+    matched: set[tuple[str, tuple]] = set()
+    for line in lines:
+        tokens = line.split()
+        if _is_jump_line(line):
+            hit = next((s for s in wanted if _line_matches_signature(tokens, s)), None)
+            if hit is not None:
+                matched.add(hit)
+                continue
+        kept.append(line)
+    if matched != wanted:
+        missed = sorted(str(s) for s in wanted - matched)
+        raise EmptyMaskParameterError(
+            "could not locate par lines for empty frozen JUMP selectors "
+            f"{missed}; refusing to hand pyvela a par it will reject"
+        )
+    return kept, True
+
+
+def _load_mask_reference(par_file, tim_file):
+    """Load the ``(model, toas)`` pair needed to evaluate TOA masks."""
+    from pint.models import get_model_and_toas
+
+    return get_model_and_toas(
+        str(par_file),
+        str(tim_file),
+        planets=False,
+        allow_T2=True,
+        allow_tcb=True,
+        add_tzr_to_model=False,
+    )
+
+
+def _prepare_par_for_spnta(par_file, tim_file, *, mask_reference=None) -> Path:
+    """Return a par file pyvela's ``SPNTA`` can ingest.
+
+    Two pyvela ingestion constraints are shimmed here, both no-ops for the
+    residual deltas this engine evaluates:
+
+    * a fitted parameter with no frequentist uncertainty leaves pyvela unable
+      to build its default cheat prior (priors never enter this engine), so
+      such lines get a placeholder uncertainty;
+    * frozen mask parameters selecting zero TOAs abort ``read_mask``, so empty
+      frozen JUMPs are dropped (see :func:`_strip_empty_frozen_jumps`).
+
+    ``mask_reference`` is an optional pre-loaded ``(TimingModel, TOAs)`` pair
+    for the same files — MetaPulsar's PINT legs already hold one, which saves
+    re-reading the TOAs just to evaluate masks. Only JUMPs are swept; other
+    mask families (EFAC, ECORR, DMJUMP) still surface pyvela's own assertion.
     """
     par_file = Path(par_file)
     lines = par_file.read_text().splitlines()
-    patched: list[str] = []
     changed = False
+
+    if any(_is_jump_line(line) for line in lines):
+        if mask_reference is None:
+            mask_reference = _load_mask_reference(par_file, tim_file)
+        model, toas = mask_reference
+        lines, changed = _strip_empty_frozen_jumps(lines, model, toas)
+
+    patched: list[str] = []
     for line in lines:
         tokens = line.split()
         if len(tokens) == 3 and tokens[2] == "1":
@@ -209,13 +332,20 @@ class VelaEngine:
         phase_mean_mode: str | None = None,
         weights: np.ndarray | None = None,
         spnta_kwargs: Mapping[str, Any] | None = None,
+        mask_reference: tuple[Any, Any] | None = None,
     ) -> "VelaEngine":
-        """Build a native Velan engine directly from par/tim files."""
+        """Build a native Velan engine directly from par/tim files.
+
+        ``mask_reference`` is an optional ``(TimingModel, TOAs)`` pair already
+        loaded from these same files; it only serves the empty-mask sweep in
+        :func:`_prepare_par_for_spnta`, which otherwise re-reads the TOAs.
+        """
         from pyvela import SPNTA
 
         kwargs: dict[str, Any] = {"center_epochs": False, "check": False}
         kwargs.update(dict(spnta_kwargs or {}))
-        spnta = SPNTA(str(_ensure_par_uncertainties(par_file)), str(tim_file), **kwargs)
+        par = _prepare_par_for_spnta(par_file, tim_file, mask_reference=mask_reference)
+        spnta = SPNTA(str(par), str(tim_file), **kwargs)
         return cls.from_contribution(
             spnta,
             linear_model=linear_model,
