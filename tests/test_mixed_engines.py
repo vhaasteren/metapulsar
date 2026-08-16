@@ -3,6 +3,7 @@
 import numpy as np
 
 from metapulsar.metapulsar import MetaPulsar, PtaFiles
+from metapulsar.pint_helpers import NativeParam
 from metapulsar.engines import PulsarTimingEngine
 
 
@@ -28,7 +29,9 @@ def test_metapulsar_routes_engines_by_native_compatibility(tmp_path):
         "epta": PtaFiles(par_path=par, tim_path=tim, timing_package="tempo2"),
         "ng9": PtaFiles(par_path=par, tim_path=tim, timing_package="pint"),
     }
-    pulsar._fitparameters = {"F0": {"epta": "F0", "ng9": "F0"}}
+    pulsar._fitparameters = {
+        "F0": {"epta": NativeParam("F0", "F0"), "ng9": NativeParam("F0", "F0")}
+    }
     pulsar.fitpars = ["F0"]
     pulsar._parfile_dicts = {"epta": {"F0": "1.0"}, "ng9": {"F0": "1.0"}}
     pulsar._designmatrix = np.ones((4, 1), dtype=float)

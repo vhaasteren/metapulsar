@@ -14,8 +14,11 @@ from metapulsar.pint_helpers import (
     canonicalize_fdjump_name,
     fdjump_aliases,
     resolve_fit_column_name,
+    resolve_native_source_name,
     resolve_parameter_alias,
     resolve_parfile_parameter_name,
+    NativeParam,
+    ParameterSourceMappingError,
     PINTDiscoveryError,
 )
 
@@ -159,6 +162,80 @@ class TestFdjumpFitColumnNames:
         assert "FD1JUMP1" in aliases
         assert "FDJUMP1" in aliases
         assert "FDJUMP1_1" in aliases
+
+
+class TestNativeParam:
+    """A fit column's two native spellings, with the one-parameter invariant."""
+
+    def test_identity_folds_both_fdjump_spellings(self):
+        native = NativeParam(pint_name="FD1JUMP1", par_key="FDJUMP1")
+        assert native.identity == "FDJUMP1_1"
+        assert native.pint_name == "FD1JUMP1"
+        assert native.par_key == "FDJUMP1"
+
+    def test_identity_of_identical_spellings(self):
+        assert NativeParam("Offset", "Offset").identity == resolve_fit_column_name(
+            "Offset"
+        )
+        assert NativeParam("F0", "F0").identity == "F0"
+
+    def test_aliased_pairs_construct(self):
+        assert NativeParam("ECC", "E").identity == "ECC"
+        assert NativeParam("A1DOT", "XDOT").identity == "A1DOT"
+        assert NativeParam("EDOT", "ECCDOT").identity == "EDOT"
+        assert NativeParam("RAJ", "RA").identity == "RAJ"
+
+    def test_mismatched_spellings_raise_at_construction(self):
+        """The invariant is enforced by the type, not hoped for by callers."""
+        with pytest.raises(ValueError, match="denote different parameters"):
+            NativeParam(pint_name="FD1JUMP1", par_key="FDJUMP2")
+        with pytest.raises(ValueError, match="denote different parameters"):
+            NativeParam(pint_name="ECC", par_key="XDOT")
+
+    def test_suffixed_host_key_never_folds(self):
+        """Host keys cannot fold, so a bare fallback record stays inert."""
+        native = NativeParam("FD1JUMP1_combined", "FD1JUMP1_combined")
+        assert native.identity == "FD1JUMP1_combined"
+
+
+class TestResolveNativeSourceName:
+    """Identity-based resolution against a foreign list of spellings."""
+
+    def test_resolves_across_fdjump_conventions(self):
+        assert resolve_native_source_name("FDJUMP1", {"FD1JUMP1"}) == "FD1JUMP1"
+        assert resolve_native_source_name("FD1JUMP1", {"FDJUMP1"}) == "FDJUMP1"
+
+    def test_unique_hit_among_distinct_identities(self):
+        source = ["FD1JUMP1", "FD2JUMP1"]
+        assert resolve_native_source_name("FD1JUMP1", source) == "FD1JUMP1"
+        assert resolve_native_source_name("FD2JUMP1", source) == "FD2JUMP1"
+
+    def test_wrong_instance_raises_rather_than_matching_some_fdjump(self):
+        with pytest.raises(ParameterSourceMappingError):
+            resolve_native_source_name("FD1JUMP2", {"FDJUMP1"})
+        # J0613's second exponent: FDJUMP1 must not match FD2JUMP1.
+        with pytest.raises(ParameterSourceMappingError):
+            resolve_native_source_name("FDJUMP1", {"FD2JUMP1"})
+
+    def test_two_spellings_of_one_identity_always_raise(self):
+        """Even with an exact string hit present: the source is defective."""
+        with pytest.raises(ParameterSourceMappingError, match="more than once"):
+            resolve_native_source_name("FDJUMP1", ["FDJUMP1", "FD1JUMP1"])
+
+    def test_missing_raises_or_returns_none(self):
+        with pytest.raises(ParameterSourceMappingError, match="no match"):
+            resolve_native_source_name("F0", {"F1"})
+        assert resolve_native_source_name("F0", {"F1"}, required=False) is None
+
+    def test_error_names_role_and_candidates(self):
+        with pytest.raises(ParameterSourceMappingError) as excinfo:
+            resolve_native_source_name("F0", {"F1"}, role="JUG session")
+        message = str(excinfo.value)
+        assert "JUG session" in message and "F0" in message and "F1" in message
+
+    def test_ordinary_aliases_resolve(self):
+        assert resolve_native_source_name("ECCDOT", {"EDOT"}) == "EDOT"
+        assert resolve_native_source_name("RA", {"RAJ"}) == "RAJ"
 
 
 #

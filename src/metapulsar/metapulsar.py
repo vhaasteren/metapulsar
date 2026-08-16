@@ -18,6 +18,12 @@ from pint.toa import TOAs
 # Import our supporting infrastructure
 from .parameter_manager import ParameterInconsistencyError, ParameterManager
 from .parfile_lines import iter_active_par_lines
+from .pint_helpers import (
+    NativeParam,
+    ParameterSourceMappingError,
+    resolve_fit_column_name,
+    resolve_native_source_name,
+)
 from .position_helpers import (
     assert_catalog_suffixes_compatible,
     bj_name_from_pulsar,
@@ -361,8 +367,6 @@ class MetaPulsar:
 
     def _setup_canonical_parameters(self):
         """Setup canonical parameter lists for each PTA timing record."""
-        from .pint_helpers import resolve_fit_column_name
-
         for pta_name, record in self._pta_data.items():
             record.fitpars_canonical = [
                 resolve_fit_column_name(name) for name in record.fitpars
@@ -384,17 +388,15 @@ class MetaPulsar:
         ``MetaPulsar(...)`` directly with pre-built engine objects instead of
         ``create_metapulsar()``.
         """
-        from .pint_helpers import resolve_fit_column_name, resolve_parameter_alias
-
         for meta_param, owners in self._fitparameters.items():
-            for pta_name, provisional in owners.items():
+            for pta_name, native in owners.items():
                 record = self._pta_data.get(pta_name)
                 if record is None or not record.fitpars_canonical:
                     continue
-                if resolve_fit_column_name(provisional) in record.fitpars_canonical:
+                if native.identity in record.fitpars_canonical:
                     continue
                 hint = ""
-                if resolve_parameter_alias(provisional).upper().startswith("FB"):
+                if native.identity.upper().startswith("FB"):
                     hint = (
                         " This is the hybrid PB+FBn orbital chart: the par must "
                         "be aligned to FB0 before the engine is built. Construct "
@@ -403,7 +405,8 @@ class MetaPulsar:
                     )
                 raise ValueError(
                     f"PTA {pta_name!r} has no PTA fit column for meta "
-                    f"parameter {meta_param!r} (mapped name {provisional!r}); "
+                    f"parameter {meta_param!r} (pint_name={native.pint_name!r} "
+                    f"par_key={native.par_key!r} identity={native.identity!r}); "
                     f"available fitpars={list(record.fitpars)!r}.{hint}"
                 )
 
@@ -598,15 +601,9 @@ class MetaPulsar:
             timing_package = self._get_timing_package(record)
             dm = record._designmatrix
             if full_parname in self._fitparameters:
-                for mapped_pta, mapped_param in self._fitparameters[
-                    full_parname
-                ].items():
+                for mapped_pta, native in self._fitparameters[full_parname].items():
                     if mapped_pta == pta:
-                        from .pint_helpers import resolve_fit_column_name
-
-                        par_idx = record.fitpars_canonical.index(
-                            resolve_fit_column_name(mapped_param)
-                        )
+                        par_idx = record.fitpars_canonical.index(native.identity)
                         column[slice_obj] = dm[:, par_idx]
                         break
 
@@ -769,6 +766,17 @@ class MetaPulsar:
             raise ValueError("No PTA sessions are available on this MetaPulsar")
         return next(iter(self._pta_data.keys()))
 
+    def _native_param(self, name: str, pta_name: str) -> NativeParam:
+        """Typed native record for one host fit column on one PTA leg.
+
+        Falls back to ``NativeParam(name, name)`` when the host key is absent,
+        preserving today's permissive behaviour for hand-built pulsars. The
+        fallback deliberately uses the *host key*, not a native stem: a
+        suffixed host key cannot fold, so a bare fallback stays inert.
+        """
+        native = self._fitparameters.get(name, {}).get(pta_name)
+        return native if native is not None else NativeParam(name, name)
+
     @staticmethod
     def _stringify_par_value(value) -> str:
         """Convert parfile values to stable decimal-like strings when possible."""
@@ -798,30 +806,30 @@ class MetaPulsar:
         *,
         pta_name: str,
         name: str,
+        native: NativeParam,
         par_source: dict,
         pint_model,
     ) -> str:
-        """Resolve one fitpar exact string from a dict and/or PINT model."""
-        from .pint_helpers import resolve_parameter_alias
+        """Resolve one fitpar exact string from a PINT-keyed dict and/or model.
 
-        mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
-        if mapped_name in par_source:
-            return self._stringify_par_value(par_source[mapped_name])
-        alias = resolve_parameter_alias(mapped_name)
-        if alias in par_source:
-            return self._stringify_par_value(par_source[alias])
-        if pint_model is not None and hasattr(pint_model, alias):
-            param = getattr(pint_model, alias)
+        Both sources are PINT-keyed -- ``_parfile_dicts`` holds
+        ``create_pint_model(retained par).get_params_dict()`` and the retained
+        model is that same model -- so ``native.pint_name`` is a direct key and
+        no alias resolution happens to *find* a value. Check order puts value
+        sources before the ``Offset``/``PHOFF`` zero so a real ``PHOFF`` wins.
+        """
+        if native.pint_name in par_source:
+            return self._stringify_par_value(par_source[native.pint_name])
+        if pint_model is not None and hasattr(pint_model, native.pint_name):
+            param = getattr(pint_model, native.pint_name)
             return self._stringify_par_value(getattr(param, "value", param))
-        if pint_model is not None and hasattr(pint_model, mapped_name):
-            param = getattr(pint_model, mapped_name)
-            return self._stringify_par_value(getattr(param, "value", param))
-        if mapped_name.lower() in {"offset", "phoff"}:
+        if native.identity.lower() in {"offset", "phoff"}:
             return "0.0"
         raise ValueError(
             "Missing reference theta for "
-            f"pta={pta_name!r}, canonical_fitpar={name!r}, "
-            f"mapped_fitpar={mapped_name!r}"
+            f"pta={pta_name!r}, fitpar={name!r}, pint_name={native.pint_name!r}, "
+            f"par_key={native.par_key!r}, identity={native.identity!r}; "
+            f"free params in source: {sorted(par_source)!r}"
         )
 
     def _local_theta_exact(
@@ -834,27 +842,22 @@ class MetaPulsar:
         consume the same bytes. PTA-specific parameters keep the construction-
         time ``_parfile_dicts`` / model-metadata path.
         """
-        from .pint_helpers import create_pint_model
-
+        native = self._native_param(name, pta_name)
         if from_retained:
-            pint_model = self._retained_pint_model(pta_name)
             return self._lookup_theta_exact_from_sources(
                 pta_name=pta_name,
                 name=name,
+                native=native,
                 par_source={},
-                pint_model=pint_model,
+                pint_model=self._retained_pint_model(pta_name),
             )
 
-        par_source = self._parfile_dicts.get(pta_name, {})
-        pint_model = None
-        if not isinstance(par_source, dict):
-            pint_model = create_pint_model(self._parfile_content_for_pta(pta_name))
-            par_source = {}
         return self._lookup_theta_exact_from_sources(
             pta_name=pta_name,
             name=name,
-            par_source=par_source,
-            pint_model=pint_model,
+            native=native,
+            par_source=self._parfile_dicts.get(pta_name, {}),
+            pint_model=None,
         )
 
     def _shared_theta_source(self, name: str) -> str:
@@ -869,25 +872,48 @@ class MetaPulsar:
         """Raw value token for one fitpar from one PTA's retained par content.
 
         Parses ``self._parfile_content_for_pta(pta_name)`` — never
-        ``_parfile_dicts``, which may predate harmonization.
+        ``_parfile_dicts``, which may predate harmonization. Par first tokens
+        are a genuinely foreign spelling, so lines are matched by *identity*
+        rather than by string equality with either stored spelling: a retained
+        document whose spelling drifted (``ECC``/``E`` after harmonization)
+        still resolves.
+
+        Precondition: this serves shared parameters only
+        (``_validate_shared_retained_tokens`` is its sole caller), and the
+        default ``combine_components`` (astrometry, spindown, binary,
+        dispersion) contains no mask/prefix instances, so first-token identity
+        is sufficient. A custom ``combine_components`` that shared ``fdjump``
+        could put two same-exponent, different-mask lines here; that fails
+        loud below rather than returning a wrong token.
         """
-        mapped_name = self._fitparameters.get(name, {}).get(pta_name, name)
+        native = self._native_param(name, pta_name)
         content = self._parfile_content_for_pta(pta_name)
         matches: list[str] = []
+        first_tokens: list[str] = []
         for _index, line in iter_active_par_lines(content):
             tokens = line.split()
-            if tokens[0].upper() != str(mapped_name).upper():
+            first_tokens.append(tokens[0])
+            # ``.upper()`` keeps today's case-insensitive token match: the
+            # FDJUMP regexes are re.I but PINT's alias table is not.
+            if resolve_fit_column_name(tokens[0].upper()) != native.identity:
                 continue
             if len(tokens) < 2:
                 raise ParameterInconsistencyError(
                     f"PTA {pta_name!r} retained par has parameter "
-                    f"{mapped_name!r} with no value token"
+                    f"{tokens[0]!r} with no value token"
                 )
             matches.append(tokens[1])
-        if len(matches) != 1:
+        if not matches:
+            raise ParameterSourceMappingError(
+                f"PTA {pta_name!r} retained par has no active line for fitpar "
+                f"{name!r} (pint_name={native.pint_name!r}, "
+                f"par_key={native.par_key!r}, identity={native.identity!r}); "
+                f"active first tokens={first_tokens!r}"
+            )
+        if len(matches) > 1:
             raise ParameterInconsistencyError(
                 f"PTA {pta_name!r} retained par has {len(matches)} active "
-                f"lines for mapped key {mapped_name!r} (canonical "
+                f"lines matching identity {native.identity!r} (fitpar "
                 f"{name!r}); require exactly one"
             )
         return matches[0]
@@ -898,7 +924,8 @@ class MetaPulsar:
         tokens = {pta: self._retained_value_token(pta, name) for pta in owners}
         if len(set(tokens.values())) > 1:
             detail = ", ".join(
-                f"{pta} ({owners[pta]}): {token!r}" for pta, token in tokens.items()
+                f"{pta} ({owners[pta].par_key}): {token!r}"
+                for pta, token in tokens.items()
             )
             raise ParameterInconsistencyError(
                 f"Shared parameter '{name}' has inconsistent retained par "
@@ -1000,12 +1027,23 @@ class MetaPulsar:
         save_pulsar_feather(self, filename, noisedict=noisedict)
 
     def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
-        """Return canonical fitpars mapped to their per-PTA parameter names.
+        """Return canonical fitpars mapped to their per-PTA retained-par spellings.
 
-        The returned dictionaries are copies so interactive timing clients can
+        The value is ``NativeParam.par_key`` — how *this PTA's retained par*
+        spells the parameter. ``nltiming.selection`` matches user selections
+        against these values (its ``ECC``/``E`` grouping depends on the par
+        spelling), so this rendering is part of the public contract.
+
+        The returned dictionaries are fresh so interactive timing clients can
         inspect provenance without mutating the pulsar's canonical mapping.
         """
-        return {name: dict(self._fitparameters.get(name, {})) for name in self.fitpars}
+        return {
+            name: {
+                pta: native.par_key
+                for pta, native in self._fitparameters.get(name, {}).items()
+            }
+            for name in self.fitpars
+        }
 
     def timing(self, engines="jug", **engine_kwargs):
         """Open an immutable, engine-independent timing evaluator.
@@ -1323,8 +1361,11 @@ class MetaPulsar:
                 from .engines.vela import VelaEngine
 
                 files = self._pta_files[pta_name]
+                # SPNTA's param_names are PINT-format, so the PINT spelling is
+                # what a Vela session can match; forwarding the par keyword
+                # silently dropped aliased columns (XDOT, E, RA) to exact-linear.
                 session_mapping = {
-                    name: self._fitparameters.get(name, {}).get(pta_name, name)
+                    name: self._native_param(name, pta_name).pint_name
                     for name in pta_fitpars
                 }
                 engine = VelaEngine.from_files(
@@ -1343,8 +1384,10 @@ class MetaPulsar:
                     linear_model=linear_model,
                 )
             elif family == "tempo2":
+                # tempo2 remembers the spelling it parsed, which is the
+                # retained par keyword.
                 session_mapping = {
-                    name: self._fitparameters.get(name, {}).get(pta_name, name)
+                    name: self._native_param(name, pta_name).par_key
                     for name in pta_fitpars
                 }
                 engine = LibstempoEngine.from_contribution(
@@ -1375,10 +1418,22 @@ class MetaPulsar:
                         tempo2_jug_options=resolved_options,
                         context=f"PTA {pta_name!r}",
                     )
-                session_mapping = {
-                    name: self._fitparameters.get(name, {}).get(pta_name, name)
-                    for name in pta_fitpars
-                }
+                # Never guess a live engine's spelling: resolve each column
+                # against the session's own parameter names by identity (JUG
+                # ids are literally the identity form). Unmatched columns are
+                # omitted, fail ``validate_fit_param``, and become
+                # exact-linear -- the same outcome as Vela.
+                session_param_names = tuple(getattr(jug_session, "params", {}).keys())
+                session_mapping = {}
+                for name in pta_fitpars:
+                    resolved = resolve_native_source_name(
+                        self._native_param(name, pta_name).pint_name,
+                        session_param_names,
+                        role=f"JUG session for PTA {pta_name!r}",
+                        required=False,
+                    )
+                    if resolved is not None:
+                        session_mapping[name] = resolved
                 # Pass through timing_engine(subtract_tzr=...); previously the
                 # JugEngine default (True) silently ignored this kwarg.
                 engine = JugEngine.from_contribution(

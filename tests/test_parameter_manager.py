@@ -22,7 +22,9 @@ from metapulsar.parameter_manager import (
     ParameterMapping,
 )
 from metapulsar.pint_helpers import (
+    NativeParam,
     get_parameters_by_type_from_models,
+    resolve_fit_column_name,
     resolve_parameter_alias,
 )
 from tests.helpers import make_tim_metadata
@@ -35,13 +37,17 @@ def _assert_total_coherent_fitparameters(fitparameters):
     """Every emitted fitpar satisfies exactly one merged-or-local mapping state."""
     for fitpar, owners in fitparameters.items():
         assert isinstance(owners, dict) and owners, fitpar
-        assert all(
-            isinstance(pta, str) and pta and isinstance(native, str) and native
-            for pta, native in owners.items()
-        ), (fitpar, owners)
+        for pta, native in owners.items():
+            assert isinstance(pta, str) and pta, (fitpar, owners)
+            assert isinstance(native, NativeParam), (fitpar, owners)
+            assert isinstance(native.pint_name, str) and native.pint_name
+            assert isinstance(native.par_key, str) and native.par_key
+            # The D2 invariant: both spellings denote the same parameter.
+            assert native.identity == resolve_fit_column_name(native.par_key)
         canonical = resolve_parameter_alias(fitpar)
         if all(
-            resolve_parameter_alias(native) == canonical for native in owners.values()
+            resolve_parameter_alias(native.pint_name) == canonical
+            for native in owners.values()
         ):
             continue
         assert len(owners) == 1, (fitpar, owners)
@@ -49,7 +55,9 @@ def _assert_total_coherent_fitparameters(fitparameters):
         suffix = f"_{pta}"
         assert fitpar.endswith(suffix), (fitpar, owners)
         stem = fitpar[: -len(suffix)]
-        assert resolve_parameter_alias(stem) == resolve_parameter_alias(native), (
+        assert resolve_parameter_alias(stem) == resolve_parameter_alias(
+            native.pint_name
+        ), (
             fitpar,
             owners,
         )
@@ -262,34 +270,41 @@ UNITS TDB
         """Test adding merged parameter to dictionary."""
         fitparameters = {}
 
-        parameter_manager._add_merged_parameter("F0", "EPTA", "F0", fitparameters)
+        parameter_manager._add_merged_parameter(
+            "F0", "EPTA", NativeParam("F0", "F0"), fitparameters
+        )
 
         assert "F0" in fitparameters
-        assert fitparameters["F0"]["EPTA"] == "F0"
+        assert fitparameters["F0"]["EPTA"] == NativeParam("F0", "F0")
 
     def test_add_pta_specific_parameter(self, parameter_manager):
         """Test adding PTA-specific parameter to dictionary."""
         setparameters = {}
 
         parameter_manager._add_pta_specific_parameter(
-            "DM", "EPTA", "DM", "DM", setparameters
+            "EPTA", "DM", NativeParam("DM", "DM"), setparameters
         )
 
         assert "DM_EPTA" in setparameters
-        assert setparameters["DM_EPTA"]["EPTA"] == "DM"
+        assert setparameters["DM_EPTA"]["EPTA"].par_key == "DM"
 
     def test_add_pta_specific_parameter_meta_key_differs_from_mapped_value(
         self, parameter_manager
     ):
-        """Meta key suffix uses PINT name; mapped value uses parfile-native spelling."""
+        """Meta key suffix uses PINT name; the record keeps both native spellings."""
         setparameters = {}
 
         parameter_manager._add_pta_specific_parameter(
-            "A1DOT", "epta", "A1DOT", "XDOT", setparameters
+            "epta",
+            "A1DOT",
+            NativeParam(pint_name="A1DOT", par_key="XDOT"),
+            setparameters,
         )
 
         assert "A1DOT_epta" in setparameters
-        assert setparameters["A1DOT_epta"]["epta"] == "XDOT"
+        assert setparameters["A1DOT_epta"]["epta"] == NativeParam(
+            pint_name="A1DOT", par_key="XDOT"
+        )
 
     def test_validate_parameter_consistency(self, parameter_manager):
         """Test parameter consistency validation."""
@@ -486,7 +501,8 @@ UNITS TDB
         )
         result = pm.build_parameter_mappings()
         assert "A1DOT" in result.fitparameters
-        assert result.fitparameters["A1DOT"]["epta"] == "XDOT"
+        assert result.fitparameters["A1DOT"]["epta"].par_key == "XDOT"
+        assert result.fitparameters["A1DOT"]["epta"].pint_name == "A1DOT"
         _assert_total_coherent_fitparameters(result.fitparameters)
 
     def test_build_parameter_mappings_native_e_under_canonical_ecc(self):
@@ -515,7 +531,11 @@ UNITS TDB
             combine_components=["binary"],
         )
         result = pm.build_parameter_mappings()
-        assert result.fitparameters["ECC"] == {"ng9": "E"}
+        # Producer-side twin of the public ``mapping["ECC"] == {"ng9": "E"}``
+        # pin: the par keyword is what timing_parameter_mapping() renders.
+        assert set(result.fitparameters["ECC"]) == {"ng9"}
+        assert result.fitparameters["ECC"]["ng9"].par_key == "E"
+        assert result.fitparameters["ECC"]["ng9"].pint_name == "ECC"
         _assert_total_coherent_fitparameters(result.fitparameters)
 
     # ===== ERROR HANDLING TESTS =====

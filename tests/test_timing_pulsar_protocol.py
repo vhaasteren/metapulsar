@@ -258,7 +258,10 @@ def test_metapulsar_timing_opens_nltiming_evaluator(mock_metapulsar):
     assert timing.parameters.names == tuple(pulsar.fitpars)
     assert timing.reference_exact == timing.engine.reference_theta_exact()
     assert timing.pulsar.timing_parameter_mapping() == {
-        name: dict(pulsar._fitparameters[name]) for name in pulsar.fitpars
+        name: {
+            pta: native.par_key for pta, native in pulsar._fitparameters[name].items()
+        }
+        for name in pulsar.fitpars
     }
 
 
@@ -387,7 +390,8 @@ def test_libstempo_engine_uses_xdot_param_mapping_from_parameter_manager():
     }
     pm = ParameterManager(file_data=file_data, combine_components=["binary"])
     mapping = pm.build_parameter_mappings()
-    param_mapping = {"A1DOT": mapping.fitparameters["A1DOT"]["epta"]}
+    # The tempo2 family keeps the par spelling (D5).
+    param_mapping = {"A1DOT": mapping.fitparameters["A1DOT"]["epta"].par_key}
     assert param_mapping == {"A1DOT": "XDOT"}
 
     class XdotPulsar:

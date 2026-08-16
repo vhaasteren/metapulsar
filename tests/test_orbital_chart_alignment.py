@@ -433,7 +433,7 @@ def test_every_case_from_the_failure_map_now_builds(ptas, strategy, reference):
         assert "FB0" in mp._pta_data[pta].fitpars
         assert "PB" not in mp._pta_data[pta].fitpars
     meta = next(k for k in mp.fitpars if k == "FB0" or k.startswith("FB0_"))
-    assert all(v == "FB0" for v in mp._fitparameters[meta].values())
+    assert all(v.par_key == "FB0" for v in mp._fitparameters[meta].values())
     col = mp._designmatrix[:, mp.fitpars.index(meta)]
     assert np.isfinite(col).all() and np.abs(col).sum() > 0.0
     assert np.isfinite(mp._residuals).all()

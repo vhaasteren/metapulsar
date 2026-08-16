@@ -26,6 +26,7 @@ from pint.models.binary_ell1 import BinaryELL1H
 from .parfile_lines import iter_active_par_lines
 from .pint_helpers import (
     Ell1hShapiroMode,
+    NativeParam,
     resolve_parameter_alias,
     resolve_parfile_parameter_name,
     get_aliases_for_parameter,
@@ -2240,11 +2241,12 @@ class ParameterManager:
             # Neither Enterprise nor PINT report that parameter that is
             # typically sneakily fit for
             if "PHOFF" not in model.params:
+                offset = NativeParam(pint_name="Offset", par_key="Offset")
                 self._add_pta_specific_parameter(
-                    "PHOFF", pta_name, "Offset", "Offset", fitparameters
+                    pta_name, "Offset", offset, fitparameters
                 )
                 self._add_pta_specific_parameter(
-                    "PHOFF", pta_name, "Offset", "Offset", setparameters
+                    pta_name, "Offset", offset, setparameters
                 )
 
         return fitparameters, setparameters
@@ -2289,38 +2291,45 @@ class ParameterManager:
                 parfile_dict,
                 fallback=param_name,
             )
+            # Both native spellings are in hand here -- the PINT model attribute
+            # and the retained-par keyword -- so store both instead of picking one.
+            native = NativeParam(pint_name=param_name, par_key=mapped_name)
 
             # Check if this parameter should be merged
             if param_name in mergeable_params:
                 # Add as merged parameter - will fail if not available across PTAs
                 self._add_merged_parameter(
-                    canonical_name, pta_name, mapped_name, target_dict
+                    canonical_name, pta_name, native, target_dict
                 )
             else:
                 # Parameter not mergeable (detector-specific), make it PTA-specific
                 self._add_pta_specific_parameter(
-                    canonical_name, pta_name, param_name, mapped_name, target_dict
+                    pta_name, param_name, native, target_dict
                 )
 
     def _add_merged_parameter(
-        self, meta_parname: str, pta_name: str, param_name: str, target_dict: Dict
-    ) -> None:
-        """Add a merged parameter to target dictionary."""
-        if meta_parname not in target_dict:
-            target_dict[meta_parname] = {}
-        target_dict[meta_parname][pta_name] = param_name
-
-    def _add_pta_specific_parameter(
         self,
         meta_parname: str,
         pta_name: str,
-        meta_param_name: str,
-        mapped_param_name: str,
+        native: NativeParam,
         target_dict: Dict,
     ) -> None:
-        """Add a PTA-specific parameter to target dictionary."""
-        full_parname = f"{meta_param_name}_{pta_name}"
-        target_dict[full_parname] = {pta_name: mapped_param_name}
+        """Add a merged parameter to target dictionary."""
+        target_dict.setdefault(meta_parname, {})[pta_name] = native
+
+    def _add_pta_specific_parameter(
+        self,
+        pta_name: str,
+        host_base: str,
+        native: NativeParam,
+        target_dict: Dict,
+    ) -> None:
+        """Add a PTA-specific parameter to target dictionary.
+
+        The host key is ``{host_base}_{pta_name}``, where ``host_base`` is the
+        PINT model name (never the chart identity).
+        """
+        target_dict[f"{host_base}_{pta_name}"] = {pta_name: native}
 
     def _validate_parameter_consistency(
         self, fitparameters: Dict, setparameters: Dict
@@ -2483,12 +2492,18 @@ class ParameterManager:
 
 
 class ParameterMapping:
-    """Data class for parameter mapping results."""
+    """Data class for parameter mapping results.
+
+    ``fitparameters`` / ``setparameters`` map a host key (canonical name for
+    merged parameters, ``{pint_name}_{pta}`` for PTA-specific ones) to
+    ``{pta_name: NativeParam}``: both native spellings of that column on that
+    leg, so each consumer reads the field its source is keyed by.
+    """
 
     def __init__(
         self,
-        fitparameters: Dict,
-        setparameters: Dict,
+        fitparameters: Dict[str, Dict[str, NativeParam]],
+        setparameters: Dict[str, Dict[str, NativeParam]],
         merged_parameters: List[str],
         pta_specific_parameters: List[str],
     ):

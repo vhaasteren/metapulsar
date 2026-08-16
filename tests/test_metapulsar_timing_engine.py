@@ -134,7 +134,7 @@ def test_post_harmonization_corruption_raises_before_engine(tmp_path):
     shared = "PX"
     owners = list(pulsar._fitparameters[shared])
     victim = owners[-1]
-    mapped = pulsar._fitparameters[shared][victim]
+    mapped = pulsar._fitparameters[shared][victim].par_key
     par_path = pulsar._pta_files[victim].par_path
     text = par_path.read_text(encoding="utf-8")
     lines = []

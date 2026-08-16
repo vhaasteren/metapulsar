@@ -6,6 +6,7 @@ for parameter discovery, alias resolution, and model validation.
 
 from typing import (
     Dict,
+    Iterable,
     List,
     Tuple,
     Any,
@@ -15,6 +16,7 @@ from typing import (
     Optional,
     TYPE_CHECKING,
 )
+from dataclasses import dataclass
 from pint.models import TimingModel
 from pint.models.model_builder import parse_parfile
 from pint.models.parameter import Parameter
@@ -115,6 +117,91 @@ def resolve_parfile_parameter_name(
     if fallback is not None:
         return fallback
     return canonical_name
+
+
+@dataclass(frozen=True)
+class NativeParam:
+    """Both native spellings of one fit/set column for one PTA leg.
+
+    ``pint_name`` is the PINT ``TimingModel`` attribute (PINT is the SSOT;
+    every leg has a PINT model). ``par_key`` is the first token of the
+    retained par line -- the spelling tempo2 parsed. ``identity`` is the
+    engine-neutral chart id; it is the only sanctioned comparison key.
+
+    The one place a fit column has three names is combined PINT FDJUMP, where
+    PINT cannot register ``FDJUMPp`` <-> ``FDpJUMP`` as an alias: the par says
+    ``FDJUMP1``, the PINT model attribute is ``FD1JUMP1``, and the chart id is
+    ``FDJUMP1_1``. Consumers read the field their source is keyed by rather
+    than guessing which spelling a lone string was.
+    """
+
+    pint_name: str
+    par_key: str
+
+    def __post_init__(self) -> None:
+        if resolve_fit_column_name(self.pint_name) != resolve_fit_column_name(
+            self.par_key
+        ):
+            raise ValueError(
+                f"NativeParam spellings denote different parameters: "
+                f"pint_name={self.pint_name!r} folds to "
+                f"{resolve_fit_column_name(self.pint_name)!r}, "
+                f"par_key={self.par_key!r} folds to "
+                f"{resolve_fit_column_name(self.par_key)!r}"
+            )
+
+    @property
+    def identity(self) -> str:
+        """Engine-neutral chart id -- the only sanctioned comparison key."""
+        return resolve_fit_column_name(self.pint_name)
+
+
+class ParameterSourceMappingError(ValueError):
+    """A parameter name could not be uniquely mapped onto a source's spellings."""
+
+
+def resolve_native_source_name(
+    query: str,
+    source_names: Iterable[str],
+    *,
+    role: str = "source",
+    required: bool = True,
+) -> Optional[str]:
+    """Return the unique name in ``source_names`` denoting the same parameter.
+
+    Comparison is by identity (:func:`resolve_fit_column_name`); ``query``
+    must be a native stem, never a suffixed host key (host keys cannot fold,
+    so they can only ever exact-match -- safe by construction, but callers
+    must not rely on it).
+
+    The full source is always scanned; an exact string match is just the
+    common case of the unique hit, never a shortcut. Two or more hits raise
+    even when one of them is an exact string match -- a source that spells one
+    parameter twice is defective (JUG refuses such pars outright), and no
+    tie-break may paper over it. Zero hits raise when ``required``, else
+    return ``None``.
+    """
+    identity = resolve_fit_column_name(query)
+    candidates = tuple(source_names)  # may be a one-shot iterable
+    matches = [
+        candidate
+        for candidate in candidates
+        if resolve_fit_column_name(candidate) == identity
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ParameterSourceMappingError(
+            f"Parameter {query!r} (identity {identity!r}) matches "
+            f"{len(matches)} names in {role}: {matches!r}; a source that "
+            "spells one parameter more than once is ambiguous"
+        )
+    if required:
+        raise ParameterSourceMappingError(
+            f"Parameter {query!r} (identity {identity!r}) has no match in "
+            f"{role}; candidates={sorted(candidates)!r}"
+        )
+    return None
 
 
 def has_equatorial_astrometry(parfile_dict: Dict[str, Any]) -> bool:
