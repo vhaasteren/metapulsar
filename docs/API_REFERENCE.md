@@ -192,8 +192,8 @@ def create_metapulsar(
             when their component is merged. Defaults to ("DM",).
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
-        timfile_output_dir: Directory to save the .tim files the engines consumed,
-            as {pulsar}_{pta}.tim. With canonicalize_tim=True (opt-in) these are standalone
+        timfile_output_dir: Directory to export standalone canonical engine inputs,
+            as {pulsar}_{pta}.tim. Requires canonicalize_tim=True. These are
             Tempo2 FORMAT 1 files (INCLUDEs flattened; TIME baked into MJDs;
             TIME/MODE omitted; TOA names rewritten to toaNNNNN) carrying -pta,
             -pta_dataset, -timing_package, and (when the release par has JUMP MJD
@@ -211,9 +211,10 @@ def create_metapulsar(
             the canonical tim. Default False. Requires canonicalize_tim=True.
         canonicalize_tim: If True, rewrite every release .tim into a
             dual-engine-reloadable canonical artifact before load. Default
-            False: engines load the release .tim tree (no TIME bake,
-            safe-name rewrite, or -mjd_jump_pta stamps). Opt in explicitly
-            (AEI-DR2/DR3 rebuild scripts do).
+            False: engines load the release .tim path in place and do not copy
+            its INCLUDE tree (no TIME bake, safe-name rewrite, or
+            -mjd_jump_pta stamps). Opt in explicitly (AEI-DR2/DR3 rebuild
+            scripts do).
 
     Returns:
         MetaPulsar object
@@ -255,8 +256,9 @@ def create_all_metapulsars(
         exclude_from_shared: Canonical parameter names kept PTA-specific.
         parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk. Files are named per pulsar.
-        timfile_output_dir: Directory to save the .tim files the engines
-            consumed, as {pulsar}_{pta}.tim. If None, they are not saved to disk.
+        timfile_output_dir: Directory to export standalone canonical engine
+            inputs, as {pulsar}_{pta}.tim. Requires canonicalize_tim=True. If
+            None, they are not saved to disk.
         use_pulse_numbers: Pulse-number tracking mode.
         clock_dir: Optional directory containing local clock-correction files.
         alignment_policy: Alignment policy for the shared strategy.

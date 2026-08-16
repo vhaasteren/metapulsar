@@ -167,12 +167,14 @@ class TestMetaPulsarFactory:
                 {
                     "par": Path("/data/epta/J1857+0943.par"),
                     "tim": Path("/data/epta/J1857+0943.tim"),
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("/data/ppta/J1909-3744.par"),
                     "tim": Path("/data/ppta/J1909-3744.tim"),
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
         }
@@ -293,12 +295,14 @@ class TestMetaPulsarFactory:
                 {
                     "par": Path("/data/epta/J1857+0943.par"),
                     "tim": Path("/data/epta/J1857+0943.tim"),
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
             "ppta_dr2": [
                 {
                     "par": Path("/data/ppta/J1909-3744.par"),
                     "tim": Path("/data/ppta/J1909-3744.tim"),
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
                 }
             ],
         }
@@ -467,7 +471,7 @@ class TestMetaPulsarFactory:
         assert "-timing_package tempo2" in canonical.read_text(encoding="utf-8")
 
     def test_create_pulsar_objects_exports_canonical_tim(self, tmp_path):
-        """timfile_output_dir receives the exact file the engine consumed."""
+        """timfile_output_dir receives the standalone canonical engine input."""
         _, _, file_pairs, file_data = self._write_session_inputs(tmp_path, "pint")
         session_dir = tmp_path / "session"
         export_dir = tmp_path / "export"
@@ -569,12 +573,11 @@ class TestMetaPulsarFactory:
             )
 
     def test_create_pulsar_objects_skips_canonical_when_gated_off(self, tmp_path):
-        """canonicalize_tim=False loads a session copy of the release .tim."""
+        """canonicalize_tim=False loads the release .tim in place."""
         par_path, tim_path, file_pairs, file_data = self._write_session_inputs(
             tmp_path, "pint"
         )
         session_dir = tmp_path / "session"
-        release_text = tim_path.read_text(encoding="utf-8")
 
         with (
             patch(
@@ -595,13 +598,238 @@ class TestMetaPulsarFactory:
         engine_tim = session_dir / "epta_dr2.tim"
         mock_get_model.assert_called_once_with(
             str(par_path),
-            str(engine_tim),
+            str(tim_path.resolve()),
             planets=True,
             allow_T2=True,
             ell1h_shapiro="full",
         )
-        assert engine_tim.read_text(encoding="utf-8") == release_text
-        assert "-pta epta_dr2" not in release_text
+        assert not engine_tim.exists()
+
+    @pytest.mark.parametrize("timing_package", ["pint", "tempo2"])
+    @pytest.mark.parametrize("pulse_mode", ["no", "yes", "reuse"])
+    def test_false_mode_preserves_relative_include_tree(
+        self, tmp_path, timing_package, pulse_mode
+    ):
+        release_dir = tmp_path / "release"
+        child_dir = release_dir / "child"
+        child_dir.mkdir(parents=True)
+        par_path = release_dir / "test.par"
+        tim_path = release_dir / "root.tim"
+        child_path = child_dir / "chunk.tim"
+        par_path.write_text("PSR J1857+0943\nF0 123.456\n", encoding="utf-8")
+        tim_path.write_text("FORMAT 1\nINCLUDE child/chunk.tim\n", encoding="utf-8")
+        child_path.write_text(
+            "FORMAT 1\n obs1 1400.0 58000.0 1.0 g -pn 42\n",
+            encoding="utf-8",
+        )
+        file_pairs = {"epta_dr2": (par_path, tim_path)}
+        file_data = {
+            "epta_dr2": {
+                "par": par_path,
+                "tim": tim_path,
+                "timing_package": timing_package,
+                "tim_metadata": make_tim_metadata(
+                    timespan_days=0.0,
+                    toa_count=1,
+                    pn_status="complete",
+                    pn_with_count=1,
+                    pn_without_count=0,
+                ),
+                "par_content": par_path.read_text(encoding="utf-8"),
+            }
+        }
+        session_dir = tmp_path / "session"
+        seen_tim_paths = []
+
+        def assert_tree_is_loadable(*, timfile, **_kwargs):
+            root = Path(timfile)
+            include = root.read_text(encoding="utf-8").splitlines()[1].split()[1]
+            assert (root.parent / include).read_text(encoding="utf-8")
+            seen_tim_paths.append(root)
+
+        if timing_package == "pint":
+            model = Mock()
+            model.params = {"TRACK"}
+            model.TRACK = Mock()
+
+            def pint_loader(_parfile, timfile, **kwargs):
+                assert_tree_is_loadable(timfile=timfile, **kwargs)
+                return model, Mock()
+
+            loader_patch = patch(
+                "metapulsar.metapulsar_factory.get_model_and_toas",
+                side_effect=pint_loader,
+            )
+        else:
+            loader_patch = patch(
+                "metapulsar.metapulsar_factory.tempopulsar",
+                side_effect=lambda **kwargs: (
+                    assert_tree_is_loadable(**kwargs) or Mock()
+                ),
+            )
+
+        with loader_patch:
+            _, pta_files = self.factory._create_pulsar_objects(
+                file_pairs,
+                file_data,
+                use_pulse_numbers=pulse_mode,
+                pta_file_dir=session_dir,
+                return_pta_files=True,
+                canonicalize_tim=False,
+            )
+
+        assert seen_tim_paths == [tim_path.resolve()]
+        assert child_path.is_file()
+        assert not (session_dir / "epta_dr2.tim").exists()
+        assert pta_files["epta_dr2"]["tim_path"] == tim_path.resolve()
+
+    def test_false_mode_persists_only_derived_tim(self, tmp_path):
+        par_path, tim_path, file_pairs, file_data = self._write_session_inputs(
+            tmp_path, "pint"
+        )
+        derived_path = tmp_path / "derived.tim"
+        derived_text = "FORMAT 1\n obs1 1400.0 58000.0 1.0 g -pn 42\n"
+        derived_path.write_text(derived_text, encoding="utf-8")
+        session_dir = tmp_path / "session"
+        model = Mock()
+        model.params = {"TRACK"}
+        model.TRACK = Mock()
+
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.resolved_tim_for_pulse_numbers"
+            ) as mock_resolved,
+            patch(
+                "metapulsar.metapulsar_factory.get_model_and_toas",
+                return_value=(model, Mock()),
+            ) as mock_loader,
+        ):
+            mock_resolved.return_value.__enter__.return_value = str(derived_path)
+            _, pta_files = self.factory._create_pulsar_objects(
+                file_pairs,
+                file_data,
+                use_pulse_numbers="overwrite",
+                pta_file_dir=session_dir,
+                return_pta_files=True,
+                canonicalize_tim=False,
+            )
+
+        persisted = (session_dir / "epta_dr2.tim").resolve()
+        mock_loader.assert_called_once_with(
+            str(par_path),
+            str(persisted),
+            planets=True,
+            allow_T2=True,
+            ell1h_shapiro="full",
+        )
+        assert persisted.read_text(encoding="utf-8") == derived_text
+        assert pta_files["epta_dr2"]["tim_path"] == persisted
+
+    @pytest.mark.parametrize(
+        "method_name", ["create_metapulsar", "create_all_metapulsars"]
+    )
+    def test_timfile_export_requires_canonical_mode(self, tmp_path, method_name):
+        output_dir = tmp_path / "export"
+        method = getattr(self.factory, method_name)
+        with pytest.raises(
+            ValueError,
+            match="timfile_output_dir requires canonicalize_tim=True",
+        ):
+            method(
+                {},
+                timfile_output_dir=output_dir,
+                canonicalize_tim=False,
+            )
+        assert not output_dir.exists()
+
+    @pytest.mark.parametrize("timing_package", ["pint", "tempo2"])
+    def test_create_pulsar_objects_preserves_backend_exception(
+        self, tmp_path, timing_package
+    ):
+        _, _, file_pairs, file_data = self._write_session_inputs(
+            tmp_path, timing_package
+        )
+
+        class BackendFailure(Exception):
+            pass
+
+        sentinel = BackendFailure(timing_package)
+        target = (
+            "metapulsar.metapulsar_factory.get_model_and_toas"
+            if timing_package == "pint"
+            else "metapulsar.metapulsar_factory.tempopulsar"
+        )
+        with patch(target, side_effect=sentinel):
+            with pytest.raises(BackendFailure) as exc_info:
+                self.factory._create_pulsar_objects(
+                    file_pairs,
+                    file_data,
+                    use_pulse_numbers="no",
+                    pta_file_dir=tmp_path / "session",
+                    canonicalize_tim=False,
+                )
+        assert exc_info.value is sentinel
+
+    @pytest.mark.parametrize("timing_package", ["pint", "tempo2"])
+    def test_create_raw_pulsars_preserves_backend_exception(
+        self, tmp_path, timing_package
+    ):
+        par_path = tmp_path / "test.par"
+        tim_path = tmp_path / "test.tim"
+
+        class BackendFailure(Exception):
+            pass
+
+        sentinel = BackendFailure(timing_package)
+        target = (
+            "metapulsar.metapulsar_factory.get_model_and_toas"
+            if timing_package == "pint"
+            else "metapulsar.metapulsar_factory.tempopulsar"
+        )
+        with patch(target, side_effect=sentinel):
+            with pytest.raises(BackendFailure) as exc_info:
+                self.factory._create_raw_pulsars(
+                    {"pta": (par_path, tim_path)},
+                    {"pta": {"timing_package": timing_package}},
+                )
+        assert exc_info.value is sentinel
+
+    def test_create_metapulsar_preserves_construction_exception(self, tmp_path):
+        par_path, tim_path, _, single_file_data = self._write_session_inputs(
+            tmp_path, "pint"
+        )
+        file_data = {"epta_dr2": [single_file_data["epta_dr2"]]}
+
+        class BackendFailure(Exception):
+            pass
+
+        sentinel = BackendFailure("pint")
+        parameter_manager = Mock()
+        parameter_manager.engine_parfiles.return_value = {"epta_dr2": par_path}
+        with (
+            patch(
+                "metapulsar.metapulsar_factory.ParameterManager",
+                return_value=parameter_manager,
+            ),
+            patch(
+                "metapulsar.metapulsar_factory.discover_pulsars_by_position",
+                return_value={"J1857+0943": file_data},
+            ),
+            patch.object(
+                self.factory,
+                "_apply_tim_mode_transfer",
+                return_value=({"epta_dr2": par_path}, set()),
+            ),
+            patch.object(self.factory, "_create_pulsar_objects", side_effect=sentinel),
+        ):
+            with pytest.raises(BackendFailure) as exc_info:
+                self.factory.create_metapulsar(
+                    file_data,
+                    combination_strategy="per_pta",
+                    use_pulse_numbers="no",
+                    canonicalize_tim=False,
+                )
+        assert exc_info.value is sentinel
 
     def test_convert_jump_mjd_requires_canonicalize_tim(self):
         with pytest.raises(ValueError, match="canonicalize_tim=True"):

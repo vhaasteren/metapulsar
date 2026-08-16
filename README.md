@@ -123,9 +123,11 @@ Migration: replace `use_pulse_numbers=True` with `"yes"` and `False` with `"no"`
 
 ### Canonical `.tim` files (`canonicalize_tim`, `timfile_output_dir`)
 
-By default (`canonicalize_tim=False`) MetaPulsar loads each release `.tim` tree
-as-is (plus optional `-pn` derivation). Pass `canonicalize_tim=True` to opt into
-the dual-engine canonical writer: every PTA leg is rewritten into a standalone
+By default (`canonicalize_tim=False`) MetaPulsar loads each release `.tim` path
+in place, so relative `INCLUDE`s resolve in the release tree. The tree is not
+copied or relocated; pulse-number derivation, when needed, persists only its
+generated standalone `.tim`. Pass `canonicalize_tim=True` to opt into the
+dual-engine canonical writer: every PTA leg is rewritten into a standalone
 Tempo2 `FORMAT 1` file that both PINT and Tempo2 can reload.
 
 This opt-in is intentional while the writer is still landing on real releases.
@@ -166,17 +168,12 @@ while the tim flags are still stamped (when canonicalizing). Pass
 `convert_jump_mjd=True` to rewrite those par lines to
 `JUMP -mjd_jump_pta {pta}_{k} …` (release files are never mutated).
 
-Pass `timfile_output_dir` to save the exact files the timing packages consumed,
-named `{pulsar}_{pta}.tim`, for auditing or reuse:
+With `canonicalize_tim=True`, pass `timfile_output_dir` to export the standalone
+canonical engine inputs, named `{pulsar}_{pta}.tim`, for auditing or reuse.
+False mode rejects `timfile_output_dir` because release TIM trees are loaded in
+place and are not exported.
 
 ```python
-# Default: load release .tim trees as-is
-mp = create_metapulsar(
-    file_data,
-    parfile_output_dir="out/par",
-    timfile_output_dir="out/tim",
-)
-
 # Opt in to the dual-engine canonical writer (AEI rebuilds do this):
 mp = create_metapulsar(
     file_data,

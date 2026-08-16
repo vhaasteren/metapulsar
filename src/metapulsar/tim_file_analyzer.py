@@ -163,35 +163,20 @@ class TimFileAnalyzer:
             self.logger.debug(f"Using cached metadata for {resolved}")
             return cached[1]
 
-        try:
-            acc = _ParseAccumulator()
-            active: Set[Path] = set()
-            self._parse_file(resolved, format_tokenized=False, acc=acc, active=active)
-            meta = acc.to_metadata()
-            self._file_cache[resolved] = (mtime, meta)
-            if meta.toa_count > 0:
-                self.logger.debug(
-                    f"Cached metadata for {resolved}: "
-                    f"{meta.timespan_days:.1f} days, {meta.toa_count} TOAs, "
-                    f"pn={meta.pn_status}"
-                )
-            else:
-                self.logger.debug(f"Cached metadata for {resolved}: no TOAs found")
-            return meta
-        except Exception as e:
-            self.logger.warning(f"Parsing failed for {resolved}: {e}")
-            empty = TimMetadata(
-                toa_count=0,
-                mjd_min=None,
-                mjd_max=None,
-                timespan_days=0.0,
-                pn_with_count=0,
-                pn_without_count=0,
-                pn_status="none",
-                parse_warnings=(f"parse failed: {e}",),
+        acc = _ParseAccumulator()
+        active: Set[Path] = set()
+        self._parse_file(resolved, format_tokenized=False, acc=acc, active=active)
+        meta = acc.to_metadata()
+        self._file_cache[resolved] = (mtime, meta)
+        if meta.toa_count > 0:
+            self.logger.debug(
+                f"Cached metadata for {resolved}: "
+                f"{meta.timespan_days:.1f} days, {meta.toa_count} TOAs, "
+                f"pn={meta.pn_status}"
             )
-            self._file_cache[resolved] = (mtime, empty)
-            return empty
+        else:
+            self.logger.debug(f"Cached metadata for {resolved}: no TOAs found")
+        return meta
 
     def clear_cache(self) -> None:
         """Clear the metadata cache."""
@@ -214,10 +199,7 @@ class TimFileAnalyzer:
         active: Set[Path],
     ) -> None:
         if tim_file_path in active:
-            msg = f"Circular INCLUDE detected: {tim_file_path}"
-            self.logger.warning(msg)
-            acc.add_warning(msg)
-            return
+            raise RuntimeError(f"Circular INCLUDE detected: {tim_file_path}")
 
         active.add(tim_file_path)
         try:
@@ -233,10 +215,6 @@ class TimFileAnalyzer:
                     acc=acc,
                     active=active,
                 )
-        except OSError as e:
-            msg = f"Error reading TIM file {tim_file_path}: {e}"
-            self.logger.error(msg)
-            acc.add_warning(msg)
         finally:
             active.discard(tim_file_path)
 
@@ -266,24 +244,17 @@ class TimFileAnalyzer:
 
         if first == "INCLUDE":
             if len(tokens) < 2:
-                msg = f"INCLUDE command without filename in {current_file}"
-                self.logger.warning(msg)
-                acc.add_warning(msg)
-                acc.skip_line()
-                return format_tokenized
+                raise ValueError(f"INCLUDE command without filename in {current_file}")
             include_path = (current_file.parent / tokens[1]).resolve()
-            if include_path.exists():
-                self.logger.debug(f"Processing included TOA file {include_path}")
-                self._parse_file(
-                    include_path,
-                    format_tokenized=format_tokenized,
-                    acc=acc,
-                    active=active,
-                )
-            else:
-                msg = f"INCLUDE file not found: {include_path}"
-                self.logger.warning(msg)
-                acc.add_warning(msg)
+            if not include_path.is_file():
+                raise FileNotFoundError(f"INCLUDE file not found: {include_path}")
+            self.logger.debug(f"Processing included TOA file {include_path}")
+            self._parse_file(
+                include_path,
+                format_tokenized=format_tokenized,
+                acc=acc,
+                active=active,
+            )
             return format_tokenized
 
         if self._is_directive(tokens):

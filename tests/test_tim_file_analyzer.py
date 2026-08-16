@@ -70,10 +70,8 @@ class TestTimFileAnalyzer:
 
     def test_missing_file(self):
         missing_file = self.test_data_dir / "missing.tim"
-        meta = self.analyzer.get_tim_metadata(missing_file)
-
-        assert meta.toa_count == 0
-        assert meta.timespan_days == 0.0
+        with pytest.raises(FileNotFoundError):
+            self.analyzer.get_tim_metadata(missing_file)
 
     def test_short_format1_lines(self):
         """Short FORMAT 1 lines (<80 chars) must be counted as TOAs."""
@@ -167,11 +165,27 @@ INCLUDE file2.tim
             f"FORMAT 1\nINCLUDE missing.tim\n{_tempo2_line(55087.1109722889085)}\n"
         )
         main_file = self._create_test_tim_file("main_missing.tim", main_content)
-        meta = self.analyzer.get_tim_metadata(main_file)
+        with pytest.raises(FileNotFoundError, match="INCLUDE file not found"):
+            self.analyzer.get_tim_metadata(main_file)
 
-        assert meta.toa_count == 1
-        assert meta.timespan_days == 0.0
-        assert any("not found" in w for w in meta.parse_warnings)
+    def test_include_without_filename(self):
+        main_file = self._create_test_tim_file(
+            "include_without_filename.tim", "FORMAT 1\nINCLUDE\n"
+        )
+        with pytest.raises(ValueError, match="INCLUDE command without filename"):
+            self.analyzer.get_tim_metadata(main_file)
+
+    def test_include_target_must_be_file(self):
+        include_dir = self.test_data_dir / "include_dir"
+        include_dir.mkdir()
+        try:
+            main_file = self._create_test_tim_file(
+                "include_directory.tim", "FORMAT 1\nINCLUDE include_dir\n"
+            )
+            with pytest.raises(FileNotFoundError, match="INCLUDE file not found"):
+                self.analyzer.get_tim_metadata(main_file)
+        finally:
+            include_dir.rmdir()
 
     def test_include_circular_reference(self):
         file_a_content = (
@@ -183,10 +197,8 @@ INCLUDE file2.tim
         file_a = self._create_test_tim_file("file_a.tim", file_a_content)
         self._create_test_tim_file("file_b.tim", file_b_content)
 
-        meta = self.analyzer.get_tim_metadata(file_a)
-        assert meta.toa_count >= 1
-        assert meta.timespan_days >= 0.0
-        assert any("Circular INCLUDE" in w for w in meta.parse_warnings)
+        with pytest.raises(RuntimeError, match="Circular INCLUDE detected"):
+            self.analyzer.get_tim_metadata(file_a)
 
     def test_include_same_file_twice(self):
         """Repeated INCLUDE of the same file counts TOAs each time."""

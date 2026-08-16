@@ -71,6 +71,10 @@ _SINGLE_PTA_SHARED_DMX_WARNING = (
     "the timing model (dispersion sharing replaces DMX with DM/DM1/DM2). "
     "Single-PTA psrs that require DMX: use combination_strategy='per_pta'."
 )
+_TIMFILE_OUTPUT_REQUIRES_CANONICAL = (
+    "timfile_output_dir requires canonicalize_tim=True because release TIM "
+    "trees are loaded in place and are not exported"
+)
 
 
 def _safe_pta_filename(pta_name: str) -> str:
@@ -249,8 +253,8 @@ class MetaPulsarFactory:
             parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk.
             timfile_output_dir: Directory to save the ``.tim`` files the engines
-                actually consumed, as ``{pulsar}_{pta}.tim``. With
-                ``canonicalize_tim=True`` these are standalone Tempo2
+                consumed, as standalone canonical ``{pulsar}_{pta}.tim``
+                artifacts. Requires ``canonicalize_tim=True``. These are Tempo2
                 FORMAT 1 files (INCLUDEs flattened) carrying ``-pta``,
                 ``-pta_dataset`` and ``-timing_package`` flags, plus ``-pn`` when
                 ``use_pulse_numbers`` asks for it. If None, they are not saved.
@@ -301,11 +305,13 @@ class MetaPulsarFactory:
 
         Raises:
             ValueError: If no files found, multiple pulsars detected, or invalid parameters
-            RuntimeError: If PTA timing-object creation fails
+            Exception: Backend timing-object construction exceptions propagate unchanged.
         """
         combination_strategy = normalize_combination_strategy(combination_strategy)
         self.logger.info(f"Creating MetaPulsar using {combination_strategy} strategy")
         pulse_mode = validate_pulse_number_mode(use_pulse_numbers)
+        if timfile_output_dir is not None and not canonicalize_tim:
+            raise ValueError(_TIMFILE_OUTPUT_REQUIRES_CANONICAL)
         if convert_jump_mjd and not canonicalize_tim:
             raise ValueError(
                 "convert_jump_mjd=True requires canonicalize_tim=True because "
@@ -785,8 +791,9 @@ class MetaPulsarFactory:
             parfile_output_dir: Directory to save shared par files (for the shared strategy only).
                 If None, par files are not saved to disk. Files are named per pulsar.
             timfile_output_dir: Directory to save the ``.tim`` files the engines
-                consumed, named ``{pulsar}_{pta}.tim``. If None, they are not
-                saved to disk.
+                consumed as standalone canonical artifacts, named
+                ``{pulsar}_{pta}.tim``. Requires ``canonicalize_tim=True``. If
+                None, they are not saved to disk.
             alignment_policy: Alignment policy forwarded to each
                 ``create_metapulsar`` call (``"shared"`` strategy only).
             convert_jump_mjd: If True, rewrite each engine-par ``JUMP MJD t1 t2 ...``
@@ -802,6 +809,8 @@ class MetaPulsarFactory:
             Dictionary mapping pulsar names to MetaPulsar objects
         """
         combination_strategy = normalize_combination_strategy(combination_strategy)
+        if timfile_output_dir is not None and not canonicalize_tim:
+            raise ValueError(_TIMFILE_OUTPUT_REQUIRES_CANONICAL)
         if convert_jump_mjd and not canonicalize_tim:
             raise ValueError(
                 "convert_jump_mjd=True requires canonicalize_tim=True because "
@@ -1049,42 +1058,39 @@ class MetaPulsarFactory:
             derive_backend: Literal["pint", "tempo2"] = (
                 "pint" if timing_package == "pint" else "tempo2"
             )
-            engine_tim = pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim"
+            session_tim = pta_file_dir / f"{_safe_pta_filename(pta_name)}.tim"
 
-            try:
+            if canonicalize_tim:
+                canonical = write_canonical_tim(
+                    timfile,
+                    pta_name=pta_name,
+                    timing_package=timing_package,
+                    out_path=session_tim,
+                    par_text=original_par_text,
+                )
+                resolver_input = session_tim.resolve()
+                resolver_metadata = canonical.tim_metadata
+            else:
+                resolver_input = timfile.resolve()
+                resolver_metadata = file_data[pta_name].get("tim_metadata")
+
+            with resolved_tim_for_pulse_numbers(
+                use_pulse_numbers,
+                original_par_text,
+                resolver_input,
+                derive_backend=derive_backend,
+                tim_metadata=resolver_metadata,
+            ) as resolved_tim:
+                resolved_path = Path(resolved_tim).resolve()
                 if canonicalize_tim:
-                    canonical = write_canonical_tim(
-                        timfile,
-                        pta_name=pta_name,
-                        timing_package=timing_package,
-                        out_path=engine_tim,
-                        par_text=original_par_text,
-                    )
-                    # Derive only after canonicalization so both backends read
-                    # the same standalone, PINT-safe TOA layout. Keep the
-                    # canonical artifact and inject only the derived -pn flags.
-                    with resolved_tim_for_pulse_numbers(
-                        use_pulse_numbers,
-                        original_par_text,
-                        engine_tim,
-                        derive_backend=derive_backend,
-                        tim_metadata=canonical.tim_metadata,
-                    ) as resolved_tim:
-                        resolved_path = Path(resolved_tim)
-                        if resolved_path != engine_tim:
-                            inject_pulse_numbers(engine_tim, derived_tim=resolved_path)
+                    if resolved_path != resolver_input:
+                        inject_pulse_numbers(resolver_input, derived_tim=resolved_path)
+                    engine_tim = resolver_input
+                elif resolved_path == resolver_input:
+                    engine_tim = resolver_input
                 else:
-                    # Escape hatch: no flatten / TIME bake / flag stamps.
-                    # PN derivation (if any) writes a temp; copy the resolved
-                    # file into the session dir before the context closes.
-                    with resolved_tim_for_pulse_numbers(
-                        use_pulse_numbers,
-                        original_par_text,
-                        timfile,
-                        derive_backend=derive_backend,
-                        tim_metadata=file_data[pta_name].get("tim_metadata"),
-                    ) as resolved_tim:
-                        shutil.copy2(Path(resolved_tim), engine_tim)
+                    shutil.copy2(resolved_path, session_tim)
+                    engine_tim = session_tim.resolve()
 
                 if timing_package == "pint":
                     if get_model_and_toas is None:
@@ -1137,10 +1143,6 @@ class MetaPulsarFactory:
 
                 self.logger.debug(f"Created {timing_package} object for {pta_name}")
 
-            except Exception as e:
-                self.logger.error(f"Failed to create pulsar for {pta_name}: {e}")
-                raise RuntimeError(f"Failed to create pulsar for {pta_name}: {e}")
-
         if return_pta_files:
             return pulsar_objects, pta_files
         return pulsar_objects
@@ -1154,15 +1156,7 @@ class MetaPulsarFactory:
         tim_path: Path,
         pta_file_dir: Path,
     ) -> Dict[str, Any]:
-        """Retain the engine's par next to its session ``.tim``.
-
-        With ``canonicalize_tim=True`` the tim is written straight into
-        ``pta_file_dir`` by
-        :func:`~metapulsar.tim_canonical.write_canonical_tim`. With
-        ``canonicalize_tim=False`` the release (or PN-derived) tim is copied
-        there before load. Either way there is a single session file rather
-        than a second copy that could drift from it.
-        """
+        """Retain the engine par and record the exact TIM path the engine used."""
         par_src = Path(par_path).resolve()
         tim_src = Path(tim_path).resolve()
         if not par_src.is_file():
@@ -1184,7 +1178,7 @@ class MetaPulsarFactory:
         timfile_output_dir: Path,
         pulsar_name: str,
     ) -> None:
-        """Export the exact engine-consumed tim files for reuse."""
+        """Export standalone canonical engine-input TIM artifacts for reuse."""
         for pta_name, files in pta_files.items():
             src = Path(files["tim_path"])
             dst = (
@@ -1223,37 +1217,31 @@ class MetaPulsarFactory:
         Returns:
             Dictionary mapping PTA names to raw PINT/Tempo2 objects
 
-        Raises:
-            RuntimeError: If raw pulsar creation fails
+        Backend construction exceptions propagate unchanged.
         """
         raw_pulsars = {}
 
         for pta_name, (parfile, timfile) in file_pairs.items():
             data_release = pta_data_releases[pta_name]
 
-            try:
-                if data_release["timing_package"] == "pint":
-                    if get_model_and_toas is None:
-                        raise RuntimeError("PINT not available for raw PINT creation")
+            if data_release["timing_package"] == "pint":
+                if get_model_and_toas is None:
+                    raise RuntimeError("PINT not available for raw PINT creation")
 
-                    model, toas = get_model_and_toas(
-                        str(parfile), str(timfile), planets=True, allow_T2=True
-                    )
-                    raw_pulsars[pta_name] = (model, toas)
-
-                else:  # tempo2
-                    t2_psr = tempopulsar(
-                        parfile=str(parfile), timfile=str(timfile), dofit=False
-                    )
-                    raw_pulsars[pta_name] = t2_psr
-
-                self.logger.debug(
-                    f"Created raw {data_release['timing_package']} object for {pta_name}"
+                model, toas = get_model_and_toas(
+                    str(parfile), str(timfile), planets=True, allow_T2=True
                 )
+                raw_pulsars[pta_name] = (model, toas)
 
-            except Exception as e:
-                self.logger.error(f"Failed to create raw pulsar for {pta_name}: {e}")
-                raise RuntimeError(f"Failed to create raw pulsar for {pta_name}: {e}")
+            else:  # tempo2
+                t2_psr = tempopulsar(
+                    parfile=str(parfile), timfile=str(timfile), dofit=False
+                )
+                raw_pulsars[pta_name] = t2_psr
+
+            self.logger.debug(
+                f"Created raw {data_release['timing_package']} object for {pta_name}"
+            )
 
         return raw_pulsars
 
@@ -1434,7 +1422,9 @@ def create_metapulsar(
         parfile_output_dir: Directory to save shared par files (for the shared strategy only).
             If None, par files are not saved to disk.
         timfile_output_dir: Directory to save the ``.tim`` files the engines
-            consumed, as ``{pulsar}_{pta}.tim``. If None, they are not saved to disk.
+            consumed as standalone canonical artifacts, as
+            ``{pulsar}_{pta}.tim``. Requires ``canonicalize_tim=True``. If None,
+            they are not saved to disk.
         use_pulse_numbers: Pulse-number mode: ``"no"``, ``"yes"`` (default), ``"reuse"``,
             or ``"overwrite"``. See ``MetaPulsarFactory.create_metapulsar`` for semantics.
         alignment_policy: :class:`~metapulsar.parameter_manager.AlignmentPolicy`
@@ -1460,7 +1450,7 @@ def create_metapulsar(
 
     Raises:
         ValueError: If no files found, multiple pulsars detected, or invalid parameters
-        RuntimeError: If PTA timing-object creation fails
+        Exception: Backend timing-object construction exceptions propagate unchanged.
     """
     factory = MetaPulsarFactory()
     return factory.create_metapulsar(
@@ -1512,7 +1502,9 @@ def create_all_metapulsars(
         parfile_output_dir: Directory to save shared par files (for the shared strategy only).
             If None, par files are not saved to disk. Files are named per pulsar.
         timfile_output_dir: Directory to save the ``.tim`` files the engines
-            consumed, as ``{pulsar}_{pta}.tim``. If None, they are not saved to disk.
+            consumed as standalone canonical artifacts, as
+            ``{pulsar}_{pta}.tim``. Requires ``canonicalize_tim=True``. If None,
+            they are not saved to disk.
         use_pulse_numbers: Pulse-number mode passed to each ``create_metapulsar`` call
             (``"no"``, ``"yes"``, ``"reuse"``, or ``"overwrite"``; default ``"yes"``).
         alignment_policy: Alignment policy forwarded to each ``create_metapulsar``

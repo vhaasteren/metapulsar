@@ -65,6 +65,17 @@ class TestFileDiscovery:
         service = FileDiscovery(pta_data_releases=custom_data_releases)
         assert service.data_releases == custom_data_releases
 
+    def test_tim_metadata_failure_propagates(self, tmp_path):
+        service = FileDiscovery()
+        tim_path = tmp_path / "broken.tim"
+        sentinel = RuntimeError("broken TIM tree")
+        with patch.object(
+            service._tim_analyzer, "get_tim_metadata", side_effect=sentinel
+        ):
+            with pytest.raises(RuntimeError, match="broken TIM tree") as exc_info:
+                service._get_tim_metadata(tim_path)
+        assert exc_info.value is sentinel
+
     def test_discover_patterns_in_data_release_success(self):
         """Test discovering patterns in a single data release."""
         service = FileDiscovery()

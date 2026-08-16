@@ -698,22 +698,7 @@ class FileDiscovery:
 
     def _get_tim_metadata(self, tim_file_path: Path) -> TimMetadata:
         """Extract unified TIM metadata using the shared analyzer cache."""
-        try:
-            return self._tim_analyzer.get_tim_metadata(tim_file_path)
-        except Exception as e:
-            self.logger.warning(
-                f"Could not parse TIM metadata for {tim_file_path}: {e}"
-            )
-            return TimMetadata(
-                toa_count=0,
-                mjd_min=None,
-                mjd_max=None,
-                timespan_days=0.0,
-                pn_with_count=0,
-                pn_without_count=0,
-                pn_status="none",
-                parse_warnings=(f"metadata extraction failed: {e}",),
-            )
+        return self._tim_analyzer.get_tim_metadata(tim_file_path)
 
 
 # Convenience function for easy access
