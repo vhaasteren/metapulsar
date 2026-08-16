@@ -819,11 +819,16 @@ class TestStamping:
         assert out.count("-pta_orig") == 2
         assert out.count(" -pta x") == 1
 
-    def test_existing_orig_flag_raises(self):
+    def test_existing_orig_flag_is_kept_and_live_flag_overwritten(self):
         text = "FORMAT 1\n" + _toa(58000.0, " -pta A -pta_orig B") + "\n"
 
-        with pytest.raises(TimCanonicalizationError, match="already present"):
-            stamp_metadata_flags(text, pta_name="x", timing_package="pint")
+        out = stamp_metadata_flags(text, pta_name="x", timing_package="pint")
+
+        assert "-pta_orig B" in out
+        assert " -pta x" in out
+        assert " -pta A" not in out
+        assert out.count("-pta_orig") == 1
+        assert out.count(" -pta x") == 1
 
     def test_leaves_other_flags_and_pn_untouched(self):
         text = "FORMAT 1\n" + _toa(58000.0, " -pn 42 -group foo -to -0.9e-6") + "\n"
@@ -1369,6 +1374,22 @@ class TestJumpMjd:
         )
         assert "-mjd_jump_pta_orig releaseval" in out
         assert "-mjd_jump_pta EPTA_1" in out
+
+    def test_existing_mjd_jump_orig_is_kept_and_live_flag_overwritten(self):
+        text = (
+            "FORMAT 1\n"
+            + _toa(58000.0, " -mjd_jump_pta oldval -mjd_jump_pta_orig releaseval")
+            + "\n"
+        )
+        out = stamp_mjd_jump_pta_flags(
+            text,
+            pta_name="EPTA",
+            windows=[(Decimal("57000"), Decimal("59000"))],
+            timing_package="tempo2",
+        )
+        assert "-mjd_jump_pta_orig releaseval" in out
+        assert "-mjd_jump_pta EPTA_1" in out
+        assert "-mjd_jump_pta oldval" not in out
 
     def test_convert_jump_mjd_par_text(self):
         release = parse_jump_mjd_windows(

@@ -1037,13 +1037,16 @@ def stamp_metadata_flags(tim_text: str, *, pta_name: str, timing_package: str) -
 
     Existing ``pta``/``pta_dataset``/``timing_package`` flags are matched
     case-insensitively and every occurrence is renamed to ``<name>_orig``,
-    keeping its raw value. PINT lowercases flag keys and keeps only the last
-    duplicate while tempo2 is case-sensitive and keeps them all, so matching
-    case-insensitively is what keeps both engines seeing the same thing.
+    keeping its raw value. If ``<name>_orig`` is already present, that
+    preserved value is left alone and the live ``-<name>`` flag is overwritten
+    with the authoritative MetaPulsar value. PINT lowercases flag keys and
+    keeps only the last duplicate while tempo2 is case-sensitive and keeps
+    them all, so matching case-insensitively is what keeps both engines seeing
+    the same thing.
 
     Raises:
-        TimCanonicalizationError: A ``<name>_orig`` flag already exists, a value
-            is unusable, or stamping would exceed tempo2's per-TOA flag limits.
+        TimCanonicalizationError: A value is unusable, or stamping would
+            exceed tempo2's per-TOA flag limits.
     """
     values = {
         "pta": pta_name,
@@ -1275,22 +1278,27 @@ def _stamp_toa_line(
         _has_exact_pair(name, values[name]) for name in CANONICAL_METADATA_FLAGS
     )
 
-    renames: List[Tuple[int, int, str]] = []
+    replacements: List[Tuple[int, int, str]] = []
     to_append: List[str] = []
     if not already_canonical:
         for name in CANONICAL_METADATA_FLAGS:
             occurrences = present.get(name, [])
-            if occurrences:
-                if f"{name}_orig" in present:
-                    raise TimCanonicalizationError(
-                        f"Cannot preserve existing -{name} as -{name}_orig because "
-                        f"-{name}_orig is already present on TOA line: "
-                        f"{line.strip()!r}"
-                    )
+            if occurrences and f"{name}_orig" in present:
                 for index in occurrences:
-                    start, end = spans[index]
-                    renames.append((start, end, f"-{name}_orig"))
-            to_append.append(f" -{name} {values[name]}")
+                    value_index = value_at.get(index)
+                    start = spans[index][0]
+                    end = (
+                        spans[value_index][1]
+                        if value_index is not None
+                        else spans[index][1]
+                    )
+                    replacements.append((start, end, f"-{name} {values[name]}"))
+            else:
+                if occurrences:
+                    for index in occurrences:
+                        start, end = spans[index]
+                        replacements.append((start, end, f"-{name}_orig"))
+                to_append.append(f" -{name} {values[name]}")
 
     # Tempo2 checks after incrementing and exits at nFlags == MAX_FLAGS, so
     # MAX_FLAGS itself is not a usable count.
@@ -1303,7 +1311,7 @@ def _stamp_toa_line(
         )
 
     stamped = line
-    for start, end, replacement in reversed(renames):
+    for start, end, replacement in reversed(replacements):
         stamped = stamped[:start] + replacement + stamped[end:]
     stamped = stamped.rstrip("\r") + "".join(to_append)
     line_bytes = len(stamped.encode("utf-8"))
@@ -1444,22 +1452,28 @@ def _stamp_mjd_jump_toa_line(
         and tokens[own_value_index] == expected_flag_value
     )
 
-    renames: List[Tuple[int, int, str]] = []
+    replacements: List[Tuple[int, int, str]] = []
     to_append: List[str] = []
     if exact_own:
         pass
+    elif occurrences and f"{MJD_JUMP_PTA_FLAG}_orig" in present:
+        if expected_flag_value is not None:
+            for index in occurrences:
+                value_index = value_at.get(index)
+                start = spans[index][0]
+                end = (
+                    spans[value_index][1]
+                    if value_index is not None
+                    else spans[index][1]
+                )
+                replacements.append(
+                    (start, end, f"-{MJD_JUMP_PTA_FLAG} {expected_flag_value}")
+                )
     else:
         if occurrences:
-            if f"{MJD_JUMP_PTA_FLAG}_orig" in present:
-                raise TimCanonicalizationError(
-                    f"Cannot preserve existing -{MJD_JUMP_PTA_FLAG} as "
-                    f"-{MJD_JUMP_PTA_FLAG}_orig because "
-                    f"-{MJD_JUMP_PTA_FLAG}_orig is already present on TOA line: "
-                    f"{line.strip()!r}"
-                )
             for index in occurrences:
                 start, end = spans[index]
-                renames.append((start, end, f"-{MJD_JUMP_PTA_FLAG}_orig"))
+                replacements.append((start, end, f"-{MJD_JUMP_PTA_FLAG}_orig"))
         if expected_flag_value is not None:
             to_append.append(f" -{MJD_JUMP_PTA_FLAG} {expected_flag_value}")
 
@@ -1472,7 +1486,7 @@ def _stamp_mjd_jump_toa_line(
         )
 
     stamped = line
-    for start, end, replacement in reversed(renames):
+    for start, end, replacement in reversed(replacements):
         stamped = stamped[:start] + replacement + stamped[end:]
     stamped = stamped.rstrip("\r") + "".join(to_append)
     line_bytes = len(stamped.encode("utf-8"))
