@@ -621,6 +621,7 @@ def test_gate_span_from_tim_metadata():
     assert d_par.scale.span_provenance == "par"
 
 
+@slow
 def test_parameter_manager_feeds_tim_span_to_gate(tmp_path):
     """Factory-style file_data with tim_metadata certifies sub-threshold dots."""
     a1, pb = 10.0, 6.83890261
@@ -947,6 +948,7 @@ def test_t18_plain_conversion_values():
     assert "ECC" in record.target_free_params
 
 
+@slow
 def test_t19_patch_application_preserves_nonbinary():
     par_a = _ell1_dict(a1=10.0, eps1=7e-6, eps2=-1.8e-5)
     par_a["JUMP"] = ["-fe L_wide 0 1"]
@@ -1030,6 +1032,7 @@ def test_t20_fidelity_sentinels():
     assert total_max > 1e-8, message
 
 
+@slow
 def test_t21_report_lifecycle(tmp_path):
     # unsupported keep
     par_h = COMMON_HEAD + (
@@ -2028,6 +2031,7 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@slow
 def test_ddh_splice_honors_the_source_a1dot_spelling():
     """B3: a source spelling ``XDOT`` must not gain a second ``A1DOT`` line.
 
@@ -2112,6 +2116,7 @@ def test_nharms_alone_does_not_make_a_plain_ell1_orthometric():
     assert decision.outcome == "convert", decision.reason
 
 
+@slow
 def test_bare_ell1h_conversion_drops_the_inert_markers():
     """DD output must not keep ``NHARMS``/zero ``H3`` (patch application forbids them)."""
     par = _ell1_dict(binary="ELL1H", extra={"NHARMS": ["7"], "H3": ["0.0"]})
@@ -2294,6 +2299,7 @@ def _load_both_engines(tmp_path, par_text):
     return pint_model, t2_psr
 
 
+@slow
 @pytest.mark.requires_libstempo
 def test_eps_dot_emission_portable_across_engines(tmp_path):
     """A `token_from_si` EPS dot reads back identically in PINT and tempo2."""
@@ -2311,6 +2317,7 @@ def test_eps_dot_emission_portable_across_engines(tmp_path):
     assert pint_si == pytest.approx(t2_si, rel=1e-9)
 
 
+@slow
 @pytest.mark.requires_libstempo
 @pytest.mark.xfail(
     strict=False,

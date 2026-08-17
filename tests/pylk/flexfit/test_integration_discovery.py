@@ -261,6 +261,7 @@ def test_reconstruct_waveforms_whitens_timing_plus_rn_plus_dm():
     assert abs(np.std(z) - 1.0) < 0.2
 
 
+@pytest.mark.slow
 def test_map_powerlaw_hypers_recovers_injected_and_agrees_with_flexfit():
     """The Discovery-logL MAP of the power-law hypers (second Phi source) should
     recover the injected DM/red spectrum, independently of flexfit's EB MLE."""

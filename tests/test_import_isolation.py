@@ -16,7 +16,10 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
 
+
+@pytest.mark.slow
 def test_import_metapulsar_does_not_load_nltiming():
     script = textwrap.dedent(
         """

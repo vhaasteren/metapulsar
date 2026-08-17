@@ -112,6 +112,7 @@ def test_numpy_and_jax_host_only_fallback_errors_match():
         engine.residual_delta_jax(jnp.asarray(delta))
 
 
+@pytest.mark.slow
 def test_pulsar_jax_engine_exposes_residual_jacobian():
     pytest.importorskip("jax")
     leaf = LinearizedJugEngine.from_linear_model(

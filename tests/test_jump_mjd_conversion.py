@@ -240,6 +240,7 @@ def test_legacy_untagged_release_mode_survives_factory_conversion(tmp_path):
     assert mp._pta_files["EPTA"].tim_path.is_file()
 
 
+@pytest.mark.slow
 @pytest.mark.unit
 @pytest.mark.requires_libstempo
 def test_legacy_format0_release_mode_survives_factory_conversion(tmp_path):

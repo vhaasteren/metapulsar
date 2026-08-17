@@ -143,6 +143,7 @@ def _build_real_pulsar(mock_metapulsar):
     return mock_metapulsar(pulsars, combination_strategy="per_pta")
 
 
+@pytest.mark.slow
 def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip(mock_metapulsar):
     pulsar = _build_real_pulsar(mock_metapulsar)
     assert isinstance(pulsar, TimingPulsar)

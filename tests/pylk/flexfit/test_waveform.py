@@ -408,6 +408,7 @@ def test_discovery_reconstruct_waveforms_returns_analysis():
     np.testing.assert_allclose(band.mean, analysis["red"], rtol=1e-8, atol=1e-14)
 
 
+@pytest.mark.slow
 @pytest.mark.unit
 def test_plot_waveform_panels_smoke():
     plt = pytest.importorskip("matplotlib.pyplot")

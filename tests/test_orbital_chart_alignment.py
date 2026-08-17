@@ -232,6 +232,7 @@ def test_written_value_comes_from_the_par_not_the_model():
     assert abs(written - model_fb0) / written == pytest.approx(1.55e-8, rel=0.05)
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_tempo2_residuals_unchanged_by_alignment(tmp_path):
@@ -322,6 +323,7 @@ def test_engine_parfiles_writes_only_what_changed(tmp_path):
     assert hybrid_par.read_text() == HYBRID  # source file untouched
 
 
+@pytest.mark.slow
 def test_shared_merge_is_reference_order_independent():
     """The latent ordering bug: MPTA+PPTA built, PPTA+MPTA raised.
 
@@ -408,6 +410,7 @@ def _build(file_data, strategy, reference=None):
     return create_metapulsar(file_data, **kw)
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 @pytest.mark.parametrize(
@@ -465,6 +468,7 @@ def _assert_normalized_final_mode(par_text: str, mode: int = 1) -> None:
     assert lines[-1] == f"MODE {mode}"
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_per_pta_engine_par_differs_only_in_the_pb_line():
@@ -485,6 +489,7 @@ def test_per_pta_engine_par_differs_only_in_the_pb_line():
     _assert_normalized_final_mode(consumed_text)
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_nonlinear_timing_is_available():
@@ -498,6 +503,7 @@ def test_nonlinear_timing_is_available():
     assert mp.timing_engine(engines, linearized=False) is not None
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_j1825_mpta_tempo2_unaffected():
@@ -517,6 +523,7 @@ def test_j1825_mpta_tempo2_unaffected():
     _assert_normalized_final_mode(consumed)
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 @pytest.mark.requires_ipta_data
 def test_direct_construction_with_hybrid_chart_fails_loudly():

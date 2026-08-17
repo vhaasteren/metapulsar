@@ -840,6 +840,7 @@ class TestFileDiscovery:
                             f"{probe} under {package}: {matched}"
                         )
 
+    @pytest.mark.slow
     @pytest.mark.requires_ipta_data
     @pytest.mark.parametrize("data_root", ["data/ipta-dr2", "data-check"])
     def test_shipped_releases_resolve_without_ambiguity(self, data_root):
@@ -963,6 +964,7 @@ class TestFileDiscovery:
         assert entry["par"].name == "J1713+0747_NANOGrav_12yv2.gls.par"
         assert entry["par_selection"]["reason"] == "sole"
 
+    @pytest.mark.slow
     @pytest.mark.requires_ipta_data
     def test_nanograv_9y_real_tree_selects_the_t2_par(self):
         """Real-data lock: on the actual release, NG9 J1713 is the t2 par."""

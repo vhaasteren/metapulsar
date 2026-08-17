@@ -50,6 +50,7 @@ def _jump_selectors(par, tim):
     }
 
 
+@pytest.mark.slow
 def test_empty_frozen_jumps_are_stripped(tmp_path):
     par = _write_par(
         tmp_path, [LIVE_JUMP, DEAD_FLAG_JUMP, DEAD_GROUP_JUMP, DEAD_MJD_JUMP]

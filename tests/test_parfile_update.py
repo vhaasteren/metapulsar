@@ -388,6 +388,7 @@ class TestGlsUpdateAndWritePar:
         assert "# Product: combination" not in body
         assert "# reference_pta: nanograv_9y" not in body
 
+    @pytest.mark.slow
     def test_reverted_parameters_are_left_byte_identical(self, tmp_path):
         """A parameter reverted by PINT validate() must not reach the transplant."""
         import numpy as np
@@ -462,6 +463,7 @@ class TestGlsUpdateAndWritePar:
         assert body_lines == source_lines
 
 
+@pytest.mark.slow
 @pytest.mark.requires_libstempo
 def test_optimized_par_is_readable_by_tempo2(tmp_path):
     """The reported regression: tempo2 must see the GLS FDJUMP value.

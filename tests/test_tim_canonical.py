@@ -376,6 +376,7 @@ class TestFlatten:
 
         assert expected in result.text.splitlines()
 
+    @pytest.mark.slow
     def test_canonical_comments_round_trip_through_pint(self, tmp_path):
         toa = pytest.importorskip("pint.toa")
         comments = "\n".join(

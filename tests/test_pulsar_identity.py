@@ -159,6 +159,7 @@ def test_truncated_coord_name_not_in_alias_map():
     assert "J0557+1550" not in aliases
 
 
+@pytest.mark.slow
 @pytest.mark.integration
 def test_data_check_j0557_and_j1824_filter_regression():
     data_check = Path("/workspaces/metapulsar/data-check")
