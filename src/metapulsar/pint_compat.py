@@ -84,6 +84,22 @@ _FDJUMPDM_RE = re.compile(r"^FDJUMPDM(?:_(\d+)|(\d+))?$", re.I)
 _FDJUMP_CONTROL_KEYS = frozenset({"FDJUMP_SCALE", "FDJUMPLOG"})
 
 
+def _require_name(param_name, *, caller: str) -> str:
+    """Reject non-string parameter names instead of passing them through.
+
+    Name resolution has exactly one input type. Returning a non-string
+    unchanged (what the old blanket ``except`` did) turns a caller's type error
+    into a lookup that plausibly matches nothing -- the failure mode that let a
+    ``NativeParam`` reach an alias resolver and silently produce no par write.
+    """
+    if not isinstance(param_name, str):
+        raise TypeError(
+            f"{caller} expects a parameter-name string, got "
+            f"{type(param_name).__name__}: {param_name!r}"
+        )
+    return param_name
+
+
 def canonicalize_fdjump_name(name: str) -> str | None:
     """Return the canonical FDJUMP id, or None if ``name`` is not an FDJUMP.
 
@@ -91,7 +107,7 @@ def canonicalize_fdjump_name(name: str) -> str | None:
     spellings: ``FDJUMP1`` / ``FD1JUMP`` (par keyword), ``FDJUMP1_1`` /
     ``FD1JUMP1`` (instance), ``FDJUMPDM`` / ``FDJUMPDM1`` / ``FDJUMPDM_1``.
     """
-    key = name.strip()
+    key = _require_name(name, caller="canonicalize_fdjump_name").strip()
     if key.upper() in _FDJUMP_CONTROL_KEYS:
         return None
     dm = _FDJUMPDM_RE.fullmatch(key)
@@ -160,27 +176,34 @@ def resolve_parameter_alias(param_name: str) -> str:
     Returns:
         Canonical parameter name, or original name if not an alias
     """
+    _require_name(param_name, caller="resolve_parameter_alias")
     # Tempo2 uses ECCDOT; PINT canonical name is EDOT (not in AllComponents map).
     if param_name == "ECCDOT":
         return "EDOT"
 
+    # Acquire the registry outside the guard: a broken AllComponents raising
+    # ValueError/KeyError would otherwise be indistinguishable from an alias
+    # miss, which is the failure shape this narrowing exists to remove.
+    all_components = _get_all_components()
     try:
-        all_components = _get_all_components()
         canonical, _ = all_components.alias_to_pint_param(param_name)
-        return canonical
-    except Exception:
-        # If alias resolution fails, return the original name
+    except (ValueError, KeyError):
+        # PINT raises UnknownParameter (a ValueError) for an unknown alias;
+        # that is a miss, so pass the name through.
         return param_name
+    return canonical
 
 
 def pint_parameter_name(param_name: str) -> str | None:
     """Return the canonical PINT parameter name when ``param_name`` is recognized."""
+    _require_name(param_name, caller="pint_parameter_name")
     lookup = "EDOT" if param_name == "ECCDOT" else param_name
+    all_components = _get_all_components()  # outside the guard; see above
     try:
-        canonical, _ = _get_all_components().alias_to_pint_param(lookup)
-        return canonical
-    except Exception:
+        canonical, _ = all_components.alias_to_pint_param(lookup)
+    except (ValueError, KeyError):
         return None
+    return canonical
 
 
 def get_aliases_for_parameter(canonical_param: str) -> List[str]:
@@ -192,8 +215,9 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
     Returns:
         List of all aliases for this parameter, including the canonical name itself
     """
+    _require_name(canonical_param, caller="get_aliases_for_parameter")
+    all_components = _get_all_components()  # outside the guard; see above
     try:
-        all_components = _get_all_components()
         aliases = [canonical_param]  # Start with canonical name
 
         # Search through the alias map to find all aliases that map to this canonical name
@@ -211,7 +235,9 @@ def get_aliases_for_parameter(canonical_param: str) -> List[str]:
                 aliases.append(extra)
 
         return aliases
-    except Exception:
+    except (ValueError, KeyError, AttributeError):
+        # A missing/renamed PINT alias map is a miss, not a crash; an
+        # unexpected failure propagates.
         aliases = [canonical_param]
         for extra in fdjump_aliases(canonical_param):
             if extra not in aliases:

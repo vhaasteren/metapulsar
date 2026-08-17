@@ -1034,6 +1034,12 @@ class MetaPulsar:
         against these values (its ``ECC``/``E`` grouping depends on the par
         spelling), so this rendering is part of the public contract.
 
+        Values are exact par tokens except for repeated-keyword families -- see
+        :class:`~metapulsar.pint_helpers.NativeParam`. A par writer must handle
+        ``JUMPn`` by container token plus occurrence index: instance 1 reports
+        ``JUMP``, later instances report the PINT name (``JUMP2``), which is not
+        a token in the par.
+
         The returned dictionaries are fresh so interactive timing clients can
         inspect provenance without mutating the pulsar's canonical mapping.
         """

@@ -6,9 +6,7 @@ scipy>=1.7.0
 # vhaasteren/PINT@metapulsar while that PR is in flux; unpin to a release once merged.
 pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar
 ephem>=4.1
-# Nonlinear timing stack (extracted from src/metapulsar/timing); from git
-# until the first PyPI release.
-nltiming @ git+https://github.com/vhaasteren/nltiming.git@45191a68f2ca755bb8a28f83f660a249d485ef08
+nltiming @ git+https://github.com/vhaasteren/nltiming.git@main
 pyarrow>=14.0.0
 
 # Optional dependencies (uncomment as needed)

@@ -953,3 +953,54 @@ class TestDedupeNonrepeatableParLines:
 
         model = create_pint_model(dedupe_nonrepeatable_par_lines(par))
         assert float(model.NE_SW.value) == pytest.approx(4.0)
+
+
+class TestResolverInputContract:
+    """Name resolution takes strings; anything else is a caller bug.
+
+    Passing a non-string through unchanged (the old blanket ``except``) is what
+    let a ``NativeParam`` reach an alias resolver and match nothing, so a par
+    write that was required by the mapping silently did nothing.
+    """
+
+    @pytest.mark.parametrize("bad", [None, 3, ("PX",), NativeParam("PX", "PX")])
+    def test_resolvers_reject_non_strings(self, bad):
+        from metapulsar.pint_helpers import pint_parameter_name
+
+        for fn in (
+            resolve_parameter_alias,
+            pint_parameter_name,
+            get_aliases_for_parameter,
+            canonicalize_fdjump_name,
+        ):
+            with pytest.raises(TypeError, match="parameter-name string"):
+                fn(bad)
+
+    def test_unknown_alias_still_passes_through(self):
+        from metapulsar.pint_helpers import pint_parameter_name
+
+        assert resolve_parameter_alias("NOT_A_PARAM") == "NOT_A_PARAM"
+        assert pint_parameter_name("NOT_A_PARAM") is None
+        assert get_aliases_for_parameter("NOT_A_PARAM") == ["NOT_A_PARAM"]
+
+    @pytest.mark.parametrize("exc", [RuntimeError, ValueError, KeyError])
+    def test_registry_failure_propagates(self, monkeypatch, exc):
+        """The other half of the narrowed except: real failures must escape.
+
+        ``ValueError``/``KeyError`` matter most: those are the alias-miss types,
+        so a registry that fails with one of them is exactly what would be
+        mistaken for "this name is not an alias" and passed through.
+        """
+        from metapulsar import pint_compat
+
+        def _boom():
+            raise exc("AllComponents is broken")
+
+        monkeypatch.setattr(pint_compat, "_get_all_components", _boom)
+        for fn in (
+            pint_compat.resolve_parameter_alias,
+            pint_compat.pint_parameter_name,
+            pint_compat.get_aliases_for_parameter,
+        ):
+            with pytest.raises(exc, match="AllComponents is broken"):
+                fn("F0")

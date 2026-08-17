@@ -133,6 +133,16 @@ class NativeParam:
     ``FDJUMP1``, the PINT model attribute is ``FD1JUMP1``, and the chart id is
     ``FDJUMP1_1``. Consumers read the field their source is keyed by rather
     than guessing which spelling a lone string was.
+
+    ``par_key`` is the retained-par token **when that token uniquely identifies
+    the column**. Tempo2 stores repeated-keyword families under one token --
+    every phase jump is a ``JUMP`` line -- which instance 1 consumes; later
+    instances fall back to ``pint_name`` (``JUMP2``), a spelling absent from
+    the par. The invariant below forbids the honest value:
+    ``resolve_fit_column_name("JUMP")`` is ``JUMP1``, so ``par_key="JUMP"``
+    cannot be stored on instance 2. A consumer writing par text must therefore
+    resolve ``(container token, occurrence)`` itself for these families.
+    Distinct-token families (``FDJUMP1``/``FDJUMP2``, ``DMX_0001``) are exact.
     """
 
     pint_name: str

@@ -42,6 +42,22 @@ COMBINED_PAR = (
 )
 
 
+# Two phase jumps in one par: tempo2 writes both under the repeated `JUMP`
+# token, so only instance 1 can carry it as its par_key.
+TWO_JUMP_PAR = (
+    "PSR J0000+0000\n"
+    "PEPOCH 55000\n"
+    "RAJ 06:13:43.975 1\n"
+    "DECJ -02:00:47.22 1\n"
+    "F0 100.0 1\n"
+    "F1 -1e-15 1\n"
+    "PX -1.500 1 0.3445\n"
+    "JUMP -sys backend_a 1.0e-6 1\n"
+    "JUMP -sys backend_b 2.0e-6 1 1.0e-7\n"
+    "UNITS TDB\n"
+)
+
+
 def _combined_fitparameters() -> dict:
     """Real producer output for the combined-style par."""
     return ParameterManager(
@@ -235,6 +251,35 @@ class TestRetainedValueToken:
         ng9.write_text("PSR J0000+0000\nE 9.99999999 1\n", encoding="utf-8")
         with pytest.raises(ParameterInconsistencyError, match="ECC"):
             pulsar._validate_shared_retained_tokens("ECC")
+
+
+class TestRepeatedKeywordParKey:
+    """``par_key`` is advisory for repeated-keyword families; pin that.
+
+    Documented on :class:`NativeParam`. Instance 2 cannot carry the container
+    token ``JUMP`` -- the fold invariant would reject it -- so it reports the
+    PINT name, which is not a token in the par. A par writer must resolve
+    ``(container, occurrence)`` itself; this test exists so the fallback cannot
+    change silently under one.
+    """
+
+    def test_repeated_jump_par_key_falls_back_to_the_pint_name(self):
+        result = ParameterManager(
+            file_data={
+                "combined": {"timing_package": "pint", "par_content": TWO_JUMP_PAR}
+            },
+            combine_components=["astrometry", "spindown"],
+        ).build_parameter_mappings()
+
+        first = result.fitparameters["JUMP1_combined"]["combined"]
+        second = result.fitparameters["JUMP2_combined"]["combined"]
+        assert first.par_key == "JUMP"  # the container token, consumed here
+        assert second.par_key == "JUMP2"  # PINT name; absent from the par text
+        assert "JUMP2" not in TWO_JUMP_PAR
+
+        # The honest value is unrepresentable: the invariant rejects it.
+        with pytest.raises(ValueError, match="different parameters"):
+            NativeParam(pint_name="JUMP2", par_key="JUMP")
 
 
 class TestPublicMappingRendersParKey:
