@@ -447,6 +447,41 @@ def test_t2_uncoverable_parameter_set_is_not_ell1_family():
     assert decision.reason == "not_ell1_family"
 
 
+def test_manager_skip_stamps_t2_to_resolved_model():
+    """Shared-path skip still unwraps ``BINARY T2`` to the engine model name."""
+    kepler = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0, binary="T2")
+    for key in ("EPS1", "EPS2", "TASC"):
+        kepler.pop(key, None)
+    kepler.update(
+        {
+            "ECC": ["1e-5 1"],
+            "OM": ["10 1"],
+            "T0": ["55000 1"],
+            "KIN": ["80 1"],
+            "KOM": ["60 1"],
+        }
+    )
+    dicts, _ = _two_pta(kepler)
+    pm = ParameterManager(
+        file_data={
+            "PINT": {"timing_package": "pint"},
+            "T2": {"timing_package": "tempo2"},
+        },
+        combine_components=["binary"],
+        pulsar_name="J1713+0747",
+        alignment_policy=AlignmentPolicy(),
+    )
+    pm._maybe_convert_shared_binary(dicts)
+    assert pm.last_binary_conversion_report.decision.reason == "not_ell1_family"
+    assert all(par["BINARY"] == ["DDK"] for par in dicts.values())
+
+    plain = _ell1_dict(a1=0.1, eps1=1e-6, eps2=0.0, binary="T2")
+    dicts, _ = _two_pta(plain)
+    pm._maybe_convert_shared_binary(dicts)
+    assert pm.last_binary_conversion_report.decision.reason == "below_threshold"
+    assert all(par["BINARY"] == ["ELL1"] for par in dicts.values())
+
+
 def test_t13_fb_unsupported():
     par = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0)
     par["FB0"] = ["1e-6 1"]

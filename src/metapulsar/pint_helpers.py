@@ -436,6 +436,31 @@ def resolve_binary_model(parfile_dict: Mapping[str, Any]) -> Optional[str]:
     return guesses[0] if guesses else None
 
 
+def stamp_resolved_binary_keyword(parfile_dict: dict[str, Any]) -> bool:
+    """Replace ``BINARY T2`` with the component PINT will build.
+
+    No-op when there is no ``BINARY`` line, when the declared model is already
+    a concrete name, or when PINT cannot resolve the wrapper. Returns True
+    iff the token was rewritten.
+    """
+    key = _find_parfile_key(parfile_dict, "BINARY")
+    if key is None:
+        return False
+    resolved = resolve_binary_model(parfile_dict)
+    entries = parfile_dict[key]
+    raw = entries[0] if isinstance(entries, (list, tuple)) else entries
+    tokens = str(raw).split()
+    if not tokens or tokens[0].upper() != "T2" or resolved is None:
+        return False
+    tokens[0] = resolved
+    rewritten = " ".join(tokens)
+    if isinstance(entries, (list, tuple)):
+        parfile_dict[key] = [rewritten, *list(entries)[1:]]
+    else:
+        parfile_dict[key] = rewritten
+    return True
+
+
 def _find_parfile_key(parfile_dict: Mapping[str, Any], name: str) -> Optional[str]:
     """Return the actual dict key matching ``name`` case-insensitively."""
     wanted = name.upper()

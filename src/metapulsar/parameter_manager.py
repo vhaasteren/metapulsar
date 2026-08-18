@@ -35,6 +35,7 @@ from .pint_helpers import (
     check_component_available_in_model,
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
+    stamp_resolved_binary_keyword,
     dedupe_nonrepeatable_par_lines,
     parse_par_token,
     si_from_par,
@@ -1985,9 +1986,7 @@ class ParameterManager:
                 decision.reason,
                 decision.resolved_binary_model,
             )
-            return
-
-        if decision.outcome == "unsupported":
+        elif decision.outcome == "unsupported":
             detail = decision.warnings[0] if decision.warnings else ""
             message = _unsupported_message(
                 decision.reason,
@@ -2002,52 +2001,54 @@ class ParameterManager:
             self.last_binary_conversion_report = BinaryConversionReport(
                 decision=decision, record=None
             )
-            return
+        else:
+            # outcome == "convert"
+            pre_nonbinary = {
+                pta: _nonbinary_snapshot(par) for pta, par in parfile_dicts.items()
+            }
+            try:
+                patch, record = convert_shared_binary(
+                    parfile_dicts[self.reference_pta],
+                    decision,
+                    pta_names=tuple(parfile_dicts),
+                    policy=self.alignment_policy,
+                    ell1h_shapiro=self.ell1h_shapiro,
+                )
+            except BinaryConversionError:
+                raise
+            except Exception as exc:
+                raise BinaryConversionError(
+                    f"conversion_failed: {exc}\n{remediation_message()}"
+                ) from exc
 
-        # outcome == "convert"
-        pre_nonbinary = {
-            pta: _nonbinary_snapshot(par) for pta, par in parfile_dicts.items()
-        }
-        try:
-            patch, record = convert_shared_binary(
-                parfile_dicts[self.reference_pta],
-                decision,
-                pta_names=tuple(parfile_dicts),
-                policy=self.alignment_policy,
-                ell1h_shapiro=self.ell1h_shapiro,
+            for pta_name, par in parfile_dicts.items():
+                # Engine-native spellings (STIGMA vs tempo2's STIG); postcondition 2
+                # is alias-resolved. Clock pins always use portable ``CLK``.
+                apply_binary_patch(par, patch, timing_package=timing_packages[pta_name])
+            self._set_pint_models_from_dicts(parfile_dicts)
+            assert_postconditions(
+                parfile_dicts,
+                target_family=decision.target_family or patch.binary_value,
+                pre_nonbinary=pre_nonbinary,
             )
-        except BinaryConversionError:
-            raise
-        except Exception as exc:
-            raise BinaryConversionError(
-                f"conversion_failed: {exc}\n{remediation_message()}"
-            ) from exc
+            self.last_binary_conversion_report = BinaryConversionReport(
+                decision=decision, record=record
+            )
+            scale = decision.scale
+            fid = record.fidelity
+            self.logger.info(
+                "Binary conversion applied: %s (PINT %s) → %s reason=%s "
+                "scale_s=%s total_max_abs_s=%s",
+                decision.source_family,
+                decision.resolved_binary_model,
+                decision.target_family,
+                decision.reason,
+                None if scale is None else f"{scale.scale_s:.6e}",
+                f"{fid.total_max_abs_s:.6e}",
+            )
 
-        for pta_name, par in parfile_dicts.items():
-            # Engine-native spellings (STIGMA vs tempo2's STIG); postcondition 2
-            # is alias-resolved. Clock pins always use portable ``CLK``.
-            apply_binary_patch(par, patch, timing_package=timing_packages[pta_name])
-        self._set_pint_models_from_dicts(parfile_dicts)
-        assert_postconditions(
-            parfile_dicts,
-            target_family=decision.target_family or patch.binary_value,
-            pre_nonbinary=pre_nonbinary,
-        )
-        self.last_binary_conversion_report = BinaryConversionReport(
-            decision=decision, record=record
-        )
-        scale = decision.scale
-        fid = record.fidelity
-        self.logger.info(
-            "Binary conversion applied: %s (PINT %s) → %s reason=%s "
-            "scale_s=%s total_max_abs_s=%s",
-            decision.source_family,
-            decision.resolved_binary_model,
-            decision.target_family,
-            decision.reason,
-            None if scale is None else f"{scale.scale_s:.6e}",
-            f"{fid.total_max_abs_s:.6e}",
-        )
+        for par in parfile_dicts.values():
+            stamp_resolved_binary_keyword(par)
 
     def _make_component_parameters_shared(
         self,

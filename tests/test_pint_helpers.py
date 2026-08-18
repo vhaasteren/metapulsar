@@ -1004,3 +1004,63 @@ class TestResolverInputContract:
         ):
             with pytest.raises(exc, match="AllComponents is broken"):
                 fn("F0")
+
+
+def test_stamp_resolved_binary_keyword_unwraps_t2():
+    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+
+    ell1 = {
+        "BINARY": ["T2"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+        "EPS1": ["1e-6 1"],
+        "EPS2": ["2e-6 1"],
+    }
+    assert stamp_resolved_binary_keyword(ell1) is True
+    assert ell1["BINARY"] == ["ELL1"]
+
+    ddk = {
+        "BINARY": ["T2"],
+        "PB": ["67 1"],
+        "A1": ["32 1"],
+        "T0": ["55000 1"],
+        "ECC": ["7e-5 1"],
+        "OM": ["176 1"],
+        "KIN": ["73 1"],
+        "KOM": ["11 1"],
+    }
+    assert stamp_resolved_binary_keyword(ddk) is True
+    assert ddk["BINARY"] == ["DDK"]
+
+
+def test_stamp_resolved_binary_keyword_is_noop_unless_t2_resolves():
+    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+
+    declared = {
+        "BINARY": ["ELL1"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+    }
+    before = dict(declared)
+    assert stamp_resolved_binary_keyword(declared) is False
+    assert declared == before
+
+    isolated = {"F0": ["100 1"], "PEPOCH": ["55000"]}
+    assert stamp_resolved_binary_keyword(isolated) is False
+    assert "BINARY" not in isolated
+
+    uncoverable = {
+        "BINARY": ["T2"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+        "EPS1": ["1e-6 1"],
+        "EPS2": ["2e-6 1"],
+        "ECC": ["1e-5 1"],
+        "OM": ["10 1"],
+        "T0": ["55000 1"],
+    }
+    assert stamp_resolved_binary_keyword(uncoverable) is False
+    assert uncoverable["BINARY"] == ["T2"]
