@@ -16,6 +16,7 @@ from metapulsar.engines.pint import (
     LinearizedPintEngine,
     PintEngine,
 )
+from metapulsar.engines.delta import Tempo2DeltaEngine
 from metapulsar.engines.tempo2 import (
     LibstempoEngine,
     LinearizedLibstempoEngine,
@@ -77,6 +78,47 @@ class _FakeLTPulsarWithJump:
 
     def formbats(self):
         return None
+
+
+class _SpyLTPulsarParam:
+    def __init__(self, val: float):
+        self.val = val
+
+
+class _SpyLTPulsar:
+    """libstempo stand-in that records barycenter vs residual calls."""
+
+    def __init__(self):
+        self._params = {
+            "PB": _SpyLTPulsarParam(1.0),
+            "F0": _SpyLTPulsarParam(100.0),
+        }
+        self.formbats_calls = 0
+        self.residuals_calls: list[dict] = []
+        self._residuals = np.array([0.1, 0.2, 0.3], dtype=float)
+
+    def pars(self, which=None):
+        return ["PB", "F0"]
+
+    def __getitem__(self, name):
+        return self._params[name]
+
+    def residuals(self, **kwargs):
+        self.residuals_calls.append(dict(kwargs))
+        return self._residuals.copy()
+
+    def designmatrix(self):
+        return np.array(
+            [
+                [1.0, 2.0, 3.0],
+                [1.0, 4.0, 5.0],
+                [1.0, 6.0, 7.0],
+            ],
+            dtype=float,
+        )
+
+    def formbats(self):
+        self.formbats_calls += 1
 
 
 class _FakeJaxState:
@@ -340,3 +382,38 @@ def test_infer_jug_param_mapping_fdjump_spellings():
 
     # A bare spelling is mask 1 and must never capture a later mask.
     assert infer_jug_param_mapping(["FD1JUMP2"], {"FDJUMP1"}) == {}
+
+
+def test_tempo2_delta_engine_does_not_call_formbats():
+    """MCMC jumps use residuals() (updateBatsAll), never formBatsAll."""
+    psr = _SpyLTPulsar()
+    engine = Tempo2DeltaEngine(psr)
+    formbats_after_init = psr.formbats_calls
+    residuals_after_init = len(psr.residuals_calls)
+
+    delta = engine.delta_residuals({"PB": 0.01})
+
+    assert formbats_after_init == 0
+    assert psr.formbats_calls == 0
+    assert len(psr.residuals_calls) == residuals_after_init + 1
+    assert delta.shape == (3,)
+    assert psr["PB"].val == 1.0
+    assert psr["F0"].val == 100.0
+
+
+def test_tempo2_delta_engine_restores_params_without_formbats_on_error():
+    psr = _SpyLTPulsar()
+
+    def _boom(**kwargs):
+        psr.residuals_calls.append(dict(kwargs))
+        raise RuntimeError("residual failure")
+
+    engine = Tempo2DeltaEngine(psr)
+    psr.residuals = _boom
+
+    with pytest.raises(RuntimeError, match="residual failure"):
+        engine.delta_residuals({"F0": 1e-9})
+
+    assert psr.formbats_calls == 0
+    assert psr["PB"].val == 1.0
+    assert psr["F0"].val == 100.0

@@ -175,7 +175,11 @@ class Tempo2DeltaEngine:
                         continue
                     raise KeyError(f"libstempo pulsar has no parameter '{name}'")
                 self._psr[name].val = self._reference_values[name] + float(delta)
-            self._psr.formbats()
+            # Incremental Tempo2 path: residuals() defaults to updateBatsAll.
+            # Do not call formbats() (formBatsAll) — that rebuilds clocks and
+            # reopens the JPL kernel on every jump. See
+            # feature_barycentering_when_needed.md for skipping updateBatsAll
+            # on binary/spin-only jumps.
             residuals = np.asarray(self._psr.residuals(), dtype=float)
             delta_residuals = residuals - self._reference_residuals
             return delta_residuals + self._linearized_unrecomputed_delta(
@@ -184,7 +188,6 @@ class Tempo2DeltaEngine:
         finally:
             for name, value in self._reference_values.items():
                 self._psr[name].val = value
-            self._psr.formbats()
 
     def _linearized_unrecomputed_delta(
         self, delta_params: dict[str, float], delta_residuals: np.ndarray
