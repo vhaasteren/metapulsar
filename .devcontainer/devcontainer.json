@@ -29,6 +29,10 @@
   "onCreateCommand": "mkdir -p \"$HOME\" && git config --global --add safe.directory \"$PWD\" || true",
   "customizations": {
     "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venvs/pta/bin/python",
+        "python.venvPath": "/opt/venvs"
+      },
       "extensions": [
         "ms-python.python",
         "ms-python.black-formatter",
