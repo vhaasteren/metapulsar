@@ -265,7 +265,10 @@ def expand_tempo1(par: Dict[str, List[str]]) -> List[str]:
 # Matching is intentionally explicit: exact names, anchored prefixes, and
 # anchored regular expressions. There is deliberately no generic "starts with
 # DM/CM/TN" rule, because that would swallow noise hyperparameters (EFAC,
-# EQUAD, ECORR, TNRedAmp, TNDMAmp, DMJUMP, ...) which are out of scope here.
+# EQUAD, ECORR, TNRedAmp, TNDMAmp, ...) and wideband-only DM-measurement
+# keywords (DMJUMP, DMEFAC, DMEQUAD), which are out of scope here. DMJUMP
+# offsets the DM *measurement*, not the narrowband timing delay; MetaPulsar
+# does not ingest wideband TOAs yet, so those lines stay on the engine par.
 
 #: Tempo2-only or PINT-unsafe surfaces, removed whenever PINT is in the stack.
 _PINT_UNSAFE_EXACT = {

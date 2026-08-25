@@ -7,6 +7,10 @@ Vela's float64 storage conventions entirely: the F0 big/small split and the
 epoch-from-PEPOCH offsets are additive constants that cancel, so a native
 PINT-unit delta scales directly into a raw-vector delta.
 
+Enterprise/discovery own EFAC/EQUAD/ECORR/RN. The par handed to ``SPNTA`` is
+therefore a delay-only ingest: WN/RN hyperparameter lines are stripped so
+PINT never builds ``EcorrNoise`` and pyvela never ``ecorr_sort``s TOAs.
+
 Not JAX-capable: use with the Enterprise/PTMCMC likelihood interface or for cross-engine
 validation; NUTS needs a JAX engine (JUG).
 """
@@ -22,6 +26,8 @@ import numpy as np
 from nltiming.protocols import GaugeProvenance
 
 from nltiming.engine_support import LinearModel, is_exact_linear_param
+
+from ..parfile_lines import is_noise_line
 from .delta import _is_zero_delta
 
 
@@ -133,31 +139,43 @@ def _load_mask_reference(par_file, tim_file):
 
 
 def _prepare_par_for_spnta(par_file, tim_file, *, mask_reference=None) -> Path:
-    """Return a par file pyvela's ``SPNTA`` can ingest.
+    """Return a par file pyvela's ``SPNTA`` can ingest as a residual engine.
 
-    Two pyvela ingestion constraints are shimmed here, both no-ops for the
-    residual deltas this engine evaluates:
+    Residual deltas do not use Vela's likelihood kernel. This shim therefore
+    strips WN/RN hyperparameter lines (same classifier as combination_writer)
+    so PINT never builds ``EcorrNoise`` and pyvela never ``ecorr_sort``s TOAs.
+    The caller's engine/retained par is not rewritten; only a temp ingest
+    file is. Wideband-only DM-measurement lines (``DMJUMP``, ``DMEFAC``,
+    ``DMEQUAD``) are unused on MetaPulsar's narrowband path and go with them.
 
-    * a fitted parameter with no frequentist uncertainty leaves pyvela unable
-      to build its default cheat prior (priors never enter this engine), so
-      such lines get a placeholder uncertainty;
-    * frozen mask parameters selecting zero TOAs abort ``read_mask``, so empty
-      frozen JUMPs are dropped (see :func:`_strip_empty_frozen_jumps`).
+    Additional no-op-for-residuals patches, already required by pyvela:
+
+    * a fitted parameter with no frequentist uncertainty gets a placeholder
+      uncertainty (cheat priors never enter this engine);
+    * frozen mask parameters selecting zero TOAs abort ``read_mask``, so
+      empty frozen JUMPs are dropped (see :func:`_strip_empty_frozen_jumps`).
 
     ``mask_reference`` is an optional pre-loaded ``(TimingModel, TOAs)`` pair
-    for the same files — MetaPulsar's PINT legs already hold one, which saves
-    re-reading the TOAs just to evaluate masks. Only JUMPs are swept; other
-    mask families (EFAC, ECORR, DMJUMP) still surface pyvela's own assertion.
+    for the JUMP sweep only. Noise-line removal does not read the tim.
     """
     par_file = Path(par_file)
     lines = par_file.read_text().splitlines()
     changed = False
 
+    stripped: list[str] = []
+    for line in lines:
+        if is_noise_line(line):
+            changed = True
+            continue
+        stripped.append(line)
+    lines = stripped
+
     if any(_is_jump_line(line) for line in lines):
         if mask_reference is None:
             mask_reference = _load_mask_reference(par_file, tim_file)
         model, toas = mask_reference
-        lines, changed = _strip_empty_frozen_jumps(lines, model, toas)
+        lines, jumped = _strip_empty_frozen_jumps(lines, model, toas)
+        changed = changed or jumped
 
     patched: list[str] = []
     for line in lines:
@@ -171,6 +189,19 @@ def _prepare_par_for_spnta(par_file, tim_file, *, mask_reference=None) -> Path:
     out = Path(tempfile.mkdtemp(prefix="metapulsar_vela_")) / par_file.name
     out.write_text("\n".join(patched) + "\n")
     return out
+
+
+def _refuse_ecorr_kernel(spnta) -> None:
+    """Raise if SPNTA still built an ECORR model that would permute TOAs."""
+    model_pint = getattr(spnta, "model_pint", None)
+    pint_ecorr = model_pint is not None and "EcorrNoise" in getattr(
+        model_pint, "components", {}
+    )
+    if pint_ecorr or getattr(spnta, "has_ecorr_noise", False):
+        raise RuntimeError(
+            "Vela residual ingest still has EcorrNoise; noise lines must "
+            "be stripped before SPNTA so TOAs stay in host order"
+        )
 
 
 class VelaDeltaEngine:
@@ -339,6 +370,8 @@ class VelaEngine:
         ``mask_reference`` is an optional ``(TimingModel, TOAs)`` pair already
         loaded from these same files; it only serves the empty-mask sweep in
         :func:`_prepare_par_for_spnta`, which otherwise re-reads the TOAs.
+        Residual ingest strips WN/RN lines first so pyvela cannot
+        ``ecorr_sort`` TOAs.
         """
         from pyvela import SPNTA
 
@@ -346,6 +379,7 @@ class VelaEngine:
         kwargs.update(dict(spnta_kwargs or {}))
         par = _prepare_par_for_spnta(par_file, tim_file, mask_reference=mask_reference)
         spnta = SPNTA(str(par), str(tim_file), **kwargs)
+        _refuse_ecorr_kernel(spnta)
         return cls.from_contribution(
             spnta,
             linear_model=linear_model,

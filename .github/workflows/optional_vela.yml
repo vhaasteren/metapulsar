@@ -5,7 +5,9 @@ on:
   pull_request:
     paths:
       - "src/metapulsar/engines/vela.py"
+      - "src/metapulsar/parfile_lines.py"
       - "tests/engines/test_timing_vela_engine.py"
+      - "tests/engines/test_vela_par_preparation.py"
       - ".github/workflows/optional_vela.yml"
 
 jobs:

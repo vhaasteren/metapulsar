@@ -22,6 +22,7 @@ from .parfile_header import (
 )
 from .parfile_lines import (
     is_active_par_line,
+    is_noise_line,
     iter_active_par_lines,
     join_par_lines,
     par_line_key,
@@ -33,37 +34,8 @@ from .tim_canonical import (
     replace_pn_on_toa_line,
 )
 
-# Noise / white-noise / red-noise hyperparameter keys removed from the
-# combination par (exact key match).
-_NOISE_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "EFAC",
-        "TNEFAC",
-        "T2EFAC",
-        "EQUAD",
-        "TNEQUAD",
-        "T2EQUAD",
-        "ECORR",
-        "TNECORR",
-        "DMEFAC",
-        "DMEQUAD",
-        "DMJUMP",
-        "RNAMP",
-        "RNIDX",
-        "TNREDAMP",
-        "TNREDGAM",
-        "TNREDC",
-        "TNREDF",
-        "TNREDFC",
-        "TNDMAMP",
-        "TNDMGAM",
-        "TNCHROMAMP",
-        "TNCHROMGAM",
-        "TNCHROMIDX",
-        "TNGAMMA",
-        "TNAMP",
-    }
-)
+# Back-compat for tests that import the private names.
+_is_noise_line = is_noise_line
 
 _JUMP_RE = re.compile(r"^JUMP\b", re.IGNORECASE)
 
@@ -111,34 +83,6 @@ def _strip_track_lines(text: str) -> str:
             continue
         kept.append(line)
     return join_par_lines(kept, like=text)
-
-
-def _is_noise_line(line: str) -> bool:
-    if not is_active_par_line(line):
-        return False
-    key = par_line_key(line)
-    if key in _NOISE_KEYS:
-        return True
-    # Catch TN* / RN* families without swallowing TRACK / TIMEEPH / etc.
-    if key.startswith("TN") and key not in {"TRACK", "TIMEEPH", "T2CMETHOD"}:
-        return True
-    if key.startswith("RN") and key not in {"RA", "RAJ"}:
-        return True
-    for prefix in (
-        "EFAC",
-        "EQUAD",
-        "ECORR",
-        "T2EFAC",
-        "T2EQUAD",
-        "TNEFAC",
-        "TNEQUAD",
-        "DMEFAC",
-        "DMEQUAD",
-        "DMJUMP",
-    ):
-        if key.startswith(prefix):
-            return True
-    return False
 
 
 def extract_jump_lines(par_text: str) -> list[str]:

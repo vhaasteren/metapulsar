@@ -21,7 +21,7 @@ For each PTA (p) that observed a given pulsar, MetaPulsar requires:
 * a `.par` file specifying the **deterministic timing model** (astrometry, spin, binary, dispersion, and instrument/telescope‑specific deterministic delays such as **JUMPs**, **FD** coefficients, and overall **phase offsets**), and
 * a `.tim` file with TOAs and their formal uncertainties.
 
-Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about its nominal model ( β_{0,p} ), and let ( **M**_p ) be the corresponding **design matrix** — the raw fitter basis with sign \(r(\theta+\delta)\approx r(\theta)-M\delta\), in public fit units. The full data vector is the concatenation ( **d** = ⨁_p **d**_p ). White‑ and red‑noise hyperparameters (EFAC/EQUAD/ECORR and RN/DM GP parameters) are **not** part of the deterministic timing model and are handled in the subsequent noise inference; MetaPulsar leaves them unchanged at this stage.
+Let ( **d**_p ) denote the vector of residuals for PTA (p) when linearized about its nominal model ( β_{0,p} ), and let ( **M**_p ) be the corresponding **design matrix** — the raw fitter basis with sign \(r(\theta+\delta)\approx r(\theta)-M\delta\), in public fit units. The full data vector is the concatenation ( **d** = ⨁_p **d**_p ). White‑ and red‑noise hyperparameters (EFAC/EQUAD/ECORR and RN/DM GP parameters) are **not** part of the deterministic timing model and are handled in the subsequent noise inference; MetaPulsar leaves them unchanged at this stage. MetaPulsar currently ingests **narrowband** TOAs only (one arrival time per row). Wideband data, where DM is a second measurement, is not supported; `DMJUMP` / `DMEFAC` / `DMEQUAD` apply only to that DM datum.
 
 MetaPulsar uses **PINT** and **Tempo2/libstempo** to parse/realize timing models, and MetaPulsar-owned `_PtaTimingData` records to hold per-PTA arrays. The implementation provides two combination modes:
 
@@ -52,8 +52,13 @@ The stripped families are, by engine set:
 
 Matching is by exact name, anchored prefix, or anchored regular expression.
 Noise hyperparameters (EFAC/EQUAD/ECORR, red noise, DM GP, ordinary chromatic
-noise, `DMJUMP`) are **never** matched — there is no generic “starts with
-`DM`/`CM`/`TN`” rule.
+noise) are **never** matched — there is no generic “starts with `DM`/`CM`/`TN`”
+rule. Wideband-only DM-measurement keywords (`DMJUMP`, `DMEFAC`, `DMEQUAD`)
+are also left untouched here: they offset or scale the DM *measurement*, not
+the narrowband timing delay, and MetaPulsar has no wideband ingest yet.
+Combination products and Vela residual ingest drop those lines later via
+`parfile_lines.is_noise_line` (same classifier as WN/RN), until a wideband
+path exists.
 
 `IPM` and `SWM` are value‑dependent: `IPM 0` (Tempo2's interplanetary medium
 off) and `SWM 1` (PINT's non‑constant solar wind) are violations, and under the
@@ -394,6 +399,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 * It **does not** invent TOA uncertainties or backend flags. The canonical `.tim` rewrite bakes release `TIME` into MJDs, drops `TIME`/`MODE`, renames TOA filename tokens to `toaNNNNN`, adds `-pta`/`-pta_dataset`/`-timing_package` (and `-pn` when requested), may add `-mjd_jump_pta` for `JUMP MJD` windows, and renames a colliding MetaPulsar-owned release flag to `-<name>_orig`; every other flag is copied.
 * It **does not** decide noise hyperparameters; EFAC/EQUAD/ECORR and the red/DM noise models are inferred in the usual way in Enterprise/Discovery after the metapulsar is constructed.
+* It **does not** ingest wideband TOAs (a DM measurement per arrival). `DMJUMP` / `DMEFAC` / `DMEQUAD` are therefore unused on the current path; combination pars and Vela residual ingest drop them.
 * It **does not** convert `DMMODEL` grids to DMX or to a Taylor expansion.
   Binary-family conversion is gated and limited to the supported ELL1/ELL1H
   sets above; unsupported families are refused (or kept under policy), never

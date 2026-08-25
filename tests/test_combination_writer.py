@@ -254,11 +254,16 @@ def test_noise_line_detection():
     assert _is_noise_line("EFAC -f 1400 1.1")
     assert _is_noise_line("TNREDAMP -13.0")
     assert _is_noise_line("RNAMP -14")
+    assert _is_noise_line("ECORR -f Rcvr1_2_GUPPI 0.03861")
+    assert _is_noise_line("TNECORR -f L-wide_PUPPI 0.03")
+    assert _is_noise_line("DMJUMP -fe Rcvr 0.01")
     assert not _is_noise_line("TRACK -2")
     assert not _is_noise_line("TIMEEPH FB90")
     assert not _is_noise_line("T2CMETHOD IAU2000B")
     assert not _is_noise_line("RAJ 12:34:56")
     assert not _is_noise_line("# comment")
+    assert not _is_noise_line("# ECORR -f foo 0.1")
+    assert not _is_noise_line("C ECORR -f foo 0.1")
     assert not _is_noise_line("")
 
 
