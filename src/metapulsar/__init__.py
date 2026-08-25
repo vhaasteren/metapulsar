@@ -87,9 +87,13 @@ from .parfile_update import (
 )
 
 _TIMING_LAZY_EXPORTS = {
-    "NonLinearTimingModel": (
+    "TimingSpec": (
         "nltiming.nonlinear_timing_model",
-        "NonLinearTimingModel",
+        "TimingSpec",
+    ),
+    "TimingSignal": (
+        "nltiming.nonlinear_timing_model",
+        "TimingSignal",
     ),
     "ParameterSpace": ("nltiming.space", "ParameterSpace"),
     "RunIOError": ("nltiming.run_io", "RunIOError"),
@@ -194,7 +198,8 @@ __all__ = [
     "filter_file_data_by_pulsars",
     "discover_pulsars_by_position",
     # Nonlinear timing (lazy; see nltiming)
-    "NonLinearTimingModel",
+    "TimingSpec",
+    "TimingSignal",
     "ParameterSpace",
     "RunIOError",
     "RunManifest",

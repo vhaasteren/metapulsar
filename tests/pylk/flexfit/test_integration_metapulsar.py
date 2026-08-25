@@ -6,9 +6,9 @@ drives the full flexfit path the paper notebook uses: the timing sign check
 timing block, Discovery red/DM blocks from the pulsar's real TOAs/frequencies,
 white noise, ``fastfit``, and the fixed-spectrum MLE reconstruction.
 
-The nltiming ``NonLinearTimingModel.bind`` cheat-prior WLS is rank-deficient on
+The nltiming ``TimingSpec.bind`` cheat-prior WLS is rank-deficient on
 mock timing models (a mock-data property, not a flexfit one), so the ctx is
-assembled directly from the pulsar's real backend — exactly the ``TimingContext``
+assembled directly from the pulsar's real backend — exactly the ``TimingSignal``
 surface the adapter consumes. Skips unless MetaPulsar + nltiming + Discovery are
 importable (devcontainer).
 """
@@ -67,7 +67,7 @@ def _plan(fitpars, sampled):
 
 
 def _binding(pulsar, sample):
-    """Assemble a TimingContext-shaped object from the pulsar's real backend."""
+    """Assemble a TimingSignal-shaped object from the pulsar's real backend."""
     backend = pulsar.timing_engine(ENGINES)
     fitpars = tuple(pulsar.fitpars)
     sampled = tuple(sample) if sample else ()

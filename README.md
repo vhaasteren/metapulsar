@@ -253,8 +253,8 @@ nltiming exposes three model builders on the same `TimingPulsar`:
 `sampling.numpyro.joint_model` (full-basis dynamic transport, `whitening=None`),
 and `sampling.numpyro.decentered_model` (marginalized dynamic decentering — the
 small sampled timing block whitened against the live `C(η)`, `whitening=None`).
-See the nltiming README and `examples/notebooks/03_j1640_decentering_validation.ipynb`
-(the three-mode comparison) for choosing among them.
+See the nltiming README and `examples/notebooks/03_decentering_and_full_basis.ipynb`
+for choosing among them.
 
 Install the JUG engine with `pip install "metapulsar[jug]"` (Python 3.11+).
 Optional Vela support is `metapulsar[vela]` (requires a compatible Julia

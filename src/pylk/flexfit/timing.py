@@ -4,7 +4,7 @@ The flexible-``Phi`` solver treats the timing block like any other basis block,
 but a *nonlinear* timing model needs its ``J_z`` rebuilt as the anchor moves.
 ``fastfit`` drives that outer loop through this small protocol so it never has
 to import a specific timing backend; concrete implementations live in
-``adapters`` (e.g. an ``nltiming`` ``TimingContext``/``TimingEvaluator`` model).
+``adapters`` (e.g. an ``nltiming`` ``TimingSignal``/``TimingEvaluator`` model).
 """
 
 from __future__ import annotations

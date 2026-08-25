@@ -1,4 +1,4 @@
-"""Build the flexfit timing block from an ``nltiming`` ``TimingContext``.
+"""Build the flexfit timing block from an ``nltiming`` ``TimingSignal``.
 
 The timing directions enter the joint basis in ``nltiming``'s prior-transformed
 ``z`` coordinates. This adapter splits the timing model exactly as ``nltiming``'s
@@ -217,7 +217,7 @@ def timing_model(
     sample_sigma_max: float = DEFAULT_TIMING_SIGMA_MAX,
     marginalize_all: bool = False,
 ) -> NltimingTimingModel:
-    """Build a :class:`NltimingTimingModel` from an ``nltiming`` ``TimingContext``.
+    """Build a :class:`NltimingTimingModel` from an ``nltiming`` ``TimingSignal``.
 
     Parameters
     ----------

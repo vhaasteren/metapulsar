@@ -233,7 +233,7 @@ class PulsarTimingEngine:
         """Composites have no own provenance; readers use the context map."""
         raise AttributeError(
             "PulsarTimingEngine has no own gauge_provenance; use "
-            "TimingContext.gauge_provenance (one entry per contribution)"
+            "TimingSignal.gauge_provenance (one entry per contribution)"
         )
 
     @property

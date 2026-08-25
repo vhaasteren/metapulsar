@@ -8,5 +8,5 @@ the only modules that import Discovery, Enterprise, or ``nltiming``:
 * :mod:`pylk.flexfit.adapters.enterprise` — **planned** equivalent using
   Enterprise ``gp_bases`` / ``gp_priors`` (stub; not yet implemented).
 * :mod:`pylk.flexfit.adapters.nltiming` — the timing ``J_z`` block and the
-  finite-difference sign check, from an ``nltiming`` ``TimingContext``.
+  finite-difference sign check, from an ``nltiming`` ``TimingSignal``.
 """

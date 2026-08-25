@@ -55,7 +55,7 @@ Ownership: the timing `z`-space Jacobian and prior transform belong to
 from pylk.flexfit import fastfit
 from pylk.flexfit.adapters import discovery as dx, nltiming as nx
 
-ctx = ntm.for_pulsar(pulsar)          # nltiming TimingContext
+timing = spec.for_pulsar(pulsar)      # nltiming TimingSignal
 nx.sign_check(ctx)                    # verify the timing convention by finite differences
 
 timing = nx.timing_model(ctx, marginalize_all=True)   # analytically marginalize timing
