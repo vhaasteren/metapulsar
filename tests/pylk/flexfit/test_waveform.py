@@ -481,6 +481,40 @@ def test_plot_waveform_panels_with_dm():
 
 
 @pytest.mark.unit
+def test_plot_waveform_panels_skips_dm():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    from pylk.flexfit.waveform import WaveformPanelArrays
+    from pylk.flexfit.waveform_plot import plot_waveform_panels
+
+    n = 20
+    t = np.linspace(53000.0, 54000.0, n)
+    y = np.linspace(-1.0, 1.0, n)
+    panels = WaveformPanelArrays(
+        mjd=t,
+        freq_mhz=np.full(n, 1400.0),
+        resid_us=y,
+        after_timing_us=0.5 * y,
+        after_all_us=0.1 * y,
+        z=0.1 * y,
+        sigma_us=np.ones(n),
+        grid_mjd=t,
+        red_mean_us=np.zeros(n),
+        red_std_us=np.ones(n),
+        dm_mean_us=np.ones(n),
+        dm_std_us=np.ones(n),
+        label="test",
+        stage_rms_us={},
+    )
+    fig = plot_waveform_panels(panels, pulsar_name="J0000+0000", include_dm=False)
+    titles = {ax.get_title() for ax in fig.axes}
+    assert "(c) red-noise GP prediction (mean ± 1σ)" in titles
+    assert not any("DM-variation" in t for t in titles)
+    assert any(t.startswith("(e) everything subtracted") for t in titles)
+    assert any(t.startswith("(f) normalized residuals") for t in titles)
+    plt.close(fig)
+
+
+@pytest.mark.unit
 def test_standard_whitened_stage_differs_from_whitened_residuals():
     rng = np.random.default_rng(10)
     n = 150

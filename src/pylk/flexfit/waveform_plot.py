@@ -37,6 +37,7 @@ def plot_waveform_panels(
     pulsar_name: str | None = None,
     title: str | None = None,
     fref_mhz: float = 1400.0,
+    include_dm: bool = True,
     axs: Any = None,
 ):
     """Draw the stacked (a)–(g) waveform figure used by the paper / Condor jobs.
@@ -45,6 +46,9 @@ def plot_waveform_panels(
     (c) red-noise GP, (d) DM delay @ ``fref_mhz``, (e) everything subtracted,
     (f) normalized residuals. Panel (g) is a 90°-rotated density histogram of
     the normalized residuals under the frequency colorbar.
+
+    ``include_dm=False`` omits panel (d) (DMX data, where DM is already in the
+    timing model). Remaining panel letters stay (a)–(c), (e)–(g).
 
     Returns the Matplotlib ``Figure``. Does not call ``plt.show()``.
     ``axs`` is accepted only for backward compatibility and must be ``None``.
@@ -72,9 +76,10 @@ def plot_waveform_panels(
     z_mean = float(np.mean(z_finite)) if z_finite.size else 0.0
     z_std = float(np.std(z_finite)) if z_finite.size else 1.0
 
-    fig = plt.figure(figsize=(12, 15))
+    n_rows = 6 if include_dm else 5
+    fig = plt.figure(figsize=(12, 15 if include_dm else 13))
     gs = fig.add_gridspec(
-        6,
+        n_rows,
         2,
         width_ratios=[26, 1.5],
         hspace=0.42,
@@ -84,11 +89,11 @@ def plot_waveform_panels(
         left=0.08,
         right=0.99,
     )
-    ax = [fig.add_subplot(gs[i, 0]) for i in range(6)]
+    ax = [fig.add_subplot(gs[i, 0]) for i in range(n_rows)]
     for a in ax[1:]:
         a.sharex(ax[0])
-    cax = fig.add_subplot(gs[0:5, 1])
-    hax = fig.add_subplot(gs[5, 1], sharey=ax[5])
+    cax = fig.add_subplot(gs[0 : n_rows - 1, 1])
+    hax = fig.add_subplot(gs[n_rows - 1, 1], sharey=ax[-1])
 
     sc = _scatter(ax[0], mjd, panels.resid_us, freq)
     ax[0].set_title(
@@ -121,45 +126,49 @@ def plot_waveform_panels(
     ax[2].set_title("(c) red-noise GP prediction (mean ± 1σ)", fontsize=9)
     ax[2].set_ylabel("RN (µs)")
 
-    dm_mean = np.asarray(panels.dm_mean_us, dtype=float)
-    dm_std = np.asarray(panels.dm_std_us, dtype=float)
-    if gm.size and dm_mean.size:
-        ax[3].fill_between(
-            gm,
-            dm_mean - dm_std,
-            dm_mean + dm_std,
-            color="C0",
-            alpha=0.25,
-            label="±1σ",
+    row = 3
+    if include_dm:
+        dm_mean = np.asarray(panels.dm_mean_us, dtype=float)
+        dm_std = np.asarray(panels.dm_std_us, dtype=float)
+        if gm.size and dm_mean.size:
+            ax[row].fill_between(
+                gm,
+                dm_mean - dm_std,
+                dm_mean + dm_std,
+                color="C0",
+                alpha=0.25,
+                label="±1σ",
+            )
+            ax[row].plot(
+                gm,
+                dm_mean,
+                "C0-",
+                lw=1.2,
+                label=f"DM @ {fref_mhz:g} MHz",
+            )
+            ax[row].legend(loc="upper right", fontsize=7)
+        ax[row].set_title(
+            f"(d) DM-variation delay time series @ {fref_mhz:g} MHz (mean ± 1σ)",
+            fontsize=9,
         )
-        ax[3].plot(
-            gm,
-            dm_mean,
-            "C0-",
-            lw=1.2,
-            label=f"DM @ {fref_mhz:g} MHz",
-        )
-        ax[3].legend(loc="upper right", fontsize=7)
-    ax[3].set_title(
-        f"(d) DM-variation delay time series @ {fref_mhz:g} MHz (mean ± 1σ)",
-        fontsize=9,
-    )
-    ax[3].set_ylabel("DM delay (µs)")
+        ax[row].set_ylabel("DM delay (µs)")
+        row += 1
 
-    _scatter(ax[4], mjd, panels.after_all_us, freq)
-    ax[4].set_title(
+    _scatter(ax[row], mjd, panels.after_all_us, freq)
+    ax[row].set_title(
         f"(e) everything subtracted (timing + GPs)   (RMS {rms_e:.2f} µs)",
         fontsize=9,
     )
-    ax[4].set_ylabel("residual (µs)")
+    ax[row].set_ylabel("residual (µs)")
+    row += 1
 
-    _scatter(ax[5], mjd, z, freq)
-    ax[5].set_title(
+    _scatter(ax[row], mjd, z, freq)
+    ax[row].set_title(
         f"(f) normalized residuals   (mean {z_mean:.2f}, std {z_std:.2f})",
         fontsize=9,
     )
-    ax[5].set_ylabel(r"$r / \sigma_{\rm white}$")
-    ax[5].set_xlabel("MJD")
+    ax[row].set_ylabel(r"$r / \sigma_{\rm white}$")
+    ax[row].set_xlabel("MJD")
 
     for a in ax:
         a.axhline(0.0, color="0.7", lw=0.6, zorder=0)
@@ -188,7 +197,8 @@ def plot_waveform_panels(
 
     if title is None:
         psr = pulsar_name or ""
-        title = f"{psr}: multi-PTA [timing + RN + DM] reconstruction".strip()
+        gp = "timing + RN + DM" if include_dm else "timing + RN"
+        title = f"{psr}: multi-PTA [{gp}] reconstruction".strip()
         if title.startswith(":"):
             title = title[1:].lstrip()
     fig.suptitle(title, y=0.995, fontsize=11)
