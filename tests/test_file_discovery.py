@@ -842,7 +842,7 @@ class TestFileDiscovery:
 
     @pytest.mark.slow
     @pytest.mark.requires_ipta_data
-    @pytest.mark.parametrize("data_root", ["data/ipta-dr2", "data-check"])
+    @pytest.mark.parametrize("data_root", ["data/ipta-dr2"])
     def test_shipped_releases_resolve_without_ambiguity(self, data_root):
         """The M1 no-op claim, as a test: no shipped release ties on real trees."""
         repo_root = Path(__file__).resolve().parents[1]

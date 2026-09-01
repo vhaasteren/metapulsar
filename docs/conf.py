@@ -7,9 +7,14 @@ sys.path.insert(0, os.path.abspath("../src"))
 
 # Project information
 project = "MetaPulsar"
-copyright = "2025, Rutger van Haasteren, Wang-Wei Yu"
-author = "Rutger van Haasteren, Wang-Wei Yu"
-release = "0.1.0"
+copyright = "2025–2026, Rutger van Haasteren, Wang-Wei Yu, David Wright"
+author = "Rutger van Haasteren, Wang-Wei Yu, David Wright"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    release = _pkg_version("metapulsar")
+except Exception:
+    release = "0.0.0"
 
 # Extensions
 extensions = [

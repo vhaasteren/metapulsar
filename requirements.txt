@@ -2,8 +2,8 @@
 numpy>=1.20.0
 astropy>=5.0.0
 scipy>=1.7.0
-# nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Temporarily track tip of
-# vhaasteren/PINT@metapulsar while that PR is in flux; unpin to a release once merged.
+# Alpha GitHub pins — same as pyproject.toml. Unpin both for a PyPI v1.0.
+# nanograv/PINT#2023 (hybrid PB+FBn -> free FB0) on vhaasteren/PINT@metapulsar.
 pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar
 ephem>=4.1
 nltiming @ git+https://github.com/vhaasteren/nltiming.git@main

@@ -5,45 +5,51 @@
 # MetaPulsar
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI](https://img.shields.io/pypi/v/metapulsar.svg)](https://pypi.org/project/metapulsar/)
 [![DOI](https://zenodo.org/badge/727659043.svg)](https://doi.org/10.5281/zenodo.17626664)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/metapulsar)
 
 A framework for combining pulsar timing data from multiple PTA collaborations into unified "metapulsar" objects for gravitational wave detection analysis.
+
+This tree is **alpha**: install from GitHub. A PyPI v1.0 is a later story — two
+runtime dependencies are still git pins (see [Installation](#installation)).
 
 ## Features
 
 - **Multi-PTA Data Combination**: Combine data from EPTA, PPTA, NANOGrav, MPTA, and other PTAs
-- **Enterprise Integration**: Full compatibility with the Enterprise pulsar timing analysis package
-- **Nonlinear Timing**: `NonLinearTimingModel` component for Discovery/NumPyro and Enterprise samplers
-- **Dual Timing Package Support**: Works with both PINT and libstempo/tempo2
-- **Flexible Parameter Management**: Support for "consistent" and "composite" combination strategies
+- **Nonlinear Timing**: nltiming `NonLinearTimingModel` for Discovery/NumPyro and Enterprise samplers (lazy; `import metapulsar` does not load nltiming)
+- **Dual Timing Package Support**: PINT and libstempo/tempo2, plus optional JUG and Vela engines
+- **Flexible Parameter Management**: `"shared"` (merge selected timing-model params) and `"per_pta"` (keep per-PTA params). Legacy `"consistent"` / `"composite"` aliases still warn.
 
 ## Quick Start
 
 ### Installation
 
-Install the latest release from PyPI:
+Requires **Python 3.11+**. Install from this repository — not from PyPI:
 
 ```bash
-pip install metapulsar
+pip install "git+https://github.com/vhaasteren/metapulsar.git"
 
-# With optional extras
-pip install "metapulsar[dev,libstempo,timing]"
+# Optional extras (libstempo, jug, vela, enterprise, dev, docs)
+pip install "metapulsar[dev,libstempo]"
 ```
 
-Or install from source for development:
+Or from a clone:
 
 ```bash
 git clone https://github.com/vhaasteren/metapulsar.git
 cd metapulsar
-pip install -e .
-
-# With optional dependencies
-pip install -e ".[dev,libstempo,timing]"
+pip install -e ".[dev]"
 ```
+
+That install currently pulls two git dependencies:
+
+| Pin | Why |
+|---|---|
+| `pint-pulsar` from `vhaasteren/PINT@metapulsar` | [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` → free `FB0`). Unpin to a PINT release once that lands. |
+| `nltiming` from `vhaasteren/nltiming@main` | Not on PyPI. Protocols and nonlinear timing math. |
+
+Prefer an editable local checkout of either when developing (`pip install -e . --no-deps` from that tree). Diagnose PINT with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
 
 ### Basic Usage
 
@@ -279,39 +285,22 @@ required today as the `TimingPulsar` implementation those notebooks bind to.
 ## Testing
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=src/metapulsar
+make fast          # pytest, excludes the slow marker
+make test          # full local suite
+make check         # black --check src/ tests/, ruff, pytest
 ```
 
-## Release Workflow (GitHub -> PyPI)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup.
 
-MetaPulsar uses tag-based versioning via `setuptools-scm`. The package version is
-derived from the Git tag (for example, `v0.9.6` -> `0.9.6`), and PyPI publishing
-is triggered automatically when a GitHub Release is published.
+## Versioning
 
-### One-time setup
+Version comes from git tags via setuptools-scm (`vX.Y.Z` → `X.Y.Z`). Do not
+write a static version into `pyproject.toml`.
 
-- Ensure the repository secret `PYPI_API_TOKEN` is configured in GitHub settings.
-- Use release tags in the format `vX.Y.Z` (for example, `v0.9.6`).
-
-### Normal release process
-
-1. Merge PRs into `main`.
-2. In GitHub, create a new Release and create/select a new tag like `v0.9.6`
-   from `main`.
-3. Publish the release.
-4. GitHub Actions runs the release workflow, builds distributions from that tag,
-   and uploads them to PyPI.
-
-### Important notes
-
-- Do not manually edit a static version in `pyproject.toml`; version comes from
-  the Git tag.
-- Reusing an existing release tag/version will fail the PyPI publish step, which
-  is intentional to prevent silent no-op releases.
+A GitHub Release still *can* run the PyPI upload job, but this alpha is not a
+PyPI v1.0: an sdist that depends on git PINT and git nltiming is not a
+publishable pin set. Tag for GitHub/Zenodo citation; wait to publish to PyPI
+until those two are released packages.
 
 ## Troubleshooting
 
@@ -346,8 +335,8 @@ Long-term plan:
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
 - **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
-- **pint-pulsar** ([nanograv/PINT](https://github.com/nanograv/PINT/tree/main)). Prefer an editable local PINT checkout (`pip install -e . --no-deps` from that tree). Diagnose installs with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone (a user-site `pint` can shadow an editable install while reporting the right version).
-- **nltiming** (protocols, engine selection, nonlinear timing math)
+- **pint-pulsar** from `vhaasteren/PINT@metapulsar` until [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) is in a release. Prefer an editable local checkout (`pip install -e . --no-deps` from that tree). Diagnose with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
+- **nltiming** from `vhaasteren/nltiming@main` (not on PyPI; protocols and nonlinear timing math)
 
 Optional extras:
 

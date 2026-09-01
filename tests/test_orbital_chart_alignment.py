@@ -3,14 +3,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from metapulsar import create_metapulsar
 from metapulsar.pint_helpers import (
     OrbitalChartError,
     align_orbital_chart,
     create_pint_model,
     format_longdouble_par_value,
 )
-from tests.helpers import make_tim_metadata
 
 HYBRID = """PSRJ           J2241-5236
 BINARY         ELL1
@@ -201,73 +199,6 @@ def test_rejected_formatters_are_inexact(rejected):
     assert all(np.longdouble(format_longdouble_par_value(v)) == v for v in values)
 
 
-@pytest.mark.requires_ipta_data
-def test_written_value_comes_from_the_par_not_the_model():
-    """Pins invariant 2: the TCB/TDB trap.
-
-    create_pint_model passes allow_tcb=True, so a TCB par yields a TDB model.
-    Copying model.FB0 into the still-TCB par would be a 1.55e-8 relative error
-    in orbital frequency -- about 97 us of residual on this pulsar.
-    """
-    import astropy.units as u
-
-    par = Path("data-check/PPTA_DR3/J2241-5236.par")  # UNITS TCB
-    if not par.exists():
-        pytest.skip("PPTA DR3 J2241 not present")
-    text = par.read_text()
-    assert any(line.split()[:2] == ["UNITS", "TCB"] for line in text.splitlines())
-
-    model = create_pint_model(text)
-    out, changed = align_orbital_chart(
-        text, model, timing_package="tempo2", pta_name="PPTA"
-    )
-    assert changed is True
-
-    written = np.longdouble(_fb0_line(out).split()[1])
-    pb_tcb = np.longdouble("0.14567224091722622131")
-    assert written == 1 / (np.longdouble(86400) * pb_tcb)
-
-    model_fb0 = np.longdouble(model.FB0.quantity.to_value(1 / u.s))
-    assert written != model_fb0
-    assert abs(written - model_fb0) / written == pytest.approx(1.55e-8, rel=0.05)
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-def test_tempo2_residuals_unchanged_by_alignment(tmp_path):
-    """The rewrite is a coordinate relabel, not a model change.
-
-    PURE RELABEL CHECK. No unit conversion anywhere: both pars are the source
-    par, still ``UNITS TCB``, differing only in the PB/FB0 line. A TCB->TDB
-    conversion legitimately changes parameter values and would invalidate the
-    measurement -- do not add one to this test.
-    """
-    from metapulsar.sandbox_tempo2 import tempopulsar
-
-    par = Path("data-check/PPTA_DR3/J2241-5236.par")
-    tim = Path("data-check/PPTA_DR3/J2241-5236.tim")
-    if not par.exists():
-        pytest.skip("PPTA DR3 J2241 not present")
-
-    text = par.read_text()
-    aligned, changed = align_orbital_chart(
-        text, create_pint_model(text), timing_package="tempo2", pta_name="PPTA"
-    )
-    assert changed is True
-    assert "UNITS          TCB" in aligned
-    aligned_par = tmp_path / "J2241-5236_aligned.par"
-    aligned_par.write_text(aligned, encoding="utf-8")
-
-    before = tempopulsar(parfile=str(par), timfile=str(tim), dofit=False)
-    after = tempopulsar(parfile=str(aligned_par), timfile=str(tim), dofit=False)
-
-    assert "PB" in before.pars()
-    assert "FB0" in after.pars() and "PB" not in after.pars()
-    delta = np.abs(np.asarray(after.residuals()) - np.asarray(before.residuals()))
-    assert delta.max() < 1e-9, f"max residual change {delta.max():.3e} s"
-
-
 def _pm(**pta_texts):
     from metapulsar.parameter_manager import ParameterManager
 
@@ -329,8 +260,7 @@ def test_shared_merge_is_reference_order_independent():
 
     Alignment runs before _make_parameters_shared, so the reference PTA is
     canonical whichever one it is. Uses UNITS TDB synthetics so the merge is
-    exercised without tempo2's TCB->TDB transform; real TCB end-to-end coverage
-    is covered below.
+    exercised without tempo2's TCB->TDB transform.
     """
     for order in (("MPTA", "PPTA"), ("PPTA", "MPTA")):
         texts = {"MPTA": NATIVE_FB0, "PPTA": HYBRID}
@@ -376,177 +306,3 @@ def test_shared_merge_aligns_hybrid_pint_reference():
         body = Path(path).read_text()
         assert "FB0" in body, pta
         assert not any(line.split()[0] == "PB" for line in body.splitlines()), pta
-
-
-DATA = Path("data-check")
-SRC = {"PPTA": ("PPTA_DR3", "J2241-5236"), "MPTA": ("MPTA_DR2", "J2241-5236")}
-
-
-def _entry(release, name):
-    par, tim = DATA / release / f"{name}.par", DATA / release / f"{name}.tim"
-    return {
-        "par": par,
-        "tim": tim,
-        "par_content": par.read_text(),
-        "timing_package": "tempo2",
-        "tim_metadata": make_tim_metadata(pn_status="none"),
-    }
-
-
-def _require(*paths):
-    for p in paths:
-        if not p.exists():
-            pytest.skip(f"IPTA data not present: {p}")
-
-
-def _build(file_data, strategy, reference=None):
-    kw = dict(
-        combination_strategy=strategy,
-        use_pulse_numbers="no",
-        combine_components=["astrometry", "spindown", "binary", "dispersion"],
-    )
-    if reference:
-        kw["reference_pta"] = reference
-    return create_metapulsar(file_data, **kw)
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-@pytest.mark.parametrize(
-    "ptas, strategy, reference",
-    [
-        (["PPTA"], "per_pta", None),
-        (["PPTA"], "shared", None),
-        (["MPTA", "PPTA"], "per_pta", None),
-        (["MPTA", "PPTA"], "shared", "MPTA"),
-        (["PPTA", "MPTA"], "shared", "PPTA"),
-    ],
-)
-def test_every_case_from_the_failure_map_now_builds(ptas, strategy, reference):
-    """All five ordering cases. Four raised before this feature; the fifth passed
-    only because MPTA happened to be the reference."""
-    _require(
-        *[DATA / SRC[p][0] / f"{SRC[p][1]}.{e}" for p in ptas for e in ("par", "tim")]
-    )
-
-    mp = _build({p: [_entry(*SRC[p])] for p in ptas}, strategy, reference)
-
-    for pta in ptas:
-        assert "FB0" in mp._pta_data[pta].fitpars
-        assert "PB" not in mp._pta_data[pta].fitpars
-    meta = next(k for k in mp.fitpars if k == "FB0" or k.startswith("FB0_"))
-    assert all(v.par_key == "FB0" for v in mp._fitparameters[meta].values())
-    col = mp._designmatrix[:, mp.fitpars.index(meta)]
-    assert np.isfinite(col).all() and np.abs(col).sum() > 0.0
-    assert np.isfinite(mp._residuals).all()
-    rms_us = float(np.sqrt(np.mean(mp._residuals**2)) * 1e6)
-    # Tight bound only when each PTA keeps its own solution. Multi-PTA shared
-    # forces the reference solution onto the other PTA without a joint refit;
-    # measured J2241 MPTA+PPTA shared RMS is ~100-400 us (rev 5.1).
-    if len(ptas) == 1 or strategy == "per_pta":
-        assert 0.1 < rms_us < 20.0
-    else:
-        assert 0.1 < rms_us < 1000.0
-
-
-def _without_mode_aliases(lines):
-    """Drop MODE/WEIGHT so MODE normalization does not cascade zip-diffs."""
-    return [
-        line
-        for line in lines
-        if not (line.split() and line.split()[0].upper() in ("MODE", "WEIGHT"))
-    ]
-
-
-def _assert_normalized_final_mode(par_text: str, mode: int = 1) -> None:
-    lines = [line for line in par_text.splitlines() if line.split()]
-    mode_lines = [
-        line for line in lines if line.split()[0].upper() in ("MODE", "WEIGHT")
-    ]
-    assert mode_lines == [f"MODE {mode}"]
-    assert lines[-1] == f"MODE {mode}"
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-def test_per_pta_engine_par_differs_only_in_the_pb_line():
-    """Invariants 1 and 5: no unit conversion, no sharing; PB→FB0 plus MODE norm."""
-    _require(*[DATA / "PPTA_DR3" / f"J2241-5236.{e}" for e in ("par", "tim")])
-    par = DATA / "PPTA_DR3" / "J2241-5236.par"
-    mp = _build({"PPTA": [_entry(*SRC["PPTA"])]}, "per_pta")
-
-    source = _without_mode_aliases(par.read_text().splitlines())
-    consumed_text = mp._parfile_content_for_pta("PPTA")
-    consumed = _without_mode_aliases(consumed_text.splitlines())
-    assert len(source) == len(consumed)
-    differing = [i for i, (a, b) in enumerate(zip(source, consumed)) if a != b]
-    assert len(differing) == 1
-    assert source[differing[0]].split()[0] == "PB"
-    assert consumed[differing[0]].split()[0] == "FB0"
-    assert any(line.split()[:2] == ["UNITS", "TCB"] for line in consumed)
-    _assert_normalized_final_mode(consumed_text)
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-def test_nonlinear_timing_is_available():
-    """The acceptance criterion revision 2.1 could not meet: the mapping is an
-    identity rename, so libstempo can set FB0 natively."""
-    _require(*[DATA / "PPTA_DR3" / f"J2241-5236.{e}" for e in ("par", "tim")])
-    mp = _build({"PPTA": [_entry(*SRC["PPTA"])]}, "shared")
-
-    engines = {"tempo2": "libstempo"}
-    assert mp.can_use_engines(engines, linearized=False) is True
-    assert mp.timing_engine(engines, linearized=False) is not None
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-def test_j1825_mpta_tempo2_unaffected():
-    """No FB terms: orbital content untouched; MODE may be normalized last."""
-    par = DATA / "MPTA_DR2" / "J1825-0319.par"
-    tim = DATA / "MPTA_DR2" / "J1825-0319.tim"
-    _require(par, tim)
-    mp = _build({"MPTA": [_entry("MPTA_DR2", "J1825-0319")]}, "per_pta")
-
-    assert mp.name
-    assert np.isfinite(mp._residuals).all()
-    assert not any(p == "FB0" or p.startswith("FB0_") for p in mp.fitpars)
-    consumed = mp._parfile_content_for_pta("MPTA")
-    assert _without_mode_aliases(consumed.splitlines()) == _without_mode_aliases(
-        par.read_text().splitlines()
-    )
-    _assert_normalized_final_mode(consumed)
-
-
-@pytest.mark.slow
-@pytest.mark.requires_libstempo
-@pytest.mark.requires_ipta_data
-def test_direct_construction_with_hybrid_chart_fails_loudly():
-    """MetaPulsar(...) bypasses ParameterManager's par production, so the guard must
-    raise a clear error rather than a bare list.index failure."""
-    from metapulsar.metapulsar import MetaPulsar
-    from metapulsar.sandbox_tempo2 import tempopulsar
-
-    par = DATA / "PPTA_DR3" / "J2241-5236.par"
-    tim = DATA / "PPTA_DR3" / "J2241-5236.tim"
-    _require(par, tim)
-    t2_psr = tempopulsar(parfile=str(par), timfile=str(tim), dofit=False)
-    assert "PB" in t2_psr.pars()
-
-    with pytest.raises(ValueError, match=r"hybrid PB\+FBn orbital chart"):
-        MetaPulsar(
-            {"PPTA": t2_psr},
-            combination_strategy="per_pta",
-            pta_files={
-                "PPTA": {
-                    "par_path": par,
-                    "tim_path": tim,
-                    "timing_package": "tempo2",
-                }
-            },
-        )

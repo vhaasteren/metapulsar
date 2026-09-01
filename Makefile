@@ -34,7 +34,7 @@ install:  ## Install package in production mode
 	pip install -e .
 
 install-dev:  ## Install package in development mode with all dependencies
-	pip install -e ".[dev,libstempo,analysis]"
+	pip install -e ".[dev,libstempo]"
 	pre-commit install
 
 test-cov:  ## Run tests with coverage

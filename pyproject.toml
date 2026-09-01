@@ -31,12 +31,13 @@ dependencies = [
     "numpy>=1.20.0",
     "astropy>=5.0.0",
     "scipy>=1.7.0",
-    # nanograv/PINT#2023 (hybrid PB+FBn -> free FB0). Temporarily track tip of
-    # vhaasteren/PINT@metapulsar while that PR is in flux; unpin to a release once merged.
+    # Alpha GitHub install, not a PyPI-publishable pin set. Two deps are still
+    # git: PINT#2023 (hybrid PB+FBn -> free FB0) on vhaasteren/PINT@metapulsar,
+    # and nltiming (not on PyPI). Unpin both to releases for a v1.0 sdist.
     "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar",
     "ephem>=4.1",
     "loguru>=0.7.3",
-    "nltiming",
+    "nltiming @ git+https://github.com/vhaasteren/nltiming.git@main",
     "pyarrow>=14.0.0",
 ]
 
@@ -98,7 +99,6 @@ target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
-  # directories
   \.eggs
   | \.git
   | \.hg
@@ -106,6 +106,10 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  | data
+  | ref-packages
+  | paper
+  | docs
 )/
 '''
 

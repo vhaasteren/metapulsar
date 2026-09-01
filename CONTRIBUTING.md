@@ -12,7 +12,7 @@ We welcome contributions to MetaPulsar! This document provides guidelines for co
    cd metapulsar
    ```
 
-2. **Install in Development Mode**
+2. **Install in Development Mode** (Python 3.11+; pulls git PINT `@metapulsar` and git nltiming)
    ```bash
    pip install -e ".[dev,libstempo]"
    ```
@@ -103,8 +103,8 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 3. **Test Changes**
    ```bash
    pytest
-   black --check .
-   ruff check .
+   black --check src/ tests/
+   ruff check src/ tests/
    ```
 
 4. **Commit Changes**
