@@ -70,6 +70,11 @@ enterprise = [
 vela = [
     "pyvela @ git+https://github.com/abhisrkckl/Vela.jl.git",
 ]
+# Vela's component chain in JAX, over either host. `pytempo` is only needed for
+# a tempo2-hosted leg; a PINT leg needs neither tempo2 nor Julia.
+vela_jax = [
+    "vela-jax",
+]
 
 [project.urls]
 Homepage = "https://github.com/vhaasteren/metapulsar"
@@ -150,5 +155,6 @@ markers = [
     "requires_enterprise: marks tests that need enterprise-pulsar installed",
     "requires_vela: marks tests that need pyvela/Julia Vela backend",
     "requires_wide_longdouble: marks tests that need np.longdouble wider than float64",
+    "requires_vela_jax: marks tests that need the vela-jax package",
     "jug_numpy_jax_parity_deprecated: TEMPORARY — compares deprecated NumPy residual path to JAX; remove after JAX migration",
 ]

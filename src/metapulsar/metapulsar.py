@@ -1076,11 +1076,23 @@ class MetaPulsar:
             native_compat = self._native_compat(pta_name)
             if native_compat not in engines:
                 return False
-            family = _IMPL_FAMILY[engines[native_compat]]
+            impl = engines[native_compat]
+            family = _IMPL_FAMILY[impl]
             if linearized:
                 if family == "jug":
                     continue
                 if native_compat != family:
+                    return False
+                continue
+            if impl == "vela_jax":
+                # Either native package: the host reads the files, Vela's
+                # ported chain evaluates the delay. Both need the retained
+                # par/tim inputs, and a tempo2 leg needs tempo2 as well.
+                if not self._can_import_vela_jax():
+                    return False
+                if not self._pta_files_available(pta_name):
+                    return False
+                if native_compat == "tempo2" and not self._can_import_pytempo():
                     return False
                 continue
             if family == "jug":
@@ -1104,6 +1116,22 @@ class MetaPulsar:
                     return False
             else:
                 return False
+        return True
+
+    @staticmethod
+    def _can_import_vela_jax() -> bool:
+        try:
+            import vela_jax  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _can_import_pytempo() -> bool:
+        try:
+            import pytempo  # noqa: F401
+        except Exception:
+            return False
         return True
 
     @staticmethod
@@ -1383,7 +1411,8 @@ class MetaPulsar:
             )
 
             native_compat = self._native_compat(pta_name)
-            family = _IMPL_FAMILY[engines[native_compat]]
+            impl = engines[native_compat]
+            family = _IMPL_FAMILY[impl]
             if linearized and family in ("pint", "vela"):
                 engine = LinearizedPintEngine.from_linear_model(linear_model)
             elif linearized and family == "tempo2":
@@ -1391,6 +1420,29 @@ class MetaPulsar:
             elif linearized:
                 engine = LinearizedJugEngine.from_linear_model(
                     linear_model, compatibility=native_compat
+                )
+            elif impl == "vela_jax":
+                if not self._pta_files_available(pta_name):
+                    raise ValueError(
+                        f"Cannot build a vela-jax engine for '{pta_name}': "
+                        "missing par/tim inputs"
+                    )
+                from .engines.vela_jax import VelaJaxEngine
+
+                files = self._pta_files[pta_name]
+                # vela-jax names parameters the way PINT does, whichever host
+                # read the file, so the PINT spelling is what it can match.
+                session_mapping = {
+                    name: self._native_param(name, pta_name).pint_name
+                    for name in pta_fitpars
+                }
+                engine = VelaJaxEngine.from_files(
+                    files.par_path,
+                    files.tim_path,
+                    host=native_compat,
+                    linear_model=linear_model,
+                    param_mapping=session_mapping,
+                    nonlinear_params=nonlinear_params,
                 )
             elif family == "vela":
                 if not self._pta_files_available(pta_name):
