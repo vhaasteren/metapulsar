@@ -10,6 +10,7 @@ check JUG, libstempo and PINT agree on the hybrid residual for the same delta.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -242,6 +243,43 @@ def test_direct_construction_partitions_or_refuses_a_stamped_mode():
         )
 
 
+def test_explicit_native_list_still_evaluates_every_axis():
+    """A partial ``native_fitpars`` must not drop the linearized deltas.
+
+    ``from_contribution`` always passes both lists, but a direct construction
+    may name only the axes its engine can evaluate; the mode still owns every
+    linearized axis, so they belong on the design-matrix path rather than
+    nowhere.
+    """
+    model = _linear_model()
+    fake = _RecordingDeltaEngine(model.design, FITPARS)
+    engine = LibstempoEngine(
+        engine=fake,
+        linear_model=model,
+        native_fitpars=("PB", "A1"),  # no exact_linear_fitpars given
+        nonlinear_params="binary",
+    )
+    assert engine.exact_linear_fitpars() == set(FITPARS) - {"PB", "A1"}
+    delta = np.array([1e-9, 2e-6, 0.3, 4e-7, 5e-6, 6e-7])
+    fake.calls.clear()
+    got = engine.residual_delta(delta)
+    assert set(fake.calls[0]) == {"PB", "A1"}
+    np.testing.assert_allclose(
+        got, _expected(fake, model, delta, {"PB", "A1"}), rtol=1e-12
+    )
+
+    # a hybrid-native axis left out of both lists is a wiring bug, not a
+    # silent zero: PB would otherwise contribute nothing at all
+    with pytest.raises(ValueError, match="neither native nor exact-linear"):
+        LibstempoEngine(
+            engine=fake,
+            linear_model=model,
+            native_fitpars=("A1",),
+            exact_linear_fitpars=frozenset({"JUMP1"}),
+            nonlinear_params="binary",
+        )
+
+
 class _DeclaringEngine:
     """Leaf that declares an affine set independent of its exact-linear set."""
 
@@ -459,10 +497,11 @@ def test_hybrid_residual_is_the_linear_column_and_native_is_not(tmp_path):
 @pytest.mark.requires_jug
 @pytest.mark.parametrize("mode", ["binary", "binary+"])
 def test_real_engine_families_agree_on_the_hybrid_residual(tmp_path, mode):
-    """JUG, libstempo and PINT compute the same hybrid residual.
+    """Every installed engine family computes the same hybrid residual.
 
-    Compared on the fitpars all three legs carry (PINT does not expose this
-    par's ELONG/ELAT/PX as fitpars), at physically sized steps.
+    JUG, libstempo, PINT and — when pyvela is installed — Vela, compared on
+    the fitpars every leg carries (PINT does not expose this par's
+    ELONG/ELAT/PX as fitpars), at physically sized steps.
     """
     pytest.importorskip("libstempo")
     pytest.importorskip("pint")
@@ -493,15 +532,19 @@ def test_real_engine_families_agree_on_the_hybrid_residual(tmp_path, mode):
         "libstempo": t2.timing_engine({"tempo2": "libstempo"}, nonlinear_params=mode),
         "pint": pint.timing_engine({"pint": "pint"}, nonlinear_params=mode),
     }
+    if importlib.util.find_spec("pyvela") is not None:
+        # Vela is a PINT-native leg, so it joins on the same shared fitpars
+        engines["vela"] = pint.timing_engine({"pint": "vela"}, nonlinear_params=mode)
     residuals = {}
     for name, engine in engines.items():
-        pulsar = pint if name == "pint" else t2
+        pulsar = t2 if name in ("jug", "libstempo") else pint
+        assert engine.nonlinear_params == mode
         residuals[name] = np.asarray(
             engine.residual_delta(delta_for(pulsar)), dtype=float
         )
     scale = float(np.max(np.abs(residuals["jug"])))
     assert scale > 1e-9, "delta too small to be a meaningful parity probe"
-    for name in ("libstempo", "pint"):
+    for name in set(residuals) - {"jug"}:
         diff = residuals[name] - residuals["jug"]
         diff -= np.mean(diff)  # libstempo centres residuals internally
         assert np.max(np.abs(diff)) < 1e-9 + 1e-6 * scale, (mode, name)

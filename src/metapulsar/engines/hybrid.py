@@ -106,4 +106,15 @@ def resolve_hybrid_partition(
             "were passed as native_fitpars; a stamped mode must match the "
             "partition the engine actually evaluates"
         )
+    # An explicit native list may name only the axes the engine can evaluate;
+    # the mode still owns every linearized axis, so fold them into the
+    # design-matrix set rather than leaving their deltas unevaluated.
+    exact = exact | linearized
+    dropped = sorted(set(fitpars) - set(native) - exact)
+    if dropped:
+        raise ValueError(
+            f"fitpars {dropped} are neither native nor exact-linear under "
+            f"nonlinear_params={resolved!r}; their deltas would be silently "
+            "dropped from the residual"
+        )
     return native, exact
