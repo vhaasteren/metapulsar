@@ -11,8 +11,9 @@ Enterprise/discovery own EFAC/EQUAD/ECORR/RN. The par handed to ``SPNTA`` is
 therefore a delay-only ingest: WN/RN hyperparameter lines are stripped so
 PINT never builds ``EcorrNoise`` and pyvela never ``ecorr_sort``s TOAs.
 
-Not JAX-capable: use with the Enterprise/PTMCMC likelihood interface or for cross-engine
-validation; NUTS needs a JAX engine (JUG).
+Not JAX-capable. Enterprise/PTMCMC works directly. nltiming may place this
+engine behind a value-only Discovery host callback for derivative-free
+sampling. NUTS and autodiff still require a JAX timing engine such as JUG.
 """
 
 from __future__ import annotations

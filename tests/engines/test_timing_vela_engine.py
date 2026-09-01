@@ -214,3 +214,89 @@ def test_spnta_ingest_has_no_ecorr_and_keeps_toa_order(tmp_path):
         rtol=0.0,
         atol=1e-10,
     )
+
+
+def test_vela_engine_discovery_host_callback_matches_residual_delta():
+    """VelaEngine is a host TimingEngine; Discovery delay must match residual_delta.
+
+    Uses the mock SPNTA so this stays a unit test (no Julia startup).
+    """
+    pytest.importorskip("discovery")
+    pytest.importorskip("jax")
+
+    from nltiming import TimingInference
+    from nltiming.nonlinear_timing_model import TimingSpec
+
+    n = 4
+    rng = np.random.default_rng(7)
+    model = LinearModel.from_design(
+        fitpars=("Offset", "F0", "F1", "PB"),
+        design=np.column_stack([np.ones(n), rng.normal(size=(n, 3))]),
+        theta_exact={"Offset": "0.0", "F0": "1.0", "F1": "1.0", "PB": "1.0"},
+    )
+    engine = VelaEngine.from_contribution(
+        _MockSPNTA(), linear_model=model, phase_mean_mode=None
+    )
+
+    class _Pulsar:
+        name = "J0000+0000"
+        fitpars = engine.fitpars
+        _toas = np.linspace(0.0, 1.0, n)
+        _residuals = np.linspace(-1e-6, 1e-6, n)
+        _toaerrs = np.full(n, 1.0e-6)
+        _freqs = np.full(n, 1400.0)
+        _flags = {"pta": np.array(["demo"] * n, dtype="U8")}
+        _backend_flags = np.array(["demo"] * n, dtype="U8")
+
+        @property
+        def toas(self):
+            return self._toas
+
+        @property
+        def residuals(self):
+            return self._residuals
+
+        @property
+        def toaerrs(self):
+            return self._toaerrs
+
+        @property
+        def freqs(self):
+            return self._freqs
+
+        @property
+        def Mmat(self):
+            return model.design
+
+        @property
+        def flags(self):
+            return self._flags
+
+        @property
+        def backend_flags(self):
+            return self._backend_flags
+
+        def state_id(self):
+            return "vela-host-callback"
+
+        def pint_model(self):
+            return object()
+
+        def timing_engine(self, engines="jug", **kwargs):
+            return engine
+
+    ctx = TimingSpec(
+        engines={"pint": "vela"},
+        name="timing",
+        inference=TimingInference.groups(delta_flat=["Offset"]),
+    ).for_pulsar(_Pulsar())
+    delay = ctx.discovery_signals()[-1]
+    assert delay.nltiming_execution == "host_callback"
+    assert delay.nltiming_differentiable is False
+    sampled = np.zeros(len(ctx.delay_keys))
+    sampled[0] = 0.25
+    params = {key: float(value) for key, value in zip(ctx.delay_keys, sampled)}
+    output = np.asarray(delay(params), dtype=float)
+    full = ctx.engine_delta_map.full_engine_delta(sampled, np)
+    expected = -np.asarray(ctx.engine.residual_delta(full), dtype=float)
+    np.testing.assert_allclose(output, expected)
