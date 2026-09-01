@@ -1258,7 +1258,17 @@ class MetaPulsar:
         verify_wiring: bool = False,
         subtract_tzr: bool = False,
     ):
-        """Return a TimingEngine in canonical pulsar row order."""
+        """Return a TimingEngine in canonical pulsar row order.
+
+        ``nonlinear_params`` (``None`` | ``"binary"`` | ``"binary+"``) is the
+        hybrid residual-linearization mode and is honoured by every engine
+        family: JUG executes it inside its residual graph; the libstempo, Vela
+        and PINT adapters keep only the binary axes (plus ``PX`` for
+        ``"binary+"``) on their native path and evaluate every other fitpar
+        through its design-matrix column (see ``engines/hybrid.py``). The
+        returned composite engine reports the mode it executes as
+        ``engine.nonlinear_params``.
+        """
         if getattr(self, "_timing_rows_filtered", False):
             raise ValueError(
                 "nonlinear timing engines are not available after filter_data(); "
@@ -1271,6 +1281,16 @@ class MetaPulsar:
         if not self.can_use_engines(engines, linearized=linearized):
             raise ValueError(
                 f"engines {engines} cannot be honored for pulsar '{self.name}'"
+            )
+        from .engines.hybrid import validate_nonlinear_params
+
+        # Validate once here so every family (JUG, libstempo, Vela, PINT) sees
+        # the same normalized closed-set mode; each leaf executes it itself.
+        nonlinear_params = validate_nonlinear_params(nonlinear_params)
+        if linearized and nonlinear_params is not None:
+            raise ValueError(
+                "nonlinear_params is meaningless with linearized=True: the "
+                "linearized stand-in evaluates every fitpar as -M @ delta"
             )
 
         from jug.timing import resolve_tempo2_jug_options
@@ -1386,15 +1406,24 @@ class MetaPulsar:
                     linear_model=linear_model,
                     param_mapping=session_mapping,
                     mask_reference=mask_reference,
+                    nonlinear_params=nonlinear_params,
                 )
             elif family == "pint":
                 source = self._pulsars[pta_name]
                 if not (isinstance(source, tuple) and len(source) == 2):
                     raise ValueError(f"PTA '{pta_name}' does not have PINT inputs")
+                # PINT holds the leg's model under PINT spellings; a suffixed
+                # host fitpar must be mapped before it is set or classified.
+                session_mapping = {
+                    name: self._native_param(name, pta_name).pint_name
+                    for name in pta_fitpars
+                }
                 engine = PintEngine.from_contribution(
                     source[0],
                     source[1],
                     linear_model=linear_model,
+                    param_mapping=session_mapping,
+                    nonlinear_params=nonlinear_params,
                 )
             elif family == "tempo2":
                 # tempo2 remembers the spelling it parsed, which is the
@@ -1407,6 +1436,7 @@ class MetaPulsar:
                     self._pulsars[pta_name],
                     linear_model=linear_model,
                     param_mapping=session_mapping,
+                    nonlinear_params=nonlinear_params,
                 )
             else:
                 jug_session = self._build_jug_session(

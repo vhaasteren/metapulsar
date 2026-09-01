@@ -23,6 +23,11 @@ from .delta import (
     build_delta_engine,
     infer_jug_param_mapping,
 )
+from .hybrid import (
+    hybrid_linearized_fitpars,
+    is_hybrid_native_param,
+    validate_nonlinear_params,
+)
 from .jug import JugEngine, LinearizedJugEngine, verify_jug_native_chain
 from .pint import LinearizedPintEngine, PintEngine
 from .tempo2 import LinearizedLibstempoEngine, LibstempoEngine
@@ -61,6 +66,9 @@ __all__ = [
     "JugEngine",
     "LinearizedJugEngine",
     "verify_jug_native_chain",
+    "validate_nonlinear_params",
+    "is_hybrid_native_param",
+    "hybrid_linearized_fitpars",
     "VelaDeltaEngine",
     "VelaEngine",
     "EmptyMaskParameterError",

@@ -10,6 +10,7 @@ import numpy as np
 from nltiming.protocols import GaugeProvenance
 
 from .delta import infer_jug_param_mapping
+from .hybrid import hybrid_linearized_fitpars
 from nltiming.engine_support import (
     LinearModel,
     LinearTimingEngine,
@@ -122,6 +123,11 @@ class JugEngine:
         self._exact_linear_indices: tuple[int, ...] = tuple()
         self._jug_fitpars: tuple[str, ...] = self.fitpars
         self._jug_indices: tuple[int, ...] = tuple(range(len(self.fitpars)))
+        # Hybrid residual mode (``jug.fitting.nonlinear_params``) and the JUG
+        # axes it moves onto the baked ``J @ δ`` path; both empty for direct
+        # construction.
+        self.nonlinear_params: str | None = getattr(state, "nonlinear_params", None)
+        self._hybrid_linear_fitpars: frozenset[str] = frozenset()
         # Authoritative Kepler↔Laplace chart facts, resolved once from
         # the JUG session at from_contribution time; None for direct/test-double
         # construction (→ candidacy fallback).
@@ -201,6 +207,13 @@ class JugEngine:
         engine.nonlinear_params = getattr(
             state, "nonlinear_params", getattr(session, "nonlinear_params", None)
         )
+        # Under a hybrid mode JUG evaluates the non-binary (non-PX for
+        # "binary+") axes as ``J @ δ`` — affine in delta — so report them as
+        # identically linear, matching what the libstempo/Vela/PINT adapters
+        # report for the same mode.
+        engine._hybrid_linear_fitpars = hybrid_linearized_fitpars(
+            tuple(jug_fitpars), mapping, engine.nonlinear_params
+        )
         engine._binary_facts = _resolve_binary_facts(session, tuple(jug_fitpars))
         return engine
 
@@ -236,8 +249,15 @@ class JugEngine:
         return getattr(self, "_exact_linear_fitpars", frozenset())
 
     def identically_linear_fitpars(self) -> frozenset[str]:
-        """Fitpars whose engine delay is affine in delta."""
-        return getattr(self, "_exact_linear_fitpars", frozenset())
+        """Fitpars whose engine delay is affine in delta.
+
+        The exact-linear (design-matrix) axes, plus — under a hybrid
+        ``nonlinear_params`` mode — the JUG axes the hybrid formula evaluates
+        as ``J @ δ``.
+        """
+        return getattr(self, "_exact_linear_fitpars", frozenset()) | getattr(
+            self, "_hybrid_linear_fitpars", frozenset()
+        )
 
     @property
     def _native_scale(self) -> np.ndarray:

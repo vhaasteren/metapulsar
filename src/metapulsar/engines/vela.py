@@ -30,6 +30,11 @@ from nltiming.engine_support import LinearModel, is_exact_linear_param
 
 from ..parfile_lines import is_noise_line
 from .delta import _is_zero_delta
+from .hybrid import (
+    is_hybrid_native_param,
+    resolve_hybrid_partition,
+    validate_nonlinear_params,
+)
 
 
 class EmptyMaskParameterError(ValueError):
@@ -279,6 +284,11 @@ class VelaEngine:
     ``LinearModel`` so the composite pulsar engine uses the same canonical
     columns as the pulsar design matrix. Fit parameters Vela cannot evaluate
     natively are routed to the exact-linear path.
+
+    ``nonlinear_params`` (``None`` | ``"binary"`` | ``"binary+"``) is the same
+    hybrid residual mode JUG executes: under a hybrid mode only the binary
+    axes (plus ``PX`` for ``"binary+"``) reach Vela; every other fitpar is
+    evaluated through its design-matrix column (see :mod:`.hybrid`).
     """
 
     engine_name = "vela"
@@ -291,19 +301,28 @@ class VelaEngine:
         param_mapping: Mapping[str, str] | None = None,
         native_fitpars: tuple[str, ...] | None = None,
         exact_linear_fitpars: frozenset[str] | set[str] | None = None,
+        nonlinear_params: str | None = None,
     ):
         self._engine = engine
         self._model = linear_model
         self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
-        self._native_fitpars = (
-            self.fitpars if native_fitpars is None else tuple(native_fitpars)
+        self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
+        # A stamped mode always implies its partition, even for a direct
+        # construction that passed no explicit native/exact-linear lists.
+        native_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
+            fitpars=self.fitpars,
+            param_mapping=self._param_mapping,
+            mode=self.nonlinear_params,
+            native_fitpars=native_fitpars,
+            exact_linear_fitpars=exact_linear_fitpars,
         )
+        self._native_fitpars = tuple(native_fitpars)
         self._native_indices = tuple(
             self.fitpars.index(name) for name in self._native_fitpars
         )
-        self._exact_linear_fitpars = frozenset(exact_linear_fitpars or frozenset())
+        self._exact_linear_fitpars = frozenset(exact_linear_fitpars)
         self._exact_linear_indices = tuple(
             self.fitpars.index(name) for name in self._exact_linear_fitpars
         )
@@ -318,12 +337,14 @@ class VelaEngine:
         isort: np.ndarray | None = None,
         phase_mean_mode: str | None = None,
         weights: np.ndarray | None = None,
+        nonlinear_params: str | None = None,
     ) -> "VelaEngine":
         """Build a native Velan engine from an already-created ``SPNTA``."""
         engine = VelaDeltaEngine(
             spnta, isort=isort, phase_mean_mode=phase_mean_mode, weights=weights
         )
         mapping = dict(param_mapping or {})
+        mode = validate_nonlinear_params(nonlinear_params)
         settable = set(engine.param_names)
 
         native_fitpars: list[str] = []
@@ -336,9 +357,14 @@ class VelaEngine:
             if engine_param not in settable:
                 exact_linear.append(name)
                 continue
+            if not is_hybrid_native_param(engine_param, mode):
+                exact_linear.append(name)
+                continue
             native_fitpars.append(name)
 
-        if not native_fitpars:
+        # A hybrid mode on a pulsar without binary axes legitimately degenerates
+        # to the pure ``-M δ`` residual (JUG documents the same degeneration).
+        if not native_fitpars and mode is None:
             raise ValueError(
                 "No Vela-evaluable fit parameters remain after filtering; "
                 f"exact-linear candidates: {exact_linear}"
@@ -350,6 +376,7 @@ class VelaEngine:
             param_mapping=mapping,
             native_fitpars=tuple(native_fitpars),
             exact_linear_fitpars=frozenset(exact_linear),
+            nonlinear_params=mode,
         )
 
     @classmethod
@@ -365,6 +392,7 @@ class VelaEngine:
         weights: np.ndarray | None = None,
         spnta_kwargs: Mapping[str, Any] | None = None,
         mask_reference: tuple[Any, Any] | None = None,
+        nonlinear_params: str | None = None,
     ) -> "VelaEngine":
         """Build a native Velan engine directly from par/tim files.
 
@@ -388,6 +416,7 @@ class VelaEngine:
             isort=isort,
             phase_mean_mode=phase_mean_mode,
             weights=weights,
+            nonlinear_params=nonlinear_params,
         )
 
     def exact_linear_fitpars(self) -> frozenset[str]:

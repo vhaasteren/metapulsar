@@ -59,17 +59,70 @@ class PulsarTimingEngine:
             None if design_matrix is None else np.asarray(design_matrix, dtype=float)
         )
         self._ref_exact = self._merge_reference_theta_exact()
+        self.nonlinear_params = self._merge_nonlinear_params()
+
+    def _merge_nonlinear_params(self) -> str | None:
+        """The one hybrid residual mode every contribution honours.
+
+        Leaves that carry no ``nonlinear_params`` attribute (linearized
+        stand-ins, test doubles) count as native (``None``). A disagreement is
+        a wiring bug, never something to average over.
+        """
+        modes = {
+            contribution.name: getattr(contribution.engine, "nonlinear_params", None)
+            for contribution in self._contributions
+        }
+        distinct = set(modes.values())
+        if len(distinct) > 1:
+            raise ValueError(
+                "Contributions disagree on nonlinear_params: "
+                + ", ".join(f"{k}={v!r}" for k, v in sorted(modes.items()))
+            )
+        return next(iter(distinct)) if distinct else None
 
     @property
     def contributions(self) -> list[PtaContribution]:
         """Per-PTA contributions in pulsar row order."""
         return list(self._contributions)
 
+    def _leaf_identically_linear(self, contribution: PtaContribution) -> frozenset[str]:
+        """What one contribution declares affine, leaf plus host-side columns.
+
+        The leaf engine is the authority on its own waveform — including the
+        axes a hybrid ``nonlinear_params`` mode moves onto the baked ``J @ δ``
+        path, which are *not* in ``exact_linear_fitpars``. Names the host
+        evaluates for the leaf (``-M δ``, the host-only exact-linear columns)
+        are affine by construction.
+        """
+        declared = getattr(contribution.engine, "identically_linear_fitpars", None)
+        leaf = frozenset(declared()) if declared is not None else frozenset()
+        return (leaf | frozenset(contribution.exact_linear_fitpars)) & frozenset(
+            self.fitpars
+        )
+
     def identically_linear_fitpars(self) -> frozenset[str]:
-        """Union of per-contribution identically-linear fitpars."""
+        """Fitpars whose composite delay is affine in delta.
+
+        A name qualifies only when *every* contribution that carries it is
+        affine in it: the composite residual is the sum of the leaf blocks, so
+        one nonlinear leg makes the composite axis nonlinear. Reported from the
+        leaf engines rather than from ``PtaContribution.exact_linear_fitpars``,
+        which is the residual-routing set (which columns the host evaluates)
+        and misses hybrid-linearized JUG axes.
+        """
         out: set[str] = set()
-        for contribution in self._contributions:
-            out.update(contribution.exact_linear_fitpars)
+        for name in self.fitpars:
+            carriers = [
+                contribution
+                for contribution in self._contributions
+                if name in tuple(getattr(contribution.engine, "fitpars", ()))
+                or name in contribution.exact_linear_fitpars
+            ]
+            if carriers and all(
+                name in self._leaf_identically_linear(contribution)
+                for contribution in carriers
+            ):
+                out.add(name)
         return frozenset(out)
 
     def binary_chart_capability(self, chart_family: str, suffix: str):
