@@ -224,6 +224,7 @@ class MetaPulsarFactory:
         convert_jump_mjd: bool = False,
         canonicalize_tim: bool = False,
         combination_output_dir: Path | str | None = None,
+        engines: str | Dict[str, str] | None = None,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy.
 
@@ -437,6 +438,16 @@ class MetaPulsarFactory:
         }
 
         # Create PINT/Tempo2 objects from file pairs using file data
+        if engines is None:
+            resolved_engines = None
+        else:
+            # Imported here, not at module scope: `create_metapulsar` is the
+            # multi-PTA combination path and must stay importable without
+            # nltiming. An unconditional import here is a regression.
+            from nltiming.engine_config import normalize_engines
+
+            resolved_engines = normalize_engines(engines)
+
         created = self._create_pulsar_objects(
             file_pairs=file_pairs,
             file_data=single_file_data,
@@ -445,6 +456,7 @@ class MetaPulsarFactory:
             return_pta_files=True,
             ell1h_shapiro=ell1h_shapiro,
             canonicalize_tim=canonicalize_tim,
+            engines=resolved_engines,
         )
         if isinstance(created, tuple) and len(created) == 2:
             pulsars, pta_files = created
@@ -993,8 +1005,9 @@ class MetaPulsarFactory:
         return_pta_files: bool = False,
         ell1h_shapiro: Ell1hShapiroMode = "full",
         canonicalize_tim: bool = False,
+        engines: Dict[str, str] | None = None,
     ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
-        """Create PINT/Tempo2 objects from file pairs using file data.
+        """Create the per-PTA timing objects from file pairs using file data.
 
         Args:
             file_pairs: Dictionary mapping PTA names to (parfile, timfile) tuples
@@ -1008,9 +1021,17 @@ class MetaPulsarFactory:
                 :func:`~metapulsar.tim_canonical.write_canonical_tim` before
                 load. Default False: load the release tree (plus optional ``-pn``
                 derivation) without TIME bake / flag stamps / name rewrite.
+            engines: Resolved ``{native_package: engine_name}`` map, or None.
+                A PTA whose engine resolves to ``vela_jax`` is built as a
+                :class:`~metapulsar.leg.TimingLeg` -- the timing side emits the
+                record *and* the engine from one read -- and **no PINT or
+                libstempo pulsar is built for it**. That is the point: the
+                design matrix the likelihood marginalizes is then the engine's
+                own ``-J``, not a second code's opinion of the same par.
 
         Returns:
-            Dictionary mapping PTA names to PINT/Tempo2 objects
+            Dictionary mapping PTA names to timing objects: a ``(model, toas)``
+            pair, a libstempo pulsar, or a ``TimingLeg``.
         """
         pulsar_objects = {}
         pta_files: Dict[str, Dict[str, Any]] = {}
@@ -1074,6 +1095,42 @@ class MetaPulsarFactory:
                 else:
                     shutil.copy2(resolved_path, session_tim)
                     engine_tim = session_tim.resolve()
+
+                engine_name = None if engines is None else engines.get(derive_backend)
+                if engine_name == "vela_jax":
+                    # The timing side emits this leg. The par it reads must be
+                    # the one on disk when it reads it, which for a tempo2 leg
+                    # under TRACK -2 is a temporary -- so retain first, then
+                    # build from the retained copy.
+                    from .leg import TimingLeg
+
+                    par_context = (
+                        temporary_par_with_track_minus_2(
+                            parfile.read_text(encoding="utf-8")
+                        )
+                        if (track_pn and timing_package != "pint")
+                        else nullcontext(parfile)
+                    )
+                    with par_context as par_for_engine:
+                        retained = self._retain_pta_files(
+                            pta_name=pta_name,
+                            timing_package=timing_package,
+                            par_path=Path(par_for_engine),
+                            tim_path=engine_tim,
+                            pta_file_dir=pta_file_dir,
+                        )
+                        pulsar_objects[pta_name] = TimingLeg.vela_jax(
+                            retained["par_path"],
+                            retained["tim_path"],
+                            timing_package=derive_backend,
+                        )
+                    if return_pta_files:
+                        pta_files[pta_name] = retained
+                    self.logger.debug(
+                        f"Created vela_jax leg for {pta_name} "
+                        f"(read by {derive_backend})"
+                    )
+                    continue
 
                 if timing_package == "pint":
                     if get_model_and_toas is None:
@@ -1383,6 +1440,7 @@ def create_metapulsar(
     convert_jump_mjd: bool = False,
     canonicalize_tim: bool = False,
     combination_output_dir: Path | str | None = None,
+    engines: str | Dict[str, str] | None = None,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
@@ -1451,6 +1509,7 @@ def create_metapulsar(
         convert_jump_mjd=convert_jump_mjd,
         canonicalize_tim=canonicalize_tim,
         combination_output_dir=combination_output_dir,
+        engines=engines,
     )
 
 

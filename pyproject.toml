@@ -39,6 +39,9 @@ dependencies = [
     "loguru>=0.7.3",
     "nltiming @ git+https://github.com/vhaasteren/nltiming.git@main",
     "pyarrow>=14.0.0",
+    # The pulsar record, the feather schema and the par-text rules,
+    # shared with vela-jax and nltiming.
+    "psrdata @ git+https://github.com/vhaasteren/psrdata.git@main",
 ]
 
 [project.optional-dependencies]

@@ -122,6 +122,7 @@ class TestMetaPulsarDataCombination:
                 {"pint_pta": pint_model},
                 {},
                 {"tempo2_pta": tempo2_pulsar},
+                {},  # no TimingLeg legs in this mock
             )
         )
         # Both engines now read one source: the retained per-PTA par content.
@@ -159,7 +160,12 @@ class TestMetaPulsarDataCombination:
         pint_model.as_parfile.return_value = "PSR J1857+0943\n"  # must NOT be used
         tempo2_pulsar = MagicMock()
         metapulsar._unpack_pulsar_data = MagicMock(
-            return_value=({"pint_pta": pint_model}, {}, {"tempo2_pta": tempo2_pulsar})
+            return_value=(
+                {"pint_pta": pint_model},
+                {},
+                {"tempo2_pta": tempo2_pulsar},
+                {},
+            )
         )
         metapulsar._pulsars = {
             "pint_pta": (pint_model, None),

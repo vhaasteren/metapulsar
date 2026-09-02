@@ -10,7 +10,7 @@ import numpy as np
 from nltiming.protocols import GaugeProvenance
 
 from .delta import infer_jug_param_mapping
-from .hybrid import hybrid_linearized_fitpars
+from nltiming.hybrid import hybrid_linearized_fitpars
 from nltiming.engine_support import (
     LinearModel,
     LinearTimingEngine,

@@ -393,3 +393,57 @@ def build_composite_engine(
         contributions=contributions,
         design_matrix=design_matrix,
     )
+
+
+def validate_composite_against_pulsar(engine, pulsar) -> None:
+    """The composite consistency check: shapes, fitpars, zero delta, blocks.
+
+    nltiming's ``validate_engine_against_pulsar`` demands
+    ``engine.design_matrix() == pulsar.Mmat`` globally, which a composite
+    cannot satisfy and, worse, satisfies *tautologically* when the composite's
+    design matrix is the pulsar's own -- which is exactly what MetaPulsar was
+    calling it with. It proved nothing.
+
+    What can be checked, and is worth checking, is **block equality**: for
+    every leg whose engine owns its columns, the pulsar's ``Mmat`` on that
+    leg's rows and those columns must be the engine's own ``-J``, exactly. A
+    leg served by a host matrix owns nothing to compare against and is skipped
+    -- a composite may legitimately mix the two (SPEC III.4), and saying so is
+    better than pretending the global check covers it.
+    """
+    from nltiming.engine_support import (
+        validate_engine_shapes,
+        validate_engine_zero_delta,
+        validate_pulsar_surface,
+    )
+
+    validate_pulsar_surface(pulsar)
+    validate_engine_shapes(engine)
+    # 1e-9 s, the tolerance the call site this replaced already used. A
+    # nonlinear leg re-runs its timing chain at delta = 0 rather than
+    # returning a stored array, so `residual_delta(0)` is zero to the chain's
+    # own reproducibility -- sub-nanosecond, not sub-picosecond. Tightening it
+    # to 1e-12 refuses a correct JUG engine under `nonlinear_params="binary"`.
+    validate_engine_zero_delta(engine, tol=1e-9)
+
+    if tuple(pulsar.fitpars) != tuple(engine.fitpars):
+        raise ValueError("Engine fitpars must match pulsar fitpars in canonical order")
+    design = np.asarray(pulsar.Mmat, dtype=float)
+    if design.shape[0] != len(pulsar.toas):
+        raise ValueError("Engine row count must match pulsar rows")
+
+    index = {name: i for i, name in enumerate(pulsar.fitpars)}
+    for contribution in getattr(engine, "contributions", ()) or ():
+        block = getattr(contribution.engine, "engine_design_block", None)
+        if block is None:
+            continue
+        names, matrix = block()
+        rows = np.asarray(contribution.row_indices, dtype=int)
+        columns = [index[name] for name in names]
+        if not np.array_equal(design[np.ix_(rows, columns)], matrix):
+            raise ValueError(
+                f"Contribution {contribution.name!r}: pulsar.Mmat is not the leg "
+                f"engine's own -J on columns {list(names)}. The record and the "
+                "engine disagree -- which is the thing building the leg on the "
+                "timing side was supposed to make impossible."
+            )

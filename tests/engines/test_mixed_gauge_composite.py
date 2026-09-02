@@ -70,7 +70,7 @@ def _mixed_engine():
             design=np.column_stack([M[mid:, 0], M[mid:, 2]]),
             theta_exact={"F0": "1.0", "Offset_ppta": "0.0"},
         ),
-        native_fitpars=("F0", "Offset_ppta"),
+        engine_fitpars=("F0", "Offset_ppta"),
         exact_linear_fitpars=frozenset(),
     )
     engine = build_composite_engine(

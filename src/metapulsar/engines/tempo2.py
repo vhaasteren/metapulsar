@@ -14,8 +14,8 @@ from nltiming.engine_support import (
     is_exact_linear_param,
 )
 from .delta import Tempo2DeltaEngine
-from .hybrid import (
-    is_hybrid_native_param,
+from nltiming.hybrid import (
+    is_hybrid_engine_axis,
     resolve_hybrid_partition,
     validate_nonlinear_params,
 )
@@ -41,7 +41,7 @@ class LibstempoEngine:
         engine: Tempo2DeltaEngine,
         linear_model: LinearModel,
         param_mapping: Mapping[str, str] | None = None,
-        native_fitpars: tuple[str, ...] | None = None,
+        engine_fitpars: tuple[str, ...] | None = None,
         exact_linear_fitpars: frozenset[str] | set[str] | None = None,
         nonlinear_params: str | None = None,
     ):
@@ -53,16 +53,16 @@ class LibstempoEngine:
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
         # A stamped mode always implies its partition, even for a direct
         # construction that passed no explicit native/exact-linear lists.
-        native_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
+        engine_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
             fitpars=self.fitpars,
             param_mapping=self._param_mapping,
             mode=self.nonlinear_params,
-            native_fitpars=native_fitpars,
+            engine_fitpars=engine_fitpars,
             exact_linear_fitpars=exact_linear_fitpars,
         )
-        self._native_fitpars = tuple(native_fitpars)
+        self._engine_fitpars = tuple(engine_fitpars)
         self._native_indices = tuple(
-            self.fitpars.index(name) for name in self._native_fitpars
+            self.fitpars.index(name) for name in self._engine_fitpars
         )
         self._exact_linear_fitpars = frozenset(exact_linear_fitpars)
         self._exact_linear_indices = tuple(
@@ -81,7 +81,7 @@ class LibstempoEngine:
         engine = Tempo2DeltaEngine(lt_psr)
         mapping = dict(param_mapping or {})
         mode = validate_nonlinear_params(nonlinear_params)
-        native_fitpars: list[str] = []
+        engine_fitpars: list[str] = []
         exact_linear: list[str] = []
         settable = set(getattr(engine, "_reference_values", {}))
 
@@ -93,16 +93,16 @@ class LibstempoEngine:
             if engine_param not in settable:
                 exact_linear.append(name)
                 continue
-            if not is_hybrid_native_param(engine_param, mode):
+            if not is_hybrid_engine_axis(engine_param, mode):
                 exact_linear.append(name)
                 continue
-            native_fitpars.append(name)
+            engine_fitpars.append(name)
 
         return cls(
             engine=engine,
             linear_model=linear_model,
             param_mapping=mapping,
-            native_fitpars=tuple(native_fitpars),
+            engine_fitpars=tuple(engine_fitpars),
             exact_linear_fitpars=frozenset(exact_linear),
             nonlinear_params=mode,
         )
@@ -127,7 +127,7 @@ class LibstempoEngine:
             raise ValueError("delta_theta shape mismatch with fitpars")
 
         delta_native = delta[np.asarray(self._native_indices, dtype=int)]
-        delta_dict = _delta_dict(self._native_fitpars, delta_native)
+        delta_dict = _delta_dict(self._engine_fitpars, delta_native)
         if self._param_mapping:
             delta_dict = {
                 self._param_mapping.get(name, name): value

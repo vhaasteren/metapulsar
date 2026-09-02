@@ -47,6 +47,19 @@ class _PtaTimingData:
     _pint_model: object | None = None
     _pint_toas: object | None = None
     _lt_pulsar: object | None = None
+    #: Units the ``_designmatrix`` columns are in. Keyed separately from
+    #: ``timing_package`` because a vela-jax leg read by *tempo2* still has a
+    #: PINT-unit design matrix: vela-jax names and scales its parameters the
+    #: way PINT does whichever package read the files. Converting it as
+    #: tempo2's would be a silent unit error on every column.
+    design_units: Literal["pint", "tempo2"] = "pint"
+    #: The name of this leg's gauge column. PINT/libstempo/JUG legs synthesize
+    #: an ``Offset``; a vela-jax leg already has ``PHOFF`` as a real fitted
+    #: parameter, and its gauge direction is ``1/F_i`` rather than a constant.
+    gauge_param: Literal["Offset", "PHOFF"] = "Offset"
+    #: The :class:`~metapulsar.leg.TimingLeg` this record came from, when the
+    #: timing side emitted it. ``None`` for the PINT/libstempo path.
+    _leg: object | None = None
     fitpars_canonical: list[str] = field(default_factory=list, init=False)
     setpars_canonical: list[str] = field(default_factory=list, init=False)
 
@@ -345,4 +358,46 @@ def materialize_tempo2(lt_pulsar) -> _PtaTimingData:
         _sunssb=sunssb,
         _pdist=pulsar_distance(str(lt_pulsar.name)),
         _lt_pulsar=lt_pulsar,
+        design_units="tempo2",
+    )
+
+
+def materialize_leg(leg) -> _PtaTimingData:
+    """A PTA record straight from a :class:`~metapulsar.leg.TimingLeg`.
+
+    Nothing is recomputed and nothing is copied: every array is a view of the
+    record the timing side emitted, whose ``Mmat`` is the engine's own ``-J``
+    and whose residuals are the engine's. That is the whole point of building
+    the leg on the timing side -- there is no second code here to disagree
+    with the first.
+    """
+    record = leg.record
+    return _PtaTimingData(
+        name=record.name,
+        timing_package=leg.timing_package,
+        _toas=record.toas,
+        _stoas=record.stoas,
+        _residuals=record.residuals,
+        _toaerrs=record.toaerrs,
+        _ssbfreqs=record.freqs,
+        _telescope=record.telescope,
+        _designmatrix=record.Mmat,
+        _flags=dict(record.flags),
+        fitpars=list(record.fitpars),
+        setpars=list(record.setpars),
+        _raj=float(record.phi),
+        _decj=float(np.pi / 2.0 - record.theta),
+        _pos=record.pos,
+        _pos_t=record.pos_t,
+        _planetssb=record.planetssb,
+        _sunssb=record.sunssb,
+        _pdist=tuple(record.pdist),
+        _pint_model=leg.engine.pint_model,
+        _pint_toas=leg.engine.pint_toas,
+        # vela-jax names and scales its parameters PINT's way whichever package
+        # read the files, so the design matrix is in PINT units even on a
+        # tempo2 leg (see `design_units`).
+        design_units="pint",
+        gauge_param="PHOFF",
+        _leg=leg,
     )

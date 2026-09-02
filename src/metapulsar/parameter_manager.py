@@ -916,6 +916,15 @@ class ParameterManager:
 
         Replaces the previous PINT-parse path: package-aware ``SI`` handling and
         targeted ``ValueError``s require a raw-line scan.
+
+        Deliberately **not** ``psrdata.partext.effective_units``. That function
+        states the *tempo2* rule -- absent ``UNITS`` means TCB, ``SI`` is a
+        synonym for it -- because that is the only rule pure text can support.
+        This one is timing-package aware: an absent ``UNITS`` line means TDB
+        for a PINT leg and TCB for a tempo2 leg, and ``UNITS SI`` on a PINT leg
+        is refused rather than read as TCB. That is policy about who wrote the
+        file, not a fact about the text, so it stays here; sharing the body
+        would silently retimescale every PINT leg with no ``UNITS`` line.
         """
         units_lines = self._active_units_lines(content)
         if len(units_lines) > 1:
@@ -2241,17 +2250,22 @@ class ParameterManager:
                 pta_name, model, mergeable_params, setparameters, "all", parfile_dict
             )
 
-            # Make sure Offset is added if PHOFF is not present
-            # Neither Enterprise nor PINT report that parameter that is
-            # typically sneakily fit for
+            # Every leg needs a gauge column, and neither Enterprise nor PINT
+            # reports the one they sneakily fit for. Which name it takes
+            # depends on the leg: a PINT/libstempo/JUG leg gets a synthesized
+            # ``Offset``, a vela-jax leg's is its own fitted ``PHOFF``, whose
+            # direction is ``1/F_i`` rather than a constant.
+            #
+            # ``model`` here is built from the retained par *text*, which for a
+            # vela-jax leg has no ``PHOFF`` line -- the engine's own model has
+            # one only because ``prepare_model`` adds it. So this is the common
+            # branch either way, and it suffixes ``PHOFF_<pta>`` exactly as it
+            # does ``Offset_<pta>``. Do not feed the engine's model in here.
+            gauge = self.file_data[pta_name].get("gauge_param", "Offset")
             if "PHOFF" not in model.params:
-                offset = NativeParam(pint_name="Offset", par_key="Offset")
-                self._add_pta_specific_parameter(
-                    pta_name, "Offset", offset, fitparameters
-                )
-                self._add_pta_specific_parameter(
-                    pta_name, "Offset", offset, setparameters
-                )
+                native = NativeParam(pint_name=gauge, par_key=gauge)
+                self._add_pta_specific_parameter(pta_name, gauge, native, fitparameters)
+                self._add_pta_specific_parameter(pta_name, gauge, native, setparameters)
 
         return fitparameters, setparameters
 

@@ -47,10 +47,10 @@ def test_metapulsar_preserves_storage_row_order_by_default(mock_metapulsar):
     }
     metapulsar = mock_metapulsar(pulsars, combination_strategy="per_pta")
 
-    assert isinstance(metapulsar.isort, slice)
-    assert metapulsar.isort == slice(None, None, None)
-    assert isinstance(metapulsar.iisort, slice)
-    assert metapulsar.iisort == slice(None, None, None)
+    # There is no permutation to inspect any more: `isort`/`iisort` are gone
+    # with the sort itself (D12). The property *is* the storage array.
+    for attribute in ("isort", "iisort", "sort_data"):
+        assert not hasattr(metapulsar, attribute), attribute
     np.testing.assert_array_equal(metapulsar.toas, metapulsar._toas)
     np.testing.assert_array_equal(metapulsar.residuals, metapulsar._residuals)
     np.testing.assert_array_equal(metapulsar.toaerrs, metapulsar._toaerrs)

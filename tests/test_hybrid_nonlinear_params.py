@@ -23,7 +23,7 @@ from metapulsar.engines import (
     PulsarTimingEngine,
     VelaEngine,
     hybrid_linearized_fitpars,
-    is_hybrid_native_param,
+    is_hybrid_engine_axis,
 )
 from nltiming.engine_support import LinearModel
 
@@ -98,7 +98,7 @@ def test_native_adapters_partition_by_hybrid_mode(monkeypatch, family, mode, nat
         )
 
     assert engine.nonlinear_params == mode
-    assert set(engine._native_fitpars) == native
+    assert set(engine._engine_fitpars) == native
     assert engine.exact_linear_fitpars() == set(FITPARS) - native
     assert engine.identically_linear_fitpars() == set(FITPARS) - native
 
@@ -128,7 +128,7 @@ def test_pint_adapter_partitions_by_hybrid_mode(monkeypatch, mode, native):
         object(), object(), linear_model=model, nonlinear_params=mode
     )
     assert engine.nonlinear_params == mode
-    assert set(engine._native_fitpars) == native
+    assert set(engine._engine_fitpars) == native
     assert engine.identically_linear_fitpars() == set(FITPARS) - native
 
     delta = np.array([1e-9, 2e-6, 0.3, 4e-7, 5e-6, 6e-7])
@@ -151,7 +151,7 @@ def test_hybrid_mode_without_binary_axes_degenerates_to_pure_linear(monkeypatch)
     engine = VelaEngine.from_contribution(
         object(), linear_model=model, nonlinear_params="binary"
     )
-    assert engine._native_fitpars == ()
+    assert engine._engine_fitpars == ()
     delta = np.array([0.2, -0.4])
     np.testing.assert_allclose(engine.residual_delta(delta), -(design @ delta))
     # the native (None) request still refuses an engine that can evaluate nothing
@@ -164,20 +164,20 @@ def test_hybrid_mode_without_binary_axes_degenerates_to_pure_linear(monkeypatch)
 
 
 def test_hybrid_helpers_classify_on_engine_spelling():
-    assert is_hybrid_native_param("PB", "binary")
-    assert is_hybrid_native_param("E", "binary")  # tempo2 spelling of ECC
-    assert is_hybrid_native_param("A1DOT", "binary")  # PINT spelling of XDOT
-    assert not is_hybrid_native_param("PX", "binary")
-    assert is_hybrid_native_param("PX", "binary+")
-    assert not is_hybrid_native_param("F0", "binary+")
-    assert is_hybrid_native_param("F0", None)
+    assert is_hybrid_engine_axis("PB", "binary")
+    assert is_hybrid_engine_axis("E", "binary")  # tempo2 spelling of ECC
+    assert is_hybrid_engine_axis("A1DOT", "binary")  # PINT spelling of XDOT
+    assert not is_hybrid_engine_axis("PX", "binary")
+    assert is_hybrid_engine_axis("PX", "binary+")
+    assert not is_hybrid_engine_axis("F0", "binary+")
+    assert is_hybrid_engine_axis("F0", None)
     # suffixed host names must be mapped to the engine spelling first
     assert hybrid_linearized_fitpars(
         ("PB_epta", "F0_epta", "PX"), {"PB_epta": "PB", "F0_epta": "F0"}, "binary"
     ) == {"F0_epta", "PX"}
     assert hybrid_linearized_fitpars(("PB", "F0"), {}, None) == frozenset()
     with pytest.raises(ValueError, match="nonlinear_params"):
-        is_hybrid_native_param("PB", "all")
+        is_hybrid_engine_axis("PB", "all")
 
 
 def test_composite_engine_reports_and_checks_hybrid_mode():
@@ -215,7 +215,7 @@ def test_direct_construction_partitions_or_refuses_a_stamped_mode():
     model = _linear_model()
     fake = _RecordingDeltaEngine(model.design, FITPARS)
     engine = LibstempoEngine(engine=fake, linear_model=model, nonlinear_params="binary")
-    assert set(engine._native_fitpars) == {"PB", "A1"}
+    assert set(engine._engine_fitpars) == {"PB", "A1"}
     assert engine.identically_linear_fitpars() == set(FITPARS) - {"PB", "A1"}
     delta = np.array([1e-9, 2e-6, 0.3, 4e-7, 5e-6, 6e-7])
     fake.calls.clear()
@@ -226,25 +226,25 @@ def test_direct_construction_partitions_or_refuses_a_stamped_mode():
     )
 
     # an explicit native list that contradicts the mode is refused
-    with pytest.raises(ValueError, match="were passed as native_fitpars"):
+    with pytest.raises(ValueError, match="were passed as engine_fitpars"):
         LibstempoEngine(
             engine=fake,
             linear_model=model,
-            native_fitpars=FITPARS,
+            engine_fitpars=FITPARS,
             nonlinear_params="binary",
         )
     # ... and the same guard holds for the other families
-    with pytest.raises(ValueError, match="were passed as native_fitpars"):
+    with pytest.raises(ValueError, match="were passed as engine_fitpars"):
         VelaEngine(
             engine=fake,
             linear_model=model,
-            native_fitpars=("F0",),
+            engine_fitpars=("F0",),
             nonlinear_params="binary+",
         )
 
 
 def test_explicit_native_list_still_evaluates_every_axis():
-    """A partial ``native_fitpars`` must not drop the linearized deltas.
+    """A partial ``engine_fitpars`` must not drop the linearized deltas.
 
     ``from_contribution`` always passes both lists, but a direct construction
     may name only the axes its engine can evaluate; the mode still owns every
@@ -256,7 +256,7 @@ def test_explicit_native_list_still_evaluates_every_axis():
     engine = LibstempoEngine(
         engine=fake,
         linear_model=model,
-        native_fitpars=("PB", "A1"),  # no exact_linear_fitpars given
+        engine_fitpars=("PB", "A1"),  # no exact_linear_fitpars given
         nonlinear_params="binary",
     )
     assert engine.exact_linear_fitpars() == set(FITPARS) - {"PB", "A1"}
@@ -268,13 +268,13 @@ def test_explicit_native_list_still_evaluates_every_axis():
         got, _expected(fake, model, delta, {"PB", "A1"}), rtol=1e-12
     )
 
-    # a hybrid-native axis left out of both lists is a wiring bug, not a
+    # a hybrid engine axis left out of both lists is a wiring bug, not a
     # silent zero: PB would otherwise contribute nothing at all
-    with pytest.raises(ValueError, match="neither native nor exact-linear"):
+    with pytest.raises(ValueError, match="neither on the engine nor exact-linear"):
         LibstempoEngine(
             engine=fake,
             linear_model=model,
-            native_fitpars=("A1",),
+            engine_fitpars=("A1",),
             exact_linear_fitpars=frozenset({"JUMP1"}),
             nonlinear_params="binary",
         )
@@ -437,7 +437,7 @@ def test_real_engines_report_the_same_linearized_set(tmp_path, mode):
     par = _enriched_par(tmp_path)
     t2 = _sim_pulsar(par, "tempo2")
     fitpars = tuple(t2.fitpars)
-    expected = {n for n in fitpars if not is_hybrid_native_param(_bare(n), mode)}
+    expected = {n for n in fitpars if not is_hybrid_engine_axis(_bare(n), mode)}
     assert {"F0_sim", "F1_sim", "ELONG_sim", "ELAT_sim"} <= expected
     assert ("PX_sim" in expected) is (mode == "binary")
 

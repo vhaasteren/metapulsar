@@ -9,6 +9,7 @@ from nltiming.engine_config import (
 )
 
 from .composite import (
+    validate_composite_against_pulsar,
     PtaContribution,
     PulsarJaxTimingEngine,
     PulsarTimingEngine,
@@ -23,9 +24,9 @@ from .delta import (
     build_delta_engine,
     infer_jug_param_mapping,
 )
-from .hybrid import (
+from nltiming.hybrid import (
     hybrid_linearized_fitpars,
-    is_hybrid_native_param,
+    is_hybrid_engine_axis,
     validate_nonlinear_params,
 )
 from .jug import JugEngine, LinearizedJugEngine, verify_jug_native_chain
@@ -45,6 +46,7 @@ def build_engine(*, fitpars, nrows, contributions, design_matrix=None):
 
 
 __all__ = [
+    "validate_composite_against_pulsar",
     "_ENGINE_CHOICES",
     "_IMPL_FAMILY",
     "normalize_engines",
@@ -68,7 +70,7 @@ __all__ = [
     "LinearizedJugEngine",
     "verify_jug_native_chain",
     "validate_nonlinear_params",
-    "is_hybrid_native_param",
+    "is_hybrid_engine_axis",
     "hybrid_linearized_fitpars",
     "VelaDeltaEngine",
     "VelaEngine",

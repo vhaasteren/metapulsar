@@ -12,7 +12,7 @@ therefore a delay-only ingest: WN/RN hyperparameter lines are stripped so
 PINT never builds ``EcorrNoise`` and pyvela never ``ecorr_sort``s TOAs.
 
 Not JAX-capable. Enterprise/PTMCMC works directly. nltiming may place this
-engine behind a value-only Discovery host callback for derivative-free
+engine behind a value-only Discovery callback for derivative-free
 sampling. NUTS and autodiff still require a JAX timing engine such as JUG.
 """
 
@@ -30,8 +30,8 @@ from nltiming.engine_support import LinearModel, is_exact_linear_param
 
 from ..parfile_lines import is_noise_line
 from .delta import _is_zero_delta
-from .hybrid import (
-    is_hybrid_native_param,
+from nltiming.hybrid import (
+    is_hybrid_engine_axis,
     resolve_hybrid_partition,
     validate_nonlinear_params,
 )
@@ -206,7 +206,7 @@ def _refuse_ecorr_kernel(spnta) -> None:
     if pint_ecorr or getattr(spnta, "has_ecorr_noise", False):
         raise RuntimeError(
             "Vela residual ingest still has EcorrNoise; noise lines must "
-            "be stripped before SPNTA so TOAs stay in host order"
+            "be stripped before SPNTA so TOAs stay in the timing package's order"
         )
 
 
@@ -299,7 +299,7 @@ class VelaEngine:
         engine: VelaDeltaEngine,
         linear_model: LinearModel,
         param_mapping: Mapping[str, str] | None = None,
-        native_fitpars: tuple[str, ...] | None = None,
+        engine_fitpars: tuple[str, ...] | None = None,
         exact_linear_fitpars: frozenset[str] | set[str] | None = None,
         nonlinear_params: str | None = None,
     ):
@@ -311,16 +311,16 @@ class VelaEngine:
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
         # A stamped mode always implies its partition, even for a direct
         # construction that passed no explicit native/exact-linear lists.
-        native_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
+        engine_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
             fitpars=self.fitpars,
             param_mapping=self._param_mapping,
             mode=self.nonlinear_params,
-            native_fitpars=native_fitpars,
+            engine_fitpars=engine_fitpars,
             exact_linear_fitpars=exact_linear_fitpars,
         )
-        self._native_fitpars = tuple(native_fitpars)
+        self._engine_fitpars = tuple(engine_fitpars)
         self._native_indices = tuple(
-            self.fitpars.index(name) for name in self._native_fitpars
+            self.fitpars.index(name) for name in self._engine_fitpars
         )
         self._exact_linear_fitpars = frozenset(exact_linear_fitpars)
         self._exact_linear_indices = tuple(
@@ -347,7 +347,7 @@ class VelaEngine:
         mode = validate_nonlinear_params(nonlinear_params)
         settable = set(engine.param_names)
 
-        native_fitpars: list[str] = []
+        engine_fitpars: list[str] = []
         exact_linear: list[str] = []
         for name in tuple(linear_model.fitpars):
             engine_param = mapping.get(name, name)
@@ -357,14 +357,14 @@ class VelaEngine:
             if engine_param not in settable:
                 exact_linear.append(name)
                 continue
-            if not is_hybrid_native_param(engine_param, mode):
+            if not is_hybrid_engine_axis(engine_param, mode):
                 exact_linear.append(name)
                 continue
-            native_fitpars.append(name)
+            engine_fitpars.append(name)
 
         # A hybrid mode on a pulsar without binary axes legitimately degenerates
         # to the pure ``-M δ`` residual (JUG documents the same degeneration).
-        if not native_fitpars and mode is None:
+        if not engine_fitpars and mode is None:
             raise ValueError(
                 "No Vela-evaluable fit parameters remain after filtering; "
                 f"exact-linear candidates: {exact_linear}"
@@ -374,7 +374,7 @@ class VelaEngine:
             engine=engine,
             linear_model=linear_model,
             param_mapping=mapping,
-            native_fitpars=tuple(native_fitpars),
+            engine_fitpars=tuple(engine_fitpars),
             exact_linear_fitpars=frozenset(exact_linear),
             nonlinear_params=mode,
         )
@@ -441,7 +441,7 @@ class VelaEngine:
         delta_native = delta[np.asarray(self._native_indices, dtype=int)]
         delta_params = {
             self._param_mapping.get(name, name): float(value)
-            for name, value in zip(self._native_fitpars, delta_native, strict=True)
+            for name, value in zip(self._engine_fitpars, delta_native, strict=True)
         }
         return self._engine.delta_residuals(delta_params) + self._exact_linear_delta(
             delta

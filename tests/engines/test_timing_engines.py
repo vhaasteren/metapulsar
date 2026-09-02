@@ -341,7 +341,7 @@ def test_libstempo_engine_routes_jump_through_exact_linear_design_column():
     engine = LibstempoEngine(
         engine=strict,
         linear_model=model,
-        native_fitpars=("PB",),
+        engine_fitpars=("PB",),
         exact_linear_fitpars=frozenset({"JUMP"}),
     )
 

@@ -153,7 +153,7 @@ def test_mixed_gauge_block_compares_modulo_constant():
     leaf = LibstempoEngine(
         engine=_CenteredDelta(),
         linear_model=model,
-        native_fitpars=("F0", "Offset"),
+        engine_fitpars=("F0", "Offset"),
         exact_linear_fitpars=frozenset(),
     )
     assert leaf.gauge_applied is True

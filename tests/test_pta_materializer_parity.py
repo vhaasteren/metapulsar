@@ -175,7 +175,7 @@ def test_metapulsar_public_surface_parity(mock_metapulsar):
     np.testing.assert_array_equal(mp.fitpars, npz["fitpars"])
     np.testing.assert_array_equal(mp.pdist, npz["pdist"])
     # Enterprise/Discovery feather metadata: restored with to_feather, lazily
-    # derived from the reference-PTA PINT model (see tests/test_feather_io.py).
+    # derived from the reference-PTA PINT model.
     assert "dm" in MetaPulsar.__dict__
     assert "dmx" in MetaPulsar.__dict__
 

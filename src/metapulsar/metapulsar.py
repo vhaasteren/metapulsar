@@ -32,7 +32,12 @@ from .position_helpers import (
     _skycoord_from_pint_model,
     _skycoord_from_libstempo,
 )
-from .pta_data import _PtaTimingData, materialize_pint, materialize_tempo2
+from .pta_data import (
+    _PtaTimingData,
+    materialize_leg,
+    materialize_pint,
+    materialize_tempo2,
+)
 
 
 @dataclass(frozen=True)
@@ -101,7 +106,6 @@ class MetaPulsar:
         exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         pta_files: dict[str, dict] | None = None,
         clock_dir: str | Path | None = None,
-        sort=False,
     ):
         """Create MetaPulsar from multiple PTA pulsars.
 
@@ -155,7 +159,6 @@ class MetaPulsar:
         self._pta_files = self._normalize_pta_files(pta_files, pulsars)
         self._parfile_dicts = self._get_parfile_data(pulsars)
         self._clock_dir = None if clock_dir is None else Path(clock_dir)
-        self._sort = sort
         self._timing_engine_cache = {}
         self._timing_rows_filtered = False
         self._pint_model_cache = None
@@ -176,8 +179,6 @@ class MetaPulsar:
         self._remove_nonidentifiable_parameters()
         self._assert_gauge_columns()
         self._setup_position_and_planets()
-
-        self.sort_data()
 
         # Calculate canonical name from pulsar data using B-name preference logic
         self.name = self._get_pulsar_name(pulsars)
@@ -267,24 +268,32 @@ class MetaPulsar:
     def _materialize_pta_data(self) -> None:
         """Materialize MetaPulsar-owned PTA timing records from input data."""
         self._pta_data = {}
-        pint_models, pint_toas, lt_pulsars = self._unpack_pulsar_data()
-        if not pint_models and not lt_pulsars:
+        pint_models, pint_toas, lt_pulsars, legs = self._unpack_pulsar_data()
+        if not pint_models and not lt_pulsars and not legs:
             raise ValueError("MetaPulsar requires at least one PTA input")
-        self.name = self._validate_pulsar_consistency(pint_models, lt_pulsars)
+        self.name = self._validate_pulsar_consistency(pint_models, lt_pulsars, legs)
         for pta, model in pint_models.items():
             self._pta_data[pta] = materialize_pint(model, pint_toas[pta])
         for pta, pulsar in lt_pulsars.items():
             self._pta_data[pta] = materialize_tempo2(pulsar)
+        for pta, leg in legs.items():
+            self._pta_data[pta] = materialize_leg(leg)
 
     def _unpack_pulsar_data(self):
-        """Unpack pulsars dictionary into PINT and libstempo objects."""
+        """Unpack the pulsars dictionary by what emitted each leg."""
+        from .leg import TimingLeg
+
         lt_pulsars = {}
         pint_models = {}
         pint_toas = {}
+        legs = {}
 
         for pta, psritem in self._pulsars.items():
-            # Check if it's a PINT tuple (model, toas)
-            if isinstance(psritem, tuple) and len(psritem) == 2:
+            if isinstance(psritem, TimingLeg):
+                # The timing side emitted this leg: the record and the engine
+                # come from one read, so there is nothing here to materialize.
+                legs[pta] = psritem
+            elif isinstance(psritem, tuple) and len(psritem) == 2:
                 pmodel, ptoas = psritem
                 if isinstance(pmodel, TimingModel) and isinstance(ptoas, TOAs):
                     pint_models[pta] = pmodel
@@ -297,9 +306,9 @@ class MetaPulsar:
                 # Duck typing: anything else is treated as libstempo-like
                 lt_pulsars[pta] = psritem
 
-        return pint_models, pint_toas, lt_pulsars
+        return pint_models, pint_toas, lt_pulsars, legs
 
-    def _validate_pulsar_consistency(self, pint_models, lt_pulsars):
+    def _validate_pulsar_consistency(self, pint_models, lt_pulsars, legs=None):
         """Validate single pulsar across all PTAs by sky position and catalog suffixes."""
         sky_coords = []
 
@@ -308,6 +317,11 @@ class MetaPulsar:
 
         for psr in lt_pulsars.values():
             sky_coords.append(_skycoord_from_libstempo(psr))
+
+        # A leg carries its engine's PINT model, whichever package read the
+        # files, so it goes through the same check as a PINT leg.
+        for leg in (legs or {}).values():
+            sky_coords.append(_skycoord_from_pint_model(leg.engine.pint_model))
 
         if not sky_coords:
             raise ValueError("No valid pulsars found for validation")
@@ -322,6 +336,8 @@ class MetaPulsar:
             catalog_names.append(m.PSR.value)
         for psr in lt_pulsars.values():
             catalog_names.append(psr.name)
+        for leg in (legs or {}).values():
+            catalog_names.append(leg.record.name)
 
         assert_catalog_suffixes_compatible(catalog_names)
 
@@ -334,16 +350,27 @@ class MetaPulsar:
 
     def _setup_parameters(self):
         """Setup parameter management using existing infrastructure."""
-        pint_models, _, lt_pulsars = self._unpack_pulsar_data()
+        pint_models, _, lt_pulsars, legs = self._unpack_pulsar_data()
 
         # One source per PTA: the retained session par, for both engines
         # (:meth:`_parfile_content_for_pta`).
         file_data = {}
-        for pta_name in list(pint_models) + list(lt_pulsars):
+        for pta_name in list(pint_models) + list(lt_pulsars) + list(legs):
+            record = getattr(self, "_pta_data", {}).get(pta_name)
+            if record is not None:
+                timing_package = record.timing_package
+                # A vela-jax leg already fits PHOFF; PINT/libstempo/JUG legs
+                # get a synthesized Offset. Both suffix per PTA in a multi-PTA
+                # build.
+                gauge_param = record.gauge_param
+            else:
+                timing_package = "pint" if pta_name in pint_models else "tempo2"
+                gauge_param = "Offset"
             file_data[pta_name] = {
                 "par": None,
                 "par_content": self._parfile_content_for_pta(pta_name),
-                "timing_package": "pint" if pta_name in pint_models else "tempo2",
+                "timing_package": timing_package,
+                "gauge_param": gauge_param,
             }
 
         # Create ParameterManager for parameter mapping
@@ -559,7 +586,20 @@ class MetaPulsar:
         pta_slices = self._get_pta_slices()
 
         class _Leaf:
+            """What nltiming's gauge check asks a leg about itself."""
+
             gauge_applied = False
+
+            def __init__(self, record):
+                leg = getattr(record, "_leg", None)
+                if leg is not None:
+                    # A vela-jax leg's residual is a phase residual over the
+                    # *instantaneous* doppler-shifted spin frequency, so its
+                    # gauge column is 1/F_i, not the constant vector a
+                    # constant-F0 engine gives. Declaring it is what lets the
+                    # check stay exact instead of being widened to a part in
+                    # 1e4 to accommodate both.
+                    self.gauge_direction = leg.engine.gauge_direction
 
             def gauge_provenance(self):
                 from nltiming.protocols import GaugeProvenance
@@ -567,13 +607,15 @@ class MetaPulsar:
                 return GaugeProvenance(export="none", reference_mode="none")
 
         class _Contribution:
-            def __init__(self, name: str, row_indices):
+            def __init__(self, name: str, row_indices, record):
                 self.name = name
                 self.row_indices = np.asarray(row_indices, dtype=int)
-                self.engine = _Leaf()
+                self.engine = _Leaf(record)
 
         contributions = [
-            _Contribution(pta, np.arange(slc.start, slc.stop, dtype=int))
+            _Contribution(
+                pta, np.arange(slc.start, slc.stop, dtype=int), self._pta_data[pta]
+            )
             for pta, slc in pta_slices.items()
         ]
 
@@ -598,7 +640,6 @@ class MetaPulsar:
                 continue
 
             slice_obj = pta_slices[pta]
-            timing_package = self._get_timing_package(record)
             dm = record._designmatrix
             if full_parname in self._fitparameters:
                 for mapped_pta, native in self._fitparameters[full_parname].items():
@@ -607,9 +648,12 @@ class MetaPulsar:
                         column[slice_obj] = dm[:, par_idx]
                         break
 
-            # Apply unit conversion if needed
+            # Apply unit conversion if needed. Keyed on `design_units`, not on
+            # which package *read* the files: a vela-jax leg read by tempo2
+            # still has a PINT-unit design matrix, and converting it as
+            # tempo2's would be a silent unit error on every column.
             column[slice_obj] = self._convert_design_matrix_units(
-                column[slice_obj], full_parname, timing_package
+                column[slice_obj], full_parname, record.design_units
             )
 
         return column
@@ -742,7 +786,7 @@ class MetaPulsar:
                     model, toas = pulsar
                     pulsar_names.append(model.PSR.value)
                 else:
-                    # Libstempo object - access name property
+                    # Libstempo object or TimingLeg - access name property
                     pulsar_names.append(pulsar.name)
             except Exception as e:
                 self.logger.error(f"Failed to extract pulsar name {pta_name}: {e}")
@@ -1021,10 +1065,116 @@ class MetaPulsar:
         filename: str | os.PathLike[str],
         noisedict: Mapping[str, Any] | None = None,
     ) -> None:
-        """Write an Enterprise/Discovery-compatible feather snapshot of this pulsar."""
-        from .feather_io import save_pulsar_feather
+        """Write this composite as a schema-v1 feather (``psrdata``)."""
+        self.pulsar_data().to_feather(filename, noisedict=noisedict)
 
-        save_pulsar_feather(self, filename, noisedict=noisedict)
+    def pulsar_data(self):
+        """The composite as one :class:`psrdata.PulsarData`, in storage order.
+
+        The same record type a single-leg timing package emits, so a composite
+        and a one-pulsar file are the same object downstream. What makes it a
+        composite is metadata, not shape: ``timing_package="composite"``
+        because there is no single one, and ``extra["legs"]`` naming what each
+        leg was read and evaluated by.
+        """
+        from psrdata import PulsarData
+
+        legs = [
+            {
+                "pta": pta,
+                "timing_package": record.timing_package,
+                "engine_name": (
+                    record._leg.engine_name if getattr(record, "_leg", None) else None
+                ),
+                "state_id": (
+                    record._leg.record.state_id
+                    if getattr(record, "_leg", None)
+                    else None
+                ),
+            }
+            for pta, record in self._pta_data.items()
+        ]
+        return PulsarData(
+            name=self.name,
+            fitpars=tuple(self.fitpars),
+            setpars=tuple(self.setpars),
+            toas=self._toas,
+            stoas=self._stoas,
+            toaerrs=self._toaerrs,
+            residuals=self._residuals,
+            freqs=self._ssbfreqs,
+            Mmat=self._designmatrix,
+            flags=self.flags,
+            backend_flags=self.backend_flags,
+            telescope=self._telescope,
+            pos=self._pos,
+            pos_t=self._pos_t,
+            sunssb=self._sunssb,
+            planetssb=self._planetssb,
+            theta=self.theta,
+            phi=self.phi,
+            pdist=tuple(self.pdist),
+            dm=float(self.dm or 0.0),
+            dmx=self.dmx or None,
+            state_id=self.state_id(),
+            software="metapulsar",
+            timing_package="composite",
+            gauge={pta: self._leg_gauge_provenance(pta) for pta in self._pta_data},
+            reference_theta_exact=self._composite_theta_exact(),
+            native_units=self._composite_native_units(),
+            extra={
+                "legs": legs,
+                "combination_strategy": self.combination_strategy,
+            },
+        )
+
+    def _composite_theta_exact(self) -> dict[str, str]:
+        """One exact reference string per canonical fitpar.
+
+        A shared name takes the reference PTA's string -- the legs have already
+        been validated to agree on it -- and a per-PTA name takes its own PTA's.
+        """
+        out: dict[str, str] = {}
+        for name in self.fitpars:
+            owners = self._fitparameters.get(name, {})
+            if not owners:
+                out[name] = "0.0"
+                continue
+            source = (
+                self._shared_theta_source(name)
+                if len(owners) > 1
+                else next(iter(owners))
+            )
+            out[name] = self._pta_theta_exact(source, (name,))[name]
+        return out
+
+    def _composite_native_units(self) -> dict[str, str]:
+        """Units from the emitting engine for every axis a leg evaluates.
+
+        ``"native"`` is left only for a synthesized column -- an ``Offset_*``
+        or a ``PHOFF_*`` with no par line -- which has no engine unit to take.
+        """
+        out: dict[str, str] = {}
+        for name in self.fitpars:
+            unit = "native"
+            for pta, native in self._fitparameters.get(name, {}).items():
+                leg = getattr(self._pta_data[pta], "_leg", None)
+                if leg is not None and native.pint_name in leg.engine.param_units:
+                    unit = leg.engine.param_units[native.pint_name]
+                    break
+            out[name] = unit
+        return out
+
+    def _leg_gauge_provenance(self, pta) -> dict:
+        leg = getattr(self._pta_data[pta], "_leg", None)
+        if leg is not None:
+            return vars(leg.engine.gauge_provenance()).copy()
+        return {
+            "export": "none",
+            "reference_mode": "none",
+            "reporting_mode": "mean",
+            "reporting_weighted": True,
+        }
 
     def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
         """Return canonical fitpars mapped to their per-PTA retained-par spellings.
@@ -1078,6 +1228,19 @@ class MetaPulsar:
                 return False
             impl = engines[native_compat]
             family = _IMPL_FAMILY[impl]
+
+            record = self._pta_data[pta_name]
+            if getattr(record, "_leg", None) is not None:
+                # This leg's record came from its engine. Serving it with a
+                # different engine would mean sampling one residual while
+                # marginalizing another code's matrix -- the arrangement
+                # building the leg on the timing side exists to remove. The
+                # linearized stand-in is fine: it is `-M δ` over this record's
+                # own `-J`, which is exactly the frozen-parameter object.
+                if impl != record._leg.engine_name:
+                    return False
+                continue
+
             if linearized:
                 if family == "jug":
                     continue
@@ -1085,16 +1248,10 @@ class MetaPulsar:
                     return False
                 continue
             if impl == "vela_jax":
-                # Either native package: the host reads the files, Vela's
-                # ported chain evaluates the delay. Both need the retained
-                # par/tim inputs, and a tempo2 leg needs tempo2 as well.
-                if not self._can_import_vela_jax():
-                    return False
-                if not self._pta_files_available(pta_name):
-                    return False
-                if native_compat == "tempo2" and not self._can_import_pytempo():
-                    return False
-                continue
+                # Reached only for a leg that was *not* built by the timing
+                # side, which since PR-4 means the pulsar was constructed
+                # without `engines=`. `timing_engine` refuses it by name.
+                return False
             if family == "jug":
                 if not self._can_import_jug() or not self._pta_files_available(
                     pta_name
@@ -1122,14 +1279,6 @@ class MetaPulsar:
     def _can_import_vela_jax() -> bool:
         try:
             import vela_jax  # noqa: F401
-        except Exception:
-            return False
-        return True
-
-    @staticmethod
-    def _can_import_pytempo() -> bool:
-        try:
-            import pytempo  # noqa: F401
         except Exception:
             return False
         return True
@@ -1293,7 +1442,7 @@ class MetaPulsar:
         family: JUG executes it inside its residual graph; the libstempo, Vela
         and PINT adapters keep only the binary axes (plus ``PX`` for
         ``"binary+"``) on their native path and evaluate every other fitpar
-        through its design-matrix column (see ``engines/hybrid.py``). The
+        through its design-matrix column (see ``nltiming.hybrid``). The
         returned composite engine reports the mode it executes as
         ``engine.nonlinear_params``.
         """
@@ -1310,7 +1459,7 @@ class MetaPulsar:
             raise ValueError(
                 f"engines {engines} cannot be honored for pulsar '{self.name}'"
             )
-        from .engines.hybrid import validate_nonlinear_params
+        from nltiming.hybrid import validate_nonlinear_params
 
         # Validate once here so every family (JUG, libstempo, Vela, PINT) sees
         # the same normalized closed-set mode; each leaf executes it itself.
@@ -1322,7 +1471,9 @@ class MetaPulsar:
             )
 
         # JUG is an optional extra: import it only when a leg actually uses a
-        # JUG engine. libstempo/PINT linearized stand-ins must not require it.
+        # JUG engine. libstempo/PINT linearized stand-ins must not require it,
+        # and the package vela-jax exists to replace must not be a hard
+        # dependency of running vela-jax.
         needs_jug = not linearized and any(
             _IMPL_FAMILY[engines[self._native_compat(pta)]] == "jug"
             for pta in self._pta_data
@@ -1353,7 +1504,7 @@ class MetaPulsar:
         if cache_key in self._timing_engine_cache:
             return self._timing_engine_cache[cache_key]
 
-        from nltiming.engine_support import LinearModel, validate_engine_against_pulsar
+        from nltiming.engine_support import LinearModel
 
         from .engines import (
             JugEngine,
@@ -1364,6 +1515,7 @@ class MetaPulsar:
             PintEngine,
             PtaContribution,
             build_engine,
+            validate_composite_against_pulsar,
         )
 
         pta_slices = self._get_pta_slices()
@@ -1422,27 +1574,35 @@ class MetaPulsar:
                     linear_model, compatibility=native_compat
                 )
             elif impl == "vela_jax":
-                if not self._pta_files_available(pta_name):
+                leg = getattr(psr, "_leg", None)
+                if leg is None:
                     raise ValueError(
-                        f"Cannot build a vela-jax engine for '{pta_name}': "
-                        "missing par/tim inputs"
+                        f"PTA {pta_name!r} was not built as a vela-jax leg. "
+                        "Build the pulsar with "
+                        "create_metapulsar(..., engines='vela_jax'): the leg's "
+                        "record -- its Mmat and residuals -- must come from "
+                        "the same engine that samples it, which means the "
+                        "engine has to exist before the record does."
                     )
                 from .engines.vela_jax import VelaJaxEngine
 
-                files = self._pta_files[pta_name]
-                # vela-jax names parameters the way PINT does, whichever host
-                # read the file, so the PINT spelling is what it can match.
+                # vela-jax names parameters the way PINT does, whichever
+                # timing package read the file, so the PINT spelling is what
+                # it can match.
                 session_mapping = {
                     name: self._native_param(name, pta_name).pint_name
                     for name in pta_fitpars
                 }
-                engine = VelaJaxEngine.from_files(
-                    files.par_path,
-                    files.tim_path,
-                    host=native_compat,
+                engine = VelaJaxEngine.from_engine(
+                    leg.engine,
                     linear_model=linear_model,
                     param_mapping=session_mapping,
                     nonlinear_params=nonlinear_params,
+                    # Same object, same freeze: there is no second read to
+                    # disagree with, so the row and reference guards have
+                    # nothing to check. What replaces them for the composite
+                    # is block equality (`validate_composite_against_pulsar`).
+                    rows=None,
                 )
             elif family == "vela":
                 if not self._pta_files_available(pta_name):
@@ -1572,7 +1732,11 @@ class MetaPulsar:
             contributions=contributions,
             design_matrix=self._designmatrix,
         )
-        validate_engine_against_pulsar(engine, self, tol=1e-9)
+        # Block equality on every leg whose engine owns its columns, rather
+        # than the global equality nltiming's own validator asks for -- which
+        # a composite cannot satisfy, and which passed tautologically here
+        # because the matrix being compared *was* the pulsar's.
+        validate_composite_against_pulsar(engine, self)
         if verify_wiring:
             from .engines.jug import verify_jug_native_chain
 
@@ -1587,22 +1751,26 @@ class MetaPulsar:
             for pta, psr in self._pta_data.items()
         ]
         dm_checksum = float(np.sum(np.abs(self._designmatrix)))
-        return (
+        token = (
             f"{self.name}|ntoa={len(self._toas)}|nfit={len(self.fitpars)}|"
             f"fitpars={','.join(self.fitpars)}|pta={','.join(pta_tags)}|"
             f"dmabs={dm_checksum:.12e}"
         )
+        # A leg emitted by its timing side carries its own fingerprint of
+        # everything its residual depends on; fold it in so a rebuild with a
+        # different engine, conventions or par cannot reuse a cached context.
+        legs = [
+            f"{pta}:{record._leg.record.state_id}"
+            for pta, record in self._pta_data.items()
+            if getattr(record, "_leg", None) is not None
+        ]
+        return token + (f"|legs={','.join(legs)}" if legs else "")
 
-    def sort_data(self):
-        """Sort data by time when requested; otherwise preserve storage order."""
-        if self._sort:
-            self._isort = np.argsort(self._toas, kind="mergesort")
-            self._iisort = np.zeros(len(self._isort), dtype=int)
-            for ii, p in enumerate(self._isort):
-                self._iisort[p] = ii
-        else:
-            self._isort = slice(None, None, None)
-            self._iisort = slice(None, None, None)
+    # D12: there is no sort here. MetaPulsar has always defaulted to
+    # `sort=False`, and both consumers' ECORR quantization groups TOAs by
+    # value rather than adjacency (`create_quantization_matrix`, `quantize`),
+    # so nothing downstream needs sorted input. Every property below returns
+    # the storage array, and `pulsar_data()` emits storage order.
 
     def filter_data(self, mask=None, start_time=None, end_time=None):
         """Filter TOAs by mask and/or time range."""
@@ -1632,49 +1800,38 @@ class MetaPulsar:
             for key in self._flags:
                 self._flags[key] = self._flags[key][mask]
 
-        self.sort_data()
         self._timing_rows_filtered = True
         self._invalidate_timing_caches()
 
     @property
-    def isort(self):
-        """Return sorting indices."""
-        return self._isort
-
-    @property
-    def iisort(self):
-        """Return inverse sorting indices."""
-        return self._iisort
-
-    @property
     def toas(self):
         """Return array of TOAs in seconds."""
-        return self._toas[self._isort]
+        return self._toas
 
     @property
     def stoas(self):
         """Return array of observatory TOAs in seconds."""
-        return self._stoas[self._isort]
+        return self._stoas
 
     @property
     def residuals(self):
         """Return array of residuals in seconds."""
-        return self._residuals[self._isort]
+        return self._residuals
 
     @property
     def toaerrs(self):
         """Return array of TOA errors in seconds."""
-        return self._toaerrs[self._isort]
+        return self._toaerrs
 
     @property
     def freqs(self):
         """Return array of radio frequencies in MHz."""
-        return self._ssbfreqs[self._isort]
+        return self._ssbfreqs
 
     @property
     def Mmat(self):
         """Return ntoa x npar design matrix."""
-        return self._designmatrix[self._isort, :]
+        return self._designmatrix
 
     @property
     def pdist(self):
@@ -1701,13 +1858,13 @@ class MetaPulsar:
             if isinstance(self._flags, np.ndarray)
             else self._flags.keys()
         )
-        return {flag: self._flags[flag][self._isort] for flag in flagnames}
+        return {flag: self._flags[flag] for flag in flagnames}
 
     def set_flags(self, flagname, values):
         """Set value of existing or new flags."""
         if isinstance(self._flags, np.ndarray):
             raise NotImplementedError("Cannot set flags when stored as numpy.ndarray.")
-        self._flags[flagname] = values[self._iisort]
+        self._flags[flagname] = values
 
     @property
     def backend_flags(self):
@@ -1732,7 +1889,7 @@ class MetaPulsar:
             if flag in flagnames:
                 ret[:] = np.where(self._flags[flag] == "", ret, self._flags[flag])
 
-        return ret[self._isort]
+        return ret
 
     @property
     def theta(self):
@@ -1752,19 +1909,19 @@ class MetaPulsar:
     @property
     def pos_t(self):
         """Return unit vector from SSB to pulsar as function of time."""
-        return self._pos_t[self._isort, :]
+        return self._pos_t
 
     @property
     def planetssb(self):
         """Return planetary position vectors at all timestamps."""
-        return self._planetssb[self._isort, :, :]
+        return self._planetssb
 
     @property
     def sunssb(self):
         """Return sun position vectors at all timestamps."""
-        return self._sunssb[self._isort, :]
+        return self._sunssb
 
     @property
     def telescope(self):
         """Return telescope names at all timestamps."""
-        return self._telescope[self._isort]
+        return self._telescope

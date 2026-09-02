@@ -93,17 +93,40 @@ def test_ecorr_fast_sherman_morrison_constructs_on_unsorted_pulsar(tmp_path):
     assert signal is not None
 
 
+class _PermutedView:
+    """The attributes Enterprise's ECORR binds, in a chosen row order."""
+
+    def __init__(self, pulsar, permutation):
+        self.name = pulsar.name
+        self.toas = np.asarray(pulsar.toas)[permutation]
+        self.stoas = np.asarray(pulsar.stoas)[permutation]
+        self.toaerrs = np.asarray(pulsar.toaerrs)[permutation]
+        self.freqs = np.asarray(pulsar.freqs)[permutation]
+        self.residuals = np.asarray(pulsar.residuals)[permutation]
+        self.backend_flags = np.asarray(pulsar.backend_flags)[permutation]
+        self.flags = {k: np.asarray(v)[permutation] for k, v in pulsar.flags.items()}
+        self.Mmat = np.asarray(pulsar.Mmat)[permutation, :]
+        self.fitpars = list(pulsar.fitpars)
+
+
+def _permuted_view(pulsar, permutation):
+    return _PermutedView(pulsar, permutation)
+
+
 @pytest.mark.parametrize("method", ["sherman-morrison", "fast-sherman-morrison"])
 def test_ecorr_unsorted_solve_matches_sorted_equivalent(method, tmp_path):
     pulsars = _build_permuted_pulsars()
     pta_files = write_mock_pta_files(pulsars, tmp_path / "pta_files")
     unsorted_pulsar = MetaPulsar(
-        pulsars, combination_strategy="per_pta", sort=False, pta_files=pta_files
-    )
-    sorted_pulsar = MetaPulsar(
-        pulsars, combination_strategy="per_pta", sort=True, pta_files=pta_files
+        pulsars, combination_strategy="per_pta", pta_files=pta_files
     )
     permutation = np.argsort(unsorted_pulsar.toas, kind="mergesort")
+    # MetaPulsar does not sort -- it never did by default, and since D12 it
+    # cannot. The claim under test is Enterprise's, not MetaPulsar's: that
+    # ECORR's solve is order-equivariant, because `create_quantization_matrix`
+    # groups TOAs by value rather than adjacency. So the sorted view is built
+    # here, by permuting the arrays handed to Enterprise.
+    sorted_pulsar = _permuted_view(unsorted_pulsar, permutation)
     np.testing.assert_allclose(sorted_pulsar.toas, unsorted_pulsar.toas[permutation])
 
     ecorr = white_signals.EcorrKernelNoise(

@@ -16,3 +16,5 @@ pyarrow>=14.0.0
 # arviz>=0.12.0
 # la-forge>=0.1.0
 # seaborn>=0.11.0
+# The pulsar record, the feather schema and the par-text rules.
+psrdata @ git+https://github.com/vhaasteren/psrdata.git@main

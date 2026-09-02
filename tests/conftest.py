@@ -167,3 +167,22 @@ class FakeTimingPulsar:
 def fake_timing_pulsar() -> FakeTimingPulsar:
     """Provide a deterministic fake pulsar interface for early timing tests."""
     return FakeTimingPulsar()
+
+
+def vela_jax_tempo2_host() -> bool:
+    """Whether a vela-jax leg can be read by tempo2 on this machine.
+
+    vela-jax's tempo2 host is libstempo, and it needs three properties that
+    are not in a libstempo release yet (``siteVel``, ``correction_tt``,
+    ``correction_tt_tb``); without them the engine refuses to build rather
+    than guessing. Importing libstempo is therefore not enough to say the
+    path is available.
+    """
+    try:
+        from libstempo import tempopulsar
+    except ImportError:
+        return False
+    return all(
+        hasattr(tempopulsar, name)
+        for name in ("siteVel", "correction_tt", "correction_tt_tb")
+    )

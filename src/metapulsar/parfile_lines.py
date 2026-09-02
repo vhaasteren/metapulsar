@@ -40,78 +40,14 @@ def par_line_key(line: str) -> str:
     return line.split()[0].upper()
 
 
-# WN / RN hyperparameter keys. Shared by combination_writer and the Vela
-# residual-ingest shim. Not a timing-parameter alias table: these lines are
-# never delay columns on MetaPulsar's current (narrowband) path.
-#
-# ``DMJUMP`` / ``DMEFAC`` / ``DMEQUAD`` apply only to wideband data, where DM
-# is a second measurement. MetaPulsar does not ingest wideband TOAs yet, so
-# those lines are unused here; they stay in this set so combination products
-# and Vela residual ingest drop them the same way until a wideband path exists.
-NOISE_PAR_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "EFAC",
-        "TNEFAC",
-        "T2EFAC",
-        "EQUAD",
-        "TNEQUAD",
-        "T2EQUAD",
-        "ECORR",
-        "TNECORR",
-        "DMEFAC",
-        "DMEQUAD",
-        "DMJUMP",
-        "RNAMP",
-        "RNIDX",
-        "TNREDAMP",
-        "TNREDGAM",
-        "TNREDC",
-        "TNREDF",
-        "TNREDFC",
-        "TNDMAMP",
-        "TNDMGAM",
-        "TNCHROMAMP",
-        "TNCHROMGAM",
-        "TNCHROMIDX",
-        "TNGAMMA",
-        "TNAMP",
-    }
-)
-
-_NOISE_PREFIXES: Final[tuple[str, ...]] = (
-    "EFAC",
-    "EQUAD",
-    "ECORR",
-    "T2EFAC",
-    "T2EQUAD",
-    "TNEFAC",
-    "TNEQUAD",
-    "DMEFAC",
-    "DMEQUAD",
-    "DMJUMP",
-)
-
-
-def is_noise_line(line: str) -> bool:
-    """True when ``line`` is unused on MetaPulsar's residual/combination path.
-
-    White/red-noise hyperparameters (EFAC/EQUAD/ECORR, ``TNRED*``, ``RNAMP``,
-    ...) are not delay columns. ``DMJUMP`` / ``DMEFAC`` / ``DMEQUAD`` apply
-    only to wideband DM *measurements*, which MetaPulsar does not ingest yet.
-
-    Comments and blanks are not noise. ``TRACK`` / ``TIMEEPH`` / ``T2CMETHOD``
-    / ``RA`` / ``RAJ`` are not swallowed by the ``TN*`` / ``RN*`` catch-all.
-    """
-    if not is_active_par_line(line):
-        return False
-    key = par_line_key(line)
-    if key in NOISE_PAR_KEYS:
-        return True
-    if key.startswith("TN") and key not in {"TRACK", "TIMEEPH", "T2CMETHOD"}:
-        return True
-    if key.startswith("RN") and key not in {"RA", "RAJ"}:
-        return True
-    return any(key.startswith(prefix) for prefix in _NOISE_PREFIXES)
+# The noise classifier is `psrdata.partext.is_noise_line`, shared with
+# vela-jax. It used to be a local copy, and the two copies disagreed: this one
+# spelled the tempo2 EFAC family `TNEFAC`/`TNEQUAD` and missed `TRES`/`DMRES`/
+# `TNEF`; vela-jax's was the mirror image -- while a cross-repo test asserted
+# the two produced byte-identical output, which they did only on par files
+# that happened to use neither vocabulary. The shared function is the union.
+from psrdata.partext import NOISE_NAMES as NOISE_PAR_KEYS  # noqa: E402,F401
+from psrdata.partext import is_noise_line  # noqa: E402,F401
 
 
 def is_flag_token(token: str) -> bool:
