@@ -485,13 +485,14 @@ class TestBinaryFamilyConversionShapes:
         assert "tail_bound_s=" in str(excinfo.value)
 
         # "keep" downgrades it to a warning and leaves the aligned orthometric
-        # block intact — engine-native family (the EPTA reference is T2-EPS
-        # carrying H-terms), harmonic spellings and all.
+        # block intact. stamp_resolved_binary_keyword unwraps the EPTA T2
+        # wrapper to the component PINT builds (ELL1H), harmonic spellings and
+        # all — same token test_binary_family_names_are_not_rewritten pins.
         parsed, _ = align(
             file_data, tmp_path, AlignmentPolicy(unsupported_binary="keep")
         )
         for pta_name, par in parsed.items():
-            assert first(par["BINARY"]) == "T2", pta_name
+            assert first(par["BINARY"]) == "ELL1H", pta_name
             assert "H4" in par, pta_name
             assert int(first(par["NHARM"])) == 7, pta_name
             assert int(first(par["NHARMS"])) == 7, pta_name

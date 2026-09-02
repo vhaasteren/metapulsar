@@ -288,8 +288,7 @@ class MetaPulsarFactory:
                 flatten, ``TIME`` bake, safe TOA names, PTA / jump flags). Default
                 False: engines load the release ``.tim`` tree (plus optional ``-pn``
                 derivation); cross-engine ``TIME``/``INCLUDE`` parity and
-                ``-mjd_jump_pta`` stamping are not provided. Opt in explicitly
-                (AEI-DR2/DR3 rebuild scripts do).
+                ``-mjd_jump_pta`` stamping are not provided. Opt in explicitly.
             combination_output_dir: If set, after a successful build write a
                 self-contained tree under ``{dir}/``::
 

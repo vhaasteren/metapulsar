@@ -450,6 +450,13 @@ def project_powerlaw(
 # --------------------------------------------------------------------------- #
 # Waveform reconstruction via Discovery's own PulsarLikelihood.conditional
 # --------------------------------------------------------------------------- #
+def _use_metamath_kernels():
+    """Opt into Discovery's graph path. Default is still ``kernels="matrix"``."""
+    import discovery as ds
+
+    ds.config(kernels="metamath")
+
+
 def powerlaw_gp(psr, kind, *, components, log10_A, gamma, name=None, fref=1400.0):
     """Build a fixed power-law Discovery GP and its parameter dict.
 
@@ -459,6 +466,7 @@ def powerlaw_gp(psr, kind, *, components, log10_A, gamma, name=None, fref=1400.0
     """
     import discovery as ds
 
+    _use_metamath_kernels()
     name = name or kind
     if kind == "red":
         gp = ds.makegp_fourier(psr, ds.powerlaw, components=components, name=name)
@@ -544,11 +552,12 @@ def _reconstruction_likelihood(psr, variance, timing, gp_list, *, residuals=None
     from discovery import metamath
     from discovery import utils as ds_utils
 
+    # Graph-path kernels and PulsarLikelihood. Default is still matrix;
+    # Transport / metamath.NoiseMatrix are refused unless this is set first.
+    _use_metamath_kernels()
     variance = np.asarray(variance, dtype=float)
     y = psr.residuals if residuals is None else np.asarray(residuals, dtype=float)
     timing_signals = _timing_signals(psr, timing)
-    # metamath-route constant noise kernel (the legacy matrix-route
-    # NoiseMatrix1D_novar broke when discovery's default flipped to metamath).
     noise_kernel = metamath.NoiseMatrix(ds_utils.jnparray(variance))
     like = ds.PulsarLikelihood([y, noise_kernel, *timing_signals, *gp_list])
     if like.delay:

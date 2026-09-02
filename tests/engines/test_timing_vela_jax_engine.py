@@ -2,7 +2,8 @@
 
 The unit half runs against a linear stand-in for ``vela_jax.Engine``, so the
 partition and the JAX path are exercised without pyvela, tempo2 or JAX-heavy
-fixtures. The integration half needs the real package and the AEI-DR2 tree.
+fixtures. The integration half needs the real package and a local multi-PTA
+data tree.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from tests.conftest import vela_jax_tempo2_host
 
 FITPARS = ("F0", "F1", "PB", "A1", "DM", "PHOFF")
 
-AEI = pathlib.Path("data/aei-dr2")
+LOCAL_DATA = pathlib.Path("data/aei-dr2")
 PSR = "J1853+1303"
 
 
@@ -313,8 +314,8 @@ def test_metadata_is_reported_in_host_fitpar_names():
 # --- integration -----------------------------------------------------------
 
 pytest_integration = pytest.mark.skipif(
-    not (AEI / "epta_dr1_v2_2" / "par" / f"{PSR}.par").exists(),
-    reason="AEI-DR2 tree not present",
+    not (LOCAL_DATA / "epta_dr1_v2_2" / "par" / f"{PSR}.par").exists(),
+    reason="local multi-PTA data tree not present",
 )
 
 
@@ -332,7 +333,7 @@ def test_a_real_leg_builds_and_is_differentiable(release, package):
 
     from metapulsar import create_metapulsar
 
-    base = AEI / release
+    base = LOCAL_DATA / release
     pulsar = create_metapulsar(
         {
             release: [

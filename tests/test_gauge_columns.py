@@ -70,21 +70,21 @@ def test_remove_nonidentifiable_never_silently_drops_gauge_column(tmp_path):
 # (vela_jax.engine.Engine.gauge_direction). The negative test below is the
 # proof that the declaration is checked rather than assumed.
 
-AEI = Path(__file__).resolve().parents[1] / "data" / "aei-dr2"
+LOCAL_DATA = Path(__file__).resolve().parents[1] / "data" / "aei-dr2"
 PSR = "J1853+1303"
 
 #: The leg tests read a real par/tim through vela-jax; the mock gate above
 #: needs neither, so the marks go on the tests rather than on the module.
 real_leg = pytest.mark.skipif(
-    not (AEI / "nanograv_9y" / "par" / f"{PSR}.par").exists(),
-    reason="AEI-DR2 tree not present",
+    not (LOCAL_DATA / "nanograv_9y" / "par" / f"{PSR}.par").exists(),
+    reason="local multi-PTA data tree not present",
 )
 
 
 def _leg_pulsar(release, package):
     from metapulsar import create_metapulsar
 
-    base = AEI / release
+    base = LOCAL_DATA / release
     return create_metapulsar(
         {
             release: [

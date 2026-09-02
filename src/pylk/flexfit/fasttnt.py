@@ -19,7 +19,7 @@ from .noise import DiagonalNoise, EpochKernelNoise, NoiseOperator, ShermanMorris
 
 
 # Fast-path work (bincount / sparse products / gathers) runs well below the
-# BLAS efficiency of the dense Gram it replaces. Calibrated on AEI-DR3 J1713
+# BLAS efficiency of the dense Gram it replaces. Calibrated on J1713+0747
 # (n = 71578, k = 221, n_ep = 5406): raw flop ratio 40x, measured wall-clock
 # 4.1x diagonal / 5.9x kernel. Keeps `predicted_speedup` inside the +-2-3x the
 # design note claims instead of overselling by an order of magnitude.

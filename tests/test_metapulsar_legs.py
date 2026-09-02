@@ -21,7 +21,7 @@ import pytest
 
 from tests.conftest import vela_jax_tempo2_host
 
-AEI = Path(__file__).resolve().parents[1] / "data" / "aei-dr2"
+LOCAL_DATA = Path(__file__).resolve().parents[1] / "data" / "aei-dr2"
 PSR = "J1853+1303"
 
 LEGS = {
@@ -33,14 +33,14 @@ pytestmark = [
     pytest.mark.requires_vela_jax,
     pytest.mark.real_data,
     pytest.mark.skipif(
-        not (AEI / "epta_dr1_v2_2" / "par" / f"{PSR}.par").exists(),
-        reason="AEI-DR2 tree not present",
+        not (LOCAL_DATA / "epta_dr1_v2_2" / "par" / f"{PSR}.par").exists(),
+        reason="local multi-PTA data tree not present",
     ),
 ]
 
 
 def _spec(release):
-    base = AEI / release
+    base = LOCAL_DATA / release
     return [
         {
             "par": base / "par" / f"{PSR}.par",

@@ -21,8 +21,8 @@ Tempo2 cannot steal the following ``-pta`` / ``-pn``. When the release par conta
 flags on the selected (post-bake) TOAs. Zero-valued ``JUMP MJD`` lines (delay
 ``0`` / omitted) are dropped: they are not stamped and are removed from the
 engine par under ``convert_jump_mjd`` (PPTA DR1+DR2 v3 ships nested empty
-windows that would otherwise collide under flag conversion). The AEI-DR2/DR3
-rebuild scripts pass ``canonicalize_tim=True`` explicitly.
+windows that would otherwise collide under flag conversion). Callers that
+flatten INCLUDE trees pass ``canonicalize_tim=True`` explicitly.
 
 No PINT dependency at import time (the legacy-format converter imports its
 backend lazily).

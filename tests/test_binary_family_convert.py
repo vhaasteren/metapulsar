@@ -618,7 +618,7 @@ def test_gate_span_from_tim_metadata():
     a1, pb = 10.0, 6.83890261
     e_skip = _subthreshold_eps1(a1=a1, pb=pb)
     # Tiny dots: present (so D7b would fire without a span) but negligible over
-    # a ~2000-day baseline, matching the AEI-DR2 sub-threshold refusals.
+    # a ~2000-day baseline, matching the sub-threshold refusals on short spans.
     tiny_dots = {"EPS1DOT": ["1e-20 0"], "EPS2DOT": ["0 0"]}
 
     par = _ell1_dict(
@@ -2067,7 +2067,7 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# AEI-DR3 survey regressions (B3 / B5)
+# Release-survey regressions (B3 / B5)
 # ---------------------------------------------------------------------------
 
 
@@ -2188,7 +2188,9 @@ _J2317_PAR = Path("data/aei-dr2/nanograv_9y/par/J2317+1439.par")
 
 
 @pytest.mark.real_data
-@pytest.mark.skipif(not _J2317_PAR.exists(), reason="AEI-DR2 NG 9y data not present")
+@pytest.mark.skipif(
+    not _J2317_PAR.exists(), reason="NANOGrav 9y J2317+1439 par not present"
+)
 def test_j2317_gate_reads_si_and_skips():
     """NG J2317+1439: SI gate reads end the 5.9e27-fold false conversion.
 

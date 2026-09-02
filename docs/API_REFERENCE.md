@@ -213,8 +213,7 @@ def create_metapulsar(
             dual-engine-reloadable canonical artifact before load. Default
             False: engines load the release .tim path in place and do not copy
             its INCLUDE tree (no TIME bake, safe-name rewrite, or
-            -mjd_jump_pta stamps). Opt in explicitly (AEI-DR2/DR3 rebuild
-            scripts do).
+            -mjd_jump_pta stamps). Opt in explicitly.
 
     Returns:
         MetaPulsar object

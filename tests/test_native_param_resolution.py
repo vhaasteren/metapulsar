@@ -25,7 +25,7 @@ from metapulsar.pint_helpers import (
     create_pint_model,
 )
 
-# A combined-style leg: tempo2-flavoured FDJUMP keywords (what the AEI
+# A combined-style leg: tempo2-flavoured FDJUMP keywords (what the
 # combination writer emits) that PINT reads as FD1JUMP1 / FD2JUMP1.
 COMBINED_PAR = (
     "PSR J0613-0200\n"

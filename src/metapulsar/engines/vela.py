@@ -94,7 +94,7 @@ def _strip_empty_frozen_jumps(lines, model, toas) -> tuple[list[str], bool]:
 
     ``pyvela.model.read_mask`` asserts that every mask parameter selects at
     least one TOA. Release pars carry leftover backend flag JUMPs (PPTA-style
-    keys surviving into IPTA/AEI combined products, including flags named for
+    keys surviving into IPTA combined products, including flags named for
     another pulsar) that match nothing in the combined TOA set; tempo2 accepts
     them and they contribute nothing to residuals. A frozen empty JUMP is
     therefore dropped, while a *fitted* one is a real model error — it would

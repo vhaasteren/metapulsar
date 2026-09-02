@@ -1,7 +1,7 @@
 """Par preparation for pyvela ingestion: residual-only pars, empty frozen JUMPs.
 
 ``pyvela.model.read_mask`` asserts that every mask parameter selects at least
-one TOA. Release pars (PPTA-style backend flag JUMPs carried into IPTA/AEI
+one TOA. Release pars (PPTA-style backend flag JUMPs carried into IPTA
 combined products) routinely violate that with frozen leftovers that tempo2
 happily ignores, so the Vela adapter strips them before ``SPNTA`` sees the par.
 
