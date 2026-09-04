@@ -27,8 +27,6 @@ from metapulsar.engines import (
 )
 from nltiming.engine_support import LinearModel
 
-pytest.importorskip("jug")
-
 FITPARS = ("F0", "RAJ", "PX", "PB", "A1", "JUMP1")
 BINARY = {"PB", "A1"}
 
@@ -433,6 +431,7 @@ def test_real_engines_report_the_same_linearized_set(tmp_path, mode):
     residual-routing set), so unioning those would under-report the affine set
     for a JUG leg and disagree with the libstempo leg on the same model.
     """
+    pytest.importorskip("jug")
     pytest.importorskip("libstempo")
     par = _enriched_par(tmp_path)
     t2 = _sim_pulsar(par, "tempo2")
@@ -503,6 +502,7 @@ def test_real_engine_families_agree_on_the_hybrid_residual(tmp_path, mode):
     the fitpars every leg carries (PINT does not expose this par's
     ELONG/ELAT/PX as fitpars), at physically sized steps.
     """
+    pytest.importorskip("jug")
     pytest.importorskip("libstempo")
     pytest.importorskip("pint")
     par = _enriched_par(tmp_path)

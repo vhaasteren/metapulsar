@@ -50,7 +50,7 @@ jobs:
         shell: bash
       - name: Run tests with pytest
         env:
-          PYTEST_ADDOPTS: -m "not requires_libstempo and not requires_ipta_data and not requires_enterprise and not requires_vela and not requires_jug"
+          PYTEST_ADDOPTS: -m "not requires_libstempo and not requires_ipta_data and not requires_enterprise and not requires_vela and not requires_vela_jax and not requires_jug"
         run: |
           pytest --cov=src/metapulsar --cov-report xml:coverage.xml
       - name: Upload coverage to Codecov
