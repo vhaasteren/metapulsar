@@ -1,0 +1,26 @@
+# DDK: the orbital orientation KOM must follow the ecliptic transformation.
+PSR              J1600-3053
+EPHEM            DE436
+CLK              TT(BIPM2015)
+UNITS            TDB
+LAMBDA           244.347677 1
+BETA             -10.071873 1
+PMLAMBDA         -0.35 1
+PMBETA           -7.0 1
+PX               0.50 1
+ECL              IERS2010
+POSEPOCH         55000
+F0               277.937 1
+F1               -7.3e-16 1
+PEPOCH           55000
+DM               52.3
+DMEPOCH          55000
+BINARY           DDK
+PB               14.348466 1
+A1               8.801653 1
+T0               55000.0 1
+ECC              1.737e-04 1
+OM               181.85 1
+M2               0.33 1
+KIN              68.0 1
+KOM              76.0 1

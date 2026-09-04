@@ -7,7 +7,7 @@ name = "metapulsar"
 dynamic = ["version"]
 description = "Multi-PTA pulsar timing data combination framework for gravitational wave detection"
 readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "Rutger van Haasteren", email = "rutger@vhaasteren.com"},
@@ -21,8 +21,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Astronomy",
@@ -33,9 +31,14 @@ dependencies = [
     "numpy>=1.20.0",
     "astropy>=5.0.0",
     "scipy>=1.7.0",
-    "pint-pulsar>=0.9.0",
-    "enterprise-pulsar>=3.0.0",
+    # Alpha GitHub install, not a PyPI-publishable pin set. Two deps are still
+    # git: PINT#2023 (hybrid PB+FBn -> free FB0) on vhaasteren/PINT@metapulsar,
+    # and nltiming (not on PyPI). Unpin both to releases for a v1.0 sdist.
+    "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar",
+    "ephem>=4.1",
     "loguru>=0.7.3",
+    "nltiming @ git+https://github.com/vhaasteren/nltiming.git@main",
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]
@@ -43,8 +46,8 @@ dev = [
     "pytest>=6.0",
     "pytest-cov>=2.0",
     "black==25.11.0",
-    "mypy>=0.900",
     "flake8>=4.0",
+    "build>=1.2",
 ]
 docs = [
     "sphinx>=4.0",
@@ -56,6 +59,17 @@ docs = [
 libstempo = [
     "libstempo>=2.0.0",
 ]
+jug = [
+    "jug-timing",
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+]
+enterprise = [
+    "enterprise-pulsar>=3.0.0",
+]
+vela = [
+    "pyvela @ git+https://github.com/abhisrkckl/Vela.jl.git",
+]
 
 [project.urls]
 Homepage = "https://github.com/vhaasteren/metapulsar"
@@ -65,6 +79,10 @@ Issues = "https://github.com/vhaasteren/metapulsar/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["metapulsar*", "pylk*"]
+
+[tool.setuptools.package-data]
+metapulsar = ["resources/*.json", "resources/*.md"]
 
 [tool.setuptools.package-dir]
 "" = "src"
@@ -77,36 +95,23 @@ fallback_version = "0.0.0"
 
 [tool.black]
 line-length = 88
-target-version = ['py39']
+target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
-  # directories
   \.eggs
   | \.git
   | \.hg
-  | \.mypy_cache
   | \.tox
   | \.venv
   | build
   | dist
+  | data
+  | ref-packages
+  | paper
+  | docs
 )/
 '''
-
-[tool.mypy]
-python_version = "3.9"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -120,9 +125,9 @@ addopts = [
     "--tb=short",
     "--ignore=ref-packages",
     "--ignore=research",
-    "--ignore=legacy",
     "--ignore=data/ipta-dr2",
     "--ignore=examples",
+    "--ignore=paper",
     "--disable-warnings",
 ]
 filterwarnings = [
@@ -136,10 +141,14 @@ filterwarnings = [
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "legacy_comparison: marks tests that compare legacy vs new implementation",
+    "requires_jug: marks tests that need JUG/JAX timing backend support",
     "real_data: marks tests that require real data files",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "requires_libstempo: marks tests that need libstempo/Tempo2 available",
     "requires_ipta_data: marks tests that need IPTA data files present",
+    "requires_enterprise: marks tests that need enterprise-pulsar installed",
+    "requires_vela: marks tests that need pyvela/Julia Vela backend",
+    "requires_wide_longdouble: marks tests that need np.longdouble wider than float64",
+    "jug_numpy_jax_parity_deprecated: TEMPORARY — compares deprecated NumPy residual path to JAX; remove after JAX migration",
 ]

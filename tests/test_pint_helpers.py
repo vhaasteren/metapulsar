@@ -1,12 +1,24 @@
 """Unit tests for PINT helper functions."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch
+from pint.models.timing_model import AllComponents
+
 from metapulsar.pint_helpers import (
     check_component_available_in_model,
+    get_aliases_for_parameter,
     get_parameter_identifiability_from_model,
     get_parameters_by_type_from_parfiles,
     create_pint_model,
+    canonicalize_fdjump_name,
+    fdjump_aliases,
+    resolve_fit_column_name,
+    resolve_native_source_name,
+    resolve_parameter_alias,
+    resolve_parfile_parameter_name,
+    NativeParam,
+    ParameterSourceMappingError,
     PINTDiscoveryError,
 )
 
@@ -46,7 +58,186 @@ def mock_astrometry_components():
     return mock_instance
 
 
-# These tests are commented out until the function is implemented as part of the refactor
+class TestResolveParameterAlias:
+    """Test resolve_parameter_alias and get_aliases_for_parameter."""
+
+    def test_edot_matches_pint_canonical(self):
+        """EDOT should stay EDOT to match PINT AllComponents."""
+        pint_canon, _ = AllComponents().alias_to_pint_param("EDOT")
+        assert resolve_parameter_alias("EDOT") == pint_canon == "EDOT"
+
+    def test_eccdot_maps_to_edot(self):
+        """Tempo2-style ECCDOT should resolve to PINT canonical EDOT."""
+        assert resolve_parameter_alias("ECCDOT") == "EDOT"
+
+    def test_edot_aliases_include_eccdot(self):
+        """EDOT canonical name should list Tempo2-style ECCDOT alias."""
+        aliases = get_aliases_for_parameter("EDOT")
+        assert "EDOT" in aliases
+        assert "ECCDOT" in aliases
+
+    def test_fitpars_canonical_index_lookup_with_edot(self):
+        """Mapped EDOT must be found in fitpars_canonical for design-matrix indexing."""
+        fitpars = ["EDOT", "F0", "RAJ"]
+        fitpars_canonical = [resolve_parameter_alias(p) for p in fitpars]
+        mapped_param = "EDOT"
+
+        assert fitpars_canonical == ["EDOT", "F0", "RAJ"]
+        assert fitpars_canonical.index(mapped_param) == 0
+
+    def test_fitpars_canonical_index_lookup_with_eccdot(self):
+        """Enterprise fitpars with Tempo2 ECCDOT name must still index correctly."""
+        fitpars = ["ECCDOT", "F0", "RAJ"]
+        fitpars_canonical = [resolve_parameter_alias(p) for p in fitpars]
+        mapped_param = "ECCDOT"
+
+        assert fitpars_canonical == ["EDOT", "F0", "RAJ"]
+        assert fitpars_canonical.index(resolve_parameter_alias(mapped_param)) == 0
+
+    def test_resolve_parfile_parameter_name_xdot(self):
+        """Parfiles with XDOT should resolve to XDOT, not PINT canonical A1DOT."""
+        parfile_dict = {
+            "XDOT": ["8.1279761448223669144e-15"],
+            "F0": ["316.12397933185408713"],
+        }
+        assert resolve_parfile_parameter_name("A1DOT", parfile_dict) == "XDOT"
+        assert (
+            resolve_parfile_parameter_name("A1DOT", parfile_dict, fallback="A1DOT")
+            == "XDOT"
+        )
+
+    def test_resolve_parfile_parameter_name_eccdot(self):
+        """Parfiles with ECCDOT should resolve to ECCDOT for canonical EDOT."""
+        parfile_dict = {
+            "ECCDOT": ["1.2e-20"],
+            "F0": ["316.12397933185408713"],
+        }
+        assert resolve_parfile_parameter_name("EDOT", parfile_dict) == "ECCDOT"
+
+
+class TestFdjumpFitColumnNames:
+    """PINT cannot alias FDJUMPp ↔ FDpJUMP; MetaPulsar owns the fold."""
+
+    def test_canonicalize_fdjump_spellings(self):
+        assert canonicalize_fdjump_name("FDJUMP1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FD1JUMP") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FDJUMP1_1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FD1JUMP1") == "FDJUMP1_1"
+        assert canonicalize_fdjump_name("FDJUMPDM1") == "FDJUMPDM_1"
+        assert canonicalize_fdjump_name("F0") is None
+
+    def test_fdjump_aliases_cover_both_conventions(self):
+        assert set(fdjump_aliases("FD1JUMP1")) == {
+            "FDJUMP1_1",
+            "FD1JUMP1",
+            "FDJUMP1",
+            "FD1JUMP",
+        }
+        assert set(fdjump_aliases("FD1JUMP2")) == {
+            "FDJUMP1_2",
+            "FD1JUMP2",
+        }
+        assert set(fdjump_aliases("FDJUMPDM2")) == {
+            "FDJUMPDM_2",
+            "FDJUMPDM2",
+        }
+
+    def test_resolve_fit_column_matches_tempo2_and_pint(self):
+        assert resolve_fit_column_name("FD1JUMP1") == resolve_fit_column_name("FDJUMP1")
+        assert resolve_fit_column_name("FD1JUMP1") == "FDJUMP1_1"
+        assert resolve_fit_column_name("FDJUMPDM1") == resolve_fit_column_name(
+            "FDJUMPDM_1"
+        )
+        assert resolve_fit_column_name("F0") == "F0"
+        assert resolve_fit_column_name("ECCDOT") == "EDOT"
+
+    def test_chart_check_finds_tempo2_fdjump_in_fitpars(self):
+        fitpars = ["Offset", "ELONG", "F0", "FDJUMP1", "FDJUMPDM1"]
+        fitpars_canonical = [resolve_fit_column_name(name) for name in fitpars]
+        assert resolve_fit_column_name("FD1JUMP1") in fitpars_canonical
+        assert resolve_fit_column_name("FDJUMPDM1") in fitpars_canonical
+
+    def test_get_aliases_include_fdjump_spellings(self):
+        aliases = get_aliases_for_parameter("FD1JUMP1")
+        assert "FD1JUMP1" in aliases
+        assert "FDJUMP1" in aliases
+        assert "FDJUMP1_1" in aliases
+
+
+class TestNativeParam:
+    """A fit column's two native spellings, with the one-parameter invariant."""
+
+    def test_identity_folds_both_fdjump_spellings(self):
+        native = NativeParam(pint_name="FD1JUMP1", par_key="FDJUMP1")
+        assert native.identity == "FDJUMP1_1"
+        assert native.pint_name == "FD1JUMP1"
+        assert native.par_key == "FDJUMP1"
+
+    def test_identity_of_identical_spellings(self):
+        assert NativeParam("Offset", "Offset").identity == resolve_fit_column_name(
+            "Offset"
+        )
+        assert NativeParam("F0", "F0").identity == "F0"
+
+    def test_aliased_pairs_construct(self):
+        assert NativeParam("ECC", "E").identity == "ECC"
+        assert NativeParam("A1DOT", "XDOT").identity == "A1DOT"
+        assert NativeParam("EDOT", "ECCDOT").identity == "EDOT"
+        assert NativeParam("RAJ", "RA").identity == "RAJ"
+
+    def test_mismatched_spellings_raise_at_construction(self):
+        """The invariant is enforced by the type, not hoped for by callers."""
+        with pytest.raises(ValueError, match="denote different parameters"):
+            NativeParam(pint_name="FD1JUMP1", par_key="FDJUMP2")
+        with pytest.raises(ValueError, match="denote different parameters"):
+            NativeParam(pint_name="ECC", par_key="XDOT")
+
+    def test_suffixed_host_key_never_folds(self):
+        """Host keys cannot fold, so a bare fallback record stays inert."""
+        native = NativeParam("FD1JUMP1_combined", "FD1JUMP1_combined")
+        assert native.identity == "FD1JUMP1_combined"
+
+
+class TestResolveNativeSourceName:
+    """Identity-based resolution against a foreign list of spellings."""
+
+    def test_resolves_across_fdjump_conventions(self):
+        assert resolve_native_source_name("FDJUMP1", {"FD1JUMP1"}) == "FD1JUMP1"
+        assert resolve_native_source_name("FD1JUMP1", {"FDJUMP1"}) == "FDJUMP1"
+
+    def test_unique_hit_among_distinct_identities(self):
+        source = ["FD1JUMP1", "FD2JUMP1"]
+        assert resolve_native_source_name("FD1JUMP1", source) == "FD1JUMP1"
+        assert resolve_native_source_name("FD2JUMP1", source) == "FD2JUMP1"
+
+    def test_wrong_instance_raises_rather_than_matching_some_fdjump(self):
+        with pytest.raises(ParameterSourceMappingError):
+            resolve_native_source_name("FD1JUMP2", {"FDJUMP1"})
+        # J0613's second exponent: FDJUMP1 must not match FD2JUMP1.
+        with pytest.raises(ParameterSourceMappingError):
+            resolve_native_source_name("FDJUMP1", {"FD2JUMP1"})
+
+    def test_two_spellings_of_one_identity_always_raise(self):
+        """Even with an exact string hit present: the source is defective."""
+        with pytest.raises(ParameterSourceMappingError, match="more than once"):
+            resolve_native_source_name("FDJUMP1", ["FDJUMP1", "FD1JUMP1"])
+
+    def test_missing_raises_or_returns_none(self):
+        with pytest.raises(ParameterSourceMappingError, match="no match"):
+            resolve_native_source_name("F0", {"F1"})
+        assert resolve_native_source_name("F0", {"F1"}, required=False) is None
+
+    def test_error_names_role_and_candidates(self):
+        with pytest.raises(ParameterSourceMappingError) as excinfo:
+            resolve_native_source_name("F0", {"F1"}, role="JUG session")
+        message = str(excinfo.value)
+        assert "JUG session" in message and "F0" in message and "F1" in message
+
+    def test_ordinary_aliases_resolve(self):
+        assert resolve_native_source_name("ECCDOT", {"EDOT"}) == "EDOT"
+        assert resolve_native_source_name("RA", {"RAJ"}) == "RAJ"
+
+
 #
 # class TestGetParametersByTypeFromPint:
 #     """Test get_parameters_by_type_from_pint function."""
@@ -278,7 +469,7 @@ class TestGetParametersByTypeFromParfiles:
         }
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.pint_helpers.get_category_mapping_from_pint")
+    @patch("metapulsar.pint_compat.get_category_mapping_from_pint")
     def test_spindown_parameters_with_dynamic_derivatives_and_pepoch(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -315,7 +506,7 @@ class TestGetParametersByTypeFromParfiles:
         # The specific aliases depend on the mock alias data provided
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.pint_helpers.get_category_mapping_from_pint")
+    @patch("metapulsar.pint_compat.get_category_mapping_from_pint")
     def test_dispersion_parameters_with_dynamic_derivatives_and_dmepoch(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -350,7 +541,7 @@ class TestGetParametersByTypeFromParfiles:
         assert "DMEPOCH" in result  # Required epoch parameter
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.pint_helpers.get_category_mapping_from_pint")
+    @patch("metapulsar.pint_compat.get_category_mapping_from_pint")
     def test_binary_parameters_with_complete_bt_model(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -386,7 +577,7 @@ class TestGetParametersByTypeFromParfiles:
         assert "E" in result  # Alias for ECC (from mock data)
 
     @patch("metapulsar.pint_helpers.create_pint_model")
-    @patch("metapulsar.pint_helpers.get_category_mapping_from_pint")
+    @patch("metapulsar.pint_compat.get_category_mapping_from_pint")
     def test_parfile_parsing_failure_handled(
         self, mock_get_category, mock_create_model, mock_parfile_dicts
     ):
@@ -524,7 +715,7 @@ T0 55000.0 1
         # Should call ModelBuilder with dict directly
         mock_model_builder_class.assert_called_once()
         mock_builder.assert_called_once_with(
-            parfile_dict, allow_tcb=True, allow_T2=True
+            parfile_dict, allow_tcb=True, allow_T2=True, ell1h_shapiro="full"
         )
 
         assert result == mock_model
@@ -624,3 +815,252 @@ T0 55000.0 1
             # Should still call ModelBuilder
             mock_builder.assert_called_once()
             assert result == mock_model
+
+
+class TestAstrometryStyleHelpers:
+    """Test alias-driven astrometry style detection helpers."""
+
+    def test_has_parameter_alias_accepts_pint_aliases(self):
+        from metapulsar.pint_helpers import has_parameter_alias
+
+        parfile_dict = {"LAMBDA": ["244.347"], "BETA": ["-10.07"]}
+        assert has_parameter_alias(parfile_dict, "ELONG")
+        assert has_parameter_alias(parfile_dict, "ELAT")
+        assert not has_parameter_alias(parfile_dict, "RAJ")
+
+    def test_parameter_component_category_uses_pint_prefix_metadata(self):
+        from metapulsar.pint_helpers import parameter_belongs_to_component_category
+
+        assert parameter_belongs_to_component_category("DMX_0001", "dispersion_dmx")
+        assert parameter_belongs_to_component_category("DMXR1_0002", "dispersion_dmx")
+        assert not parameter_belongs_to_component_category("DMXTHING", "dispersion_dmx")
+
+    def test_detect_astrometry_style_equatorial_aliases(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "RA": ["18:57:36.3937"],
+            "DEC": ["+09:43:17.291"],
+        }
+        assert detect_astrometry_style(parfile_dict) == "equatorial"
+
+    def test_detect_astrometry_style_ecliptic_aliases(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "ELONG": ["244.347"],
+            "ELAT": ["-10.07"],
+        }
+        assert detect_astrometry_style(parfile_dict) == "ecliptic"
+
+    def test_detect_astrometry_style_mixed_raises(self):
+        from metapulsar.pint_helpers import detect_astrometry_style
+
+        parfile_dict = {
+            "RAJ": ["18:57:36.3937"],
+            "DECJ": ["+09:43:17.291"],
+            "LAMBDA": ["244.347"],
+            "BETA": ["-10.07"],
+        }
+        with pytest.raises(ValueError, match="Mixed astrometry detected"):
+            detect_astrometry_style(parfile_dict)
+
+
+class TestTemporaryPnTimFromParTimTempo2:
+    """Test tempo2 subprocess pulse-number helper."""
+
+    def test_add_pulse_number_uses_nofit(self, tmp_path):
+        from metapulsar.pint_helpers import temporary_pn_tim_from_par_tim_tempo2
+
+        par_text = (
+            "PSR J0030+0451\nF0 205.5307\nF1 0\nRAJ 00:30:27.428\nDECJ +04:51:39.71\n"
+        )
+        tim_path = tmp_path / "test.tim"
+        tim_path.write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+
+        captured_cmd = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            cwd = Path(kwargs["cwd"])
+            (cwd / "withpn.tim").write_text("FORMAT 1\nMODE 1\n", encoding="utf-8")
+
+        with patch("metapulsar.pint_helpers.subprocess.run", side_effect=fake_run):
+            with temporary_pn_tim_from_par_tim_tempo2(par_text, tim_path) as pn_tim:
+                assert Path(pn_tim).exists()
+
+        assert captured_cmd[0] == "tempo2"
+        assert "-nofit" in captured_cmd
+        assert captured_cmd.index("-nofit") < captured_cmd.index("-f")
+
+
+class TestDedupeNonrepeatableParLines:
+    """Tests for dedupe_nonrepeatable_par_lines (old-tempo2 double-write guard)."""
+
+    def test_equal_duplicates_keep_first(self):
+        """Old-tempo2 signature: NE_SW written twice with equal values."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "PSR J1857+0943\nNE_SW 4\nUNITS TDB\nNE_SW 4.000\n"
+        result = dedupe_nonrepeatable_par_lines(par)
+
+        ne_sw_lines = [line for line in result.splitlines() if line.startswith("NE_SW")]
+        assert ne_sw_lines == ["NE_SW 4"]
+        assert "UNITS TDB" in result
+
+    def test_alias_duplicates_collapse(self):
+        """NE_SW + SOLARN0 with equal values collapse to the first spelling."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "NE_SW 4\nSOLARN0 4.000\n"
+        result = dedupe_nonrepeatable_par_lines(par)
+        assert result == "NE_SW 4\n"
+
+    def test_conflicting_duplicates_raise(self):
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = "NE_SW 4\nNE_SW 7.000\n"
+        with pytest.raises(ValueError, match="NE_SW"):
+            dedupe_nonrepeatable_par_lines(par)
+
+    def test_repeatable_and_unknown_lines_untouched(self):
+        """JUMP lines (repeatable) and non-PINT lines must pass through."""
+        from metapulsar.pint_helpers import dedupe_nonrepeatable_par_lines
+
+        par = (
+            "JUMP -sys EFF.EBPP.1360 0 1\n"
+            "JUMP -sys EFF.EBPP.1410 0 1\n"
+            "TNRedAmp -13.5\n"
+            "SOMETHING_UNKNOWN 1\n"
+            "SOMETHING_UNKNOWN 2\n"
+        )
+        assert dedupe_nonrepeatable_par_lines(par) == par
+
+    def test_sanitized_content_builds_pint_model(self):
+        """Round-trip: duplicated NE_SW par builds a PINT model after dedupe."""
+        from metapulsar.pint_helpers import (
+            create_pint_model,
+            dedupe_nonrepeatable_par_lines,
+        )
+
+        par = (
+            "PSR J1857+0943\nPEPOCH 55000\nF0 186.494081\n"
+            "RAJ 18:57:36.3937\nDECJ +09:43:17.291\nDM 13.299\n"
+            "NE_SW 4\nUNITS TDB\nNE_SW 4.000\n"
+        )
+        with pytest.raises(Exception):
+            create_pint_model(par)  # unsanitized content is rejected by PINT
+
+        model = create_pint_model(dedupe_nonrepeatable_par_lines(par))
+        assert float(model.NE_SW.value) == pytest.approx(4.0)
+
+
+class TestResolverInputContract:
+    """Name resolution takes strings; anything else is a caller bug.
+
+    Passing a non-string through unchanged (the old blanket ``except``) is what
+    let a ``NativeParam`` reach an alias resolver and match nothing, so a par
+    write that was required by the mapping silently did nothing.
+    """
+
+    @pytest.mark.parametrize("bad", [None, 3, ("PX",), NativeParam("PX", "PX")])
+    def test_resolvers_reject_non_strings(self, bad):
+        from metapulsar.pint_helpers import pint_parameter_name
+
+        for fn in (
+            resolve_parameter_alias,
+            pint_parameter_name,
+            get_aliases_for_parameter,
+            canonicalize_fdjump_name,
+        ):
+            with pytest.raises(TypeError, match="parameter-name string"):
+                fn(bad)
+
+    def test_unknown_alias_still_passes_through(self):
+        from metapulsar.pint_helpers import pint_parameter_name
+
+        assert resolve_parameter_alias("NOT_A_PARAM") == "NOT_A_PARAM"
+        assert pint_parameter_name("NOT_A_PARAM") is None
+        assert get_aliases_for_parameter("NOT_A_PARAM") == ["NOT_A_PARAM"]
+
+    @pytest.mark.parametrize("exc", [RuntimeError, ValueError, KeyError])
+    def test_registry_failure_propagates(self, monkeypatch, exc):
+        """The other half of the narrowed except: real failures must escape.
+
+        ``ValueError``/``KeyError`` matter most: those are the alias-miss types,
+        so a registry that fails with one of them is exactly what would be
+        mistaken for "this name is not an alias" and passed through.
+        """
+        from metapulsar import pint_compat
+
+        def _boom():
+            raise exc("AllComponents is broken")
+
+        monkeypatch.setattr(pint_compat, "_get_all_components", _boom)
+        for fn in (
+            pint_compat.resolve_parameter_alias,
+            pint_compat.pint_parameter_name,
+            pint_compat.get_aliases_for_parameter,
+        ):
+            with pytest.raises(exc, match="AllComponents is broken"):
+                fn("F0")
+
+
+def test_stamp_resolved_binary_keyword_unwraps_t2():
+    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+
+    ell1 = {
+        "BINARY": ["T2"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+        "EPS1": ["1e-6 1"],
+        "EPS2": ["2e-6 1"],
+    }
+    assert stamp_resolved_binary_keyword(ell1) is True
+    assert ell1["BINARY"] == ["ELL1"]
+
+    ddk = {
+        "BINARY": ["T2"],
+        "PB": ["67 1"],
+        "A1": ["32 1"],
+        "T0": ["55000 1"],
+        "ECC": ["7e-5 1"],
+        "OM": ["176 1"],
+        "KIN": ["73 1"],
+        "KOM": ["11 1"],
+    }
+    assert stamp_resolved_binary_keyword(ddk) is True
+    assert ddk["BINARY"] == ["DDK"]
+
+
+def test_stamp_resolved_binary_keyword_is_noop_unless_t2_resolves():
+    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+
+    declared = {
+        "BINARY": ["ELL1"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+    }
+    before = dict(declared)
+    assert stamp_resolved_binary_keyword(declared) is False
+    assert declared == before
+
+    isolated = {"F0": ["100 1"], "PEPOCH": ["55000"]}
+    assert stamp_resolved_binary_keyword(isolated) is False
+    assert "BINARY" not in isolated
+
+    uncoverable = {
+        "BINARY": ["T2"],
+        "PB": ["1.5 1"],
+        "A1": ["1.4 1"],
+        "TASC": ["55000 1"],
+        "EPS1": ["1e-6 1"],
+        "EPS2": ["2e-6 1"],
+        "ECC": ["1e-5 1"],
+        "OM": ["10 1"],
+        "T0": ["55000 1"],
+    }
+    assert stamp_resolved_binary_keyword(uncoverable) is False
+    assert uncoverable["BINARY"] == ["T2"]

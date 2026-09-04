@@ -4,121 +4,291 @@ This module provides pure functions that encapsulate PINT-specific logic
 for parameter discovery, alias resolution, and model validation.
 """
 
-from typing import Dict, List, Tuple, Any, Iterator
-from functools import lru_cache
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    Tuple,
+    Any,
+    Iterator,
+    Literal,
+    Mapping,
+    Optional,
+    TYPE_CHECKING,
+)
+from dataclasses import dataclass
 from pint.models import TimingModel
-from pint.models.timing_model import AllComponents
+from pint.models.model_builder import parse_parfile
 from pint.models.parameter import Parameter
+from pint.exceptions import PrefixError
+from pint.utils import split_prefixed_name
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 import tempfile
 import subprocess
 from io import StringIO
+import re
 import numpy as np
-from pint.models.model_builder import parse_parfile
+
+from .parfile_lines import (
+    is_active_par_line,
+    join_par_lines,
+    par_line_key,
+)
+
+# Pure PINT parameter-name/unit utilities, MetaPulsar-owned so the core
+# combination path never imports ``nltiming``; re-exported here for the rest of
+# MetaPulsar. See :mod:`metapulsar.pint_compat`.
+from .pint_compat import (
+    CANONICAL_SI as CANONICAL_SI,
+    KeyReturningDict as KeyReturningDict,
+    ParUnitError as ParUnitError,
+    _get_all_components as _get_all_components,
+    get_aliases_for_parameter as get_aliases_for_parameter,
+    get_category_mapping_from_pint as get_category_mapping_from_pint,
+    get_extra_top_level_params_for_category as get_extra_top_level_params_for_category,
+    get_parameters_by_type_from_models as get_parameters_by_type_from_models,
+    has_canonical_unit as has_canonical_unit,
+    mjd_from_model as mjd_from_model,
+    mjd_from_par as mjd_from_par,
+    pint_parameter_name as pint_parameter_name,
+    canonicalize_fdjump_name as canonicalize_fdjump_name,
+    fdjump_aliases as fdjump_aliases,
+    resolve_fit_column_name as resolve_fit_column_name,
+    resolve_parameter_alias as resolve_parameter_alias,
+    si_from_model as si_from_model,
+    si_from_par as si_from_par,
+    si_quantity_from_token as si_quantity_from_token,
+    token_from_si as token_from_si,
+)
+
+if TYPE_CHECKING:
+    from .tim_file_analyzer import TimMetadata
+
+#: Which orthometric Shapiro expression PINT evaluates for ELL1H/``T2`` binaries.
+#: ``"full"`` is PINT's default (Freire & Wex 2010, Eq. 29); ``"absorbed"``
+#: (Eq. 28) matches Tempo2's ELL1H/T2 mode 1.
+Ell1hShapiroMode = Literal["full", "absorbed"]
 
 
 class PINTDiscoveryError(Exception):
     """Raised when PINT component discovery fails"""
 
 
-class KeyReturningDict(dict):
-    """Dictionary that returns the key itself when key is not found."""
+def _parfile_alias_value_present(parfile_dict: Mapping[str, Any], alias: str) -> bool:
+    """Return True if alias is present in a parfile dict with a non-empty value."""
+    if alias not in parfile_dict:
+        return False
+    value = parfile_dict[alias]
+    if value is None:
+        return False
+    if isinstance(value, list):
+        if not value:
+            return False
+        return bool(str(value[0]).strip())
+    return bool(str(value).strip())
 
-    def __missing__(self, key):
-        return key
+
+def has_parameter_alias(parfile_dict: Dict[str, Any], canonical_param: str) -> bool:
+    """Return True if any PINT alias for canonical_param is present and non-empty."""
+    return any(
+        _parfile_alias_value_present(parfile_dict, alias)
+        for alias in get_aliases_for_parameter(canonical_param)
+    )
 
 
-def get_category_mapping_from_pint() -> Dict[str, str]:
-    """Get component category mappings from PINT.
+def resolve_parfile_parameter_name(
+    canonical_name: str,
+    parfile_dict: Mapping[str, Any],
+    *,
+    fallback: str | None = None,
+) -> str:
+    """Return the parfile key spelling for a canonical parameter name.
 
-    Returns:
-        Dictionary mapping parameter type names to PINT category names
+    Preference order:
+    1) first alias from get_aliases_for_parameter() present with non-empty value
+    2) fallback (typically the PINT model param name)
+    3) canonical_name
     """
-    mapping = {
-        "astrometry": "astrometry",
-        "spindown": "spindown",
-        "binary": "pulsar_system",
-        "dispersion": "dispersion_constant",
-    }
-
-    return KeyReturningDict(mapping)
+    for alias in get_aliases_for_parameter(canonical_name):
+        if _parfile_alias_value_present(parfile_dict, alias):
+            return alias
+    if fallback is not None:
+        return fallback
+    return canonical_name
 
 
-def get_extra_top_level_params_for_category() -> Dict[str, List[str]]:
-    """Return extra top-level parameters to include per logical component.
+@dataclass(frozen=True)
+class NativeParam:
+    """Both native spellings of one fit/set column for one PTA leg.
 
-    Some parameters (e.g., BINARY) are defined at the TimingModel top level in
-    PINT and are not listed under any component's ``params``. This registry
-    allows discovery to include such parameters in a declarative way.
+    ``pint_name`` is the PINT ``TimingModel`` attribute (PINT is the SSOT;
+    every leg has a PINT model). ``par_key`` is the first token of the
+    retained par line -- the spelling tempo2 parsed. ``identity`` is the
+    engine-neutral chart id; it is the only sanctioned comparison key.
+
+    The one place a fit column has three names is combined PINT FDJUMP, where
+    PINT cannot register ``FDJUMPp`` <-> ``FDpJUMP`` as an alias: the par says
+    ``FDJUMP1``, the PINT model attribute is ``FD1JUMP1``, and the chart id is
+    ``FDJUMP1_1``. Consumers read the field their source is keyed by rather
+    than guessing which spelling a lone string was.
+
+    ``par_key`` is the retained-par token **when that token uniquely identifies
+    the column**. Tempo2 stores repeated-keyword families under one token --
+    every phase jump is a ``JUMP`` line -- which instance 1 consumes; later
+    instances fall back to ``pint_name`` (``JUMP2``), a spelling absent from
+    the par. The invariant below forbids the honest value:
+    ``resolve_fit_column_name("JUMP")`` is ``JUMP1``, so ``par_key="JUMP"``
+    cannot be stored on instance 2. A consumer writing par text must therefore
+    resolve ``(container token, occurrence)`` itself for these families.
+    Distinct-token families (``FDJUMP1``/``FDJUMP2``, ``DMX_0001``) are exact.
     """
-    return {
-        "binary": ["BINARY"],
-    }
+
+    pint_name: str
+    par_key: str
+
+    def __post_init__(self) -> None:
+        if resolve_fit_column_name(self.pint_name) != resolve_fit_column_name(
+            self.par_key
+        ):
+            raise ValueError(
+                f"NativeParam spellings denote different parameters: "
+                f"pint_name={self.pint_name!r} folds to "
+                f"{resolve_fit_column_name(self.pint_name)!r}, "
+                f"par_key={self.par_key!r} folds to "
+                f"{resolve_fit_column_name(self.par_key)!r}"
+            )
+
+    @property
+    def identity(self) -> str:
+        """Engine-neutral chart id -- the only sanctioned comparison key."""
+        return resolve_fit_column_name(self.pint_name)
 
 
-@lru_cache(maxsize=1)
-def _get_all_components():
-    """Get cached AllComponents instance.
+class ParameterSourceMappingError(ValueError):
+    """A parameter name could not be uniquely mapped onto a source's spellings."""
 
-    Uses lru_cache to ensure AllComponents() is only created once,
-    avoiding the ~10ms creation cost on subsequent calls.
+
+def resolve_native_source_name(
+    query: str,
+    source_names: Iterable[str],
+    *,
+    role: str = "source",
+    required: bool = True,
+) -> Optional[str]:
+    """Return the unique name in ``source_names`` denoting the same parameter.
+
+    Comparison is by identity (:func:`resolve_fit_column_name`); ``query``
+    must be a native stem, never a suffixed host key (host keys cannot fold,
+    so they can only ever exact-match -- safe by construction, but callers
+    must not rely on it).
+
+    The full source is always scanned; an exact string match is just the
+    common case of the unique hit, never a shortcut. Two or more hits raise
+    even when one of them is an exact string match -- a source that spells one
+    parameter twice is defective (JUG refuses such pars outright), and no
+    tie-break may paper over it. Zero hits raise when ``required``, else
+    return ``None``.
     """
-    return AllComponents()
+    identity = resolve_fit_column_name(query)
+    candidates = tuple(source_names)  # may be a one-shot iterable
+    matches = [
+        candidate
+        for candidate in candidates
+        if resolve_fit_column_name(candidate) == identity
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ParameterSourceMappingError(
+            f"Parameter {query!r} (identity {identity!r}) matches "
+            f"{len(matches)} names in {role}: {matches!r}; a source that "
+            "spells one parameter more than once is ambiguous"
+        )
+    if required:
+        raise ParameterSourceMappingError(
+            f"Parameter {query!r} (identity {identity!r}) has no match in "
+            f"{role}; candidates={sorted(candidates)!r}"
+        )
+    return None
 
 
-def resolve_parameter_alias(param_name: str) -> str:
-    """Resolve a single parameter alias to canonical name using cached AllComponents.
+def has_equatorial_astrometry(parfile_dict: Dict[str, Any]) -> bool:
+    """Return True if equatorial astrometry parameters are present (via PINT aliases)."""
+    return has_parameter_alias(parfile_dict, "RAJ") and has_parameter_alias(
+        parfile_dict, "DECJ"
+    )
 
-    This function provides fast on-demand alias resolution by leveraging the
-    cached AllComponents instance, avoiding the 12.9ms creation cost.
 
-    Args:
-        param_name: Parameter name that might be an alias
+def has_ecliptic_astrometry(parfile_dict: Dict[str, Any]) -> bool:
+    """Return True if ecliptic astrometry parameters are present (via PINT aliases)."""
+    return has_parameter_alias(parfile_dict, "ELONG") and has_parameter_alias(
+        parfile_dict, "ELAT"
+    )
 
-    Returns:
-        Canonical parameter name, or original name if not an alias
+
+def detect_astrometry_style(parfile_dict: Dict[str, Any]) -> str:
+    """Detect whether a parfile uses equatorial or ecliptic astrometry.
+
+    Uses PINT's alias map rather than hard-coded parameter names.
     """
-    # Handle special case: EDOT -> ECCDOT alias that PINT doesn't have
-    if param_name == "EDOT":
-        return "ECCDOT"
+    has_equatorial = has_equatorial_astrometry(parfile_dict)
+    has_ecliptic = has_ecliptic_astrometry(parfile_dict)
+
+    if has_equatorial and has_ecliptic:
+        raise ValueError(
+            "Mixed astrometry detected (equatorial and ecliptic parameters present). "
+            "Refuse to make ambiguous coordinate representation consistent."
+        )
+    if has_ecliptic:
+        return "ecliptic"
+    if has_equatorial:
+        return "equatorial"
+    raise ValueError(
+        "Could not detect astrometry style. Expected either RAJ/DECJ or "
+        "LAMBDA/BETA (or ELONG/ELAT)."
+    )
+
+
+def parameter_belongs_to_component_category(
+    param_name: str, component_category: str
+) -> bool:
+    """Return whether PINT assigns a parameter to a component category.
+
+    This uses PINT's cached component registry rather than constructing a full
+    timing model. Indexed parameters are matched to the registered prefix
+    template, so arbitrary indices are recognized.
+    """
+    canonical = pint_parameter_name(param_name)
+    if canonical is None:
+        return False
+
+    all_components = _get_all_components()
+    component_names = set(all_components.param_component_map.get(canonical, ()))
 
     try:
-        all_components = _get_all_components()
-        canonical, _ = all_components.alias_to_pint_param(param_name)
-        return canonical
-    except Exception:
-        # If alias resolution fails, return the original name
-        return param_name
+        canonical_prefix = split_prefixed_name(canonical)[0]
+    except PrefixError:
+        canonical_prefix = None
 
+    if canonical_prefix is not None and not component_names:
+        for (
+            registered,
+            registered_components,
+        ) in all_components.param_component_map.items():
+            try:
+                registered_prefix = split_prefixed_name(registered)[0]
+            except PrefixError:
+                continue
+            if registered_prefix == canonical_prefix:
+                component_names.update(registered_components)
 
-def get_aliases_for_parameter(canonical_param: str) -> List[str]:
-    """Get all aliases for a canonical parameter name.
-
-    Args:
-        canonical_param: The canonical parameter name
-
-    Returns:
-        List of all aliases for this parameter, including the canonical name itself
-    """
-    try:
-        all_components = _get_all_components()
-        aliases = [canonical_param]  # Start with canonical name
-
-        # Search through the alias map to find all aliases that map to this canonical name
-        alias_map = all_components._param_alias_map
-        for alias, canonical in alias_map.items():
-            if canonical == canonical_param and alias != canonical_param:
-                aliases.append(alias)
-
-        # Handle special case: if canonical is ECCDOT, also include EDOT
-        if canonical_param == "ECCDOT" and "EDOT" not in aliases:
-            aliases.append("EDOT")
-
-        return aliases
-    except Exception:
-        # If anything fails, just return the canonical name
-        return [canonical_param]
+    return any(
+        component.category == component_category
+        for name in component_names
+        if (component := all_components.components.get(name)) is not None
+    )
 
 
 def clear_all_components_cache():
@@ -188,78 +358,17 @@ def get_parameter_identifiability_from_model(
     return True
 
 
-def get_parameters_by_type_from_models(
-    param_type: str, pint_models: Dict[str, TimingModel]
-) -> List[str]:
-    """Get parameters by type from PINT models, including dynamic derivatives and aliases.
-
-    Args:
-        param_type: Type of parameters to discover ('astrometry', 'spindown', etc.)
-        pint_models: Dictionary mapping PTA names to PINT TimingModel instances
-
-    Returns:
-        List of parameter names discovered from actual models, including all aliases
-
-    Raises:
-        PINTDiscoveryError: If parameter extraction fails
-    """
-    from loguru import logger
-
-    all_params = set()
-
-    # Get category mapping
-    category_mapping = get_category_mapping_from_pint()
-    target_category = category_mapping[param_type]
-
-    # Discover parameters from each PTA's actual model
-    for pta_name, model in pint_models.items():
-        try:
-            # Extract parameters for the specific component
-            for comp in model.components.values():
-                if hasattr(comp, "category") and comp.category == target_category:
-                    if hasattr(comp, "params"):
-                        all_params.update(comp.params)  # Includes dynamic derivatives!
-
-        except Exception as e:
-            logger.warning(
-                f"Failed to extract parameters from model for PTA {pta_name}: {e}"
-            )
-            continue
-
-    # Build complete parameter list including all aliases
-    all_params_with_aliases = set()
-    for canonical_param in all_params:
-        # Get all aliases for this canonical parameter
-        aliases = get_aliases_for_parameter(canonical_param)
-        all_params_with_aliases.update(aliases)
-
-    # Include extra top-level params for this category if present on any model
-    for extra in get_extra_top_level_params_for_category().get(param_type, []):
-        # Add the extra only if at least one model has it set
-        for tm in pint_models.values():
-            if hasattr(tm, extra):
-                try:
-                    if getattr(tm, extra).value is not None:
-                        all_params_with_aliases.add(extra)
-                        break
-                except Exception:
-                    # Be robust to any attribute access issues
-                    pass
-
-    logger.debug(
-        f"Component {param_type}: Found {len(all_params)} canonical parameters, {len(all_params_with_aliases)} total with aliases"
-    )
-    return list(all_params_with_aliases)
-
-
 def get_parameters_by_type_from_parfiles(
-    param_type: str, parfile_dicts: Dict[str, Dict]
+    param_type: str,
+    parfile_dicts: Dict[str, Dict],
+    ell1h_shapiro: Ell1hShapiroMode = "full",
 ) -> List[str]:
     """Get parameters by type from parfile dictionaries using PINT, including dynamic derivatives and aliases.
 
     Args:
         param_type: Type of parameters to discover ('astrometry', 'spindown', etc.)
         parfile_dicts: Dictionary mapping PTA names to parfile dictionaries
+        ell1h_shapiro: ELL1H orthometric Shapiro convention (see ``create_pint_model``)
 
     Returns:
         List of parameter names discovered from actual parfiles, including all aliases
@@ -273,7 +382,9 @@ def get_parameters_by_type_from_parfiles(
     pint_models = {}
     for pta_name, parfile_dict in parfile_dicts.items():
         try:
-            pint_models[pta_name] = create_pint_model(parfile_dict)
+            pint_models[pta_name] = create_pint_model(
+                parfile_dict, ell1h_shapiro=ell1h_shapiro
+            )
         except Exception as e:
             logger.warning(f"Failed to create PINT model for PTA {pta_name}: {e}")
             continue
@@ -282,11 +393,92 @@ def get_parameters_by_type_from_parfiles(
     return get_parameters_by_type_from_models(param_type, pint_models)
 
 
-def create_pint_model(parfile_data) -> TimingModel:
+@lru_cache(maxsize=256)
+def _guess_binary_model(par_keys: frozenset) -> tuple[str, ...]:
+    """Cached ``guess_binary_model`` keyed on the par's parameter names.
+
+    PINT's guess depends only on which parameters are present, so the values are
+    irrelevant. Caching matters because each call constructs an ``AllComponents``
+    registry.
+    """
+    from pint.models.model_builder import guess_binary_model
+
+    return tuple(guess_binary_model({key: [] for key in par_keys}))
+
+
+def resolve_binary_model(parfile_dict: Mapping[str, Any]) -> Optional[str]:
+    """Return the binary component PINT will build for this par.
+
+    Tempo2's ``BINARY T2`` is a wrapper, not a model: PINT resolves it to a
+    concrete component from the parameters present
+    (``ModelBuilder.choose_binary_model`` with ``allow_T2=True``, which is how
+    MetaPulsar builds every model). So ``T2`` may mean ``ELL1``, ``ELL1H``,
+    ``DD``, ``DDK``, ``DDH`` and so on, and only PINT's own
+    ``guess_binary_model`` knows which. Any explicitly declared model is
+    returned as written, because PINT overrides ``BINARY`` for ``T2`` only.
+
+    Returns None when the par has no ``BINARY`` line, or when no single PINT
+    component covers every binary parameter present, which is the case PINT
+    itself refuses to build.
+    """
+    key = _find_parfile_key(parfile_dict, "BINARY")
+    if key is None:
+        return None
+    entries = parfile_dict[key]
+    raw = entries[0] if isinstance(entries, (list, tuple)) else entries
+    tokens = str(raw).split()
+    if not tokens:
+        return None
+    declared = tokens[0].upper()
+    if declared != "T2":
+        return declared
+    guesses = _guess_binary_model(frozenset(k.upper() for k in parfile_dict))
+    return guesses[0] if guesses else None
+
+
+def stamp_resolved_binary_keyword(parfile_dict: dict[str, Any]) -> bool:
+    """Replace ``BINARY T2`` with the component PINT will build.
+
+    No-op when there is no ``BINARY`` line, when the declared model is already
+    a concrete name, or when PINT cannot resolve the wrapper. Returns True
+    iff the token was rewritten.
+    """
+    key = _find_parfile_key(parfile_dict, "BINARY")
+    if key is None:
+        return False
+    resolved = resolve_binary_model(parfile_dict)
+    entries = parfile_dict[key]
+    raw = entries[0] if isinstance(entries, (list, tuple)) else entries
+    tokens = str(raw).split()
+    if not tokens or tokens[0].upper() != "T2" or resolved is None:
+        return False
+    tokens[0] = resolved
+    rewritten = " ".join(tokens)
+    if isinstance(entries, (list, tuple)):
+        parfile_dict[key] = [rewritten, *list(entries)[1:]]
+    else:
+        parfile_dict[key] = rewritten
+    return True
+
+
+def _find_parfile_key(parfile_dict: Mapping[str, Any], name: str) -> Optional[str]:
+    """Return the actual dict key matching ``name`` case-insensitively."""
+    wanted = name.upper()
+    return next((key for key in parfile_dict if key.upper() == wanted), None)
+
+
+def create_pint_model(
+    parfile_data: Any, ell1h_shapiro: Ell1hShapiroMode = "full"
+) -> TimingModel:
     """Create PINT model from parfile data (string or dict).
 
     Args:
         parfile_data: String content or dictionary representation of parfile
+        ell1h_shapiro: Which Freire & Wex (2010) orthometric Shapiro expression PINT
+            evaluates for ELL1H/``T2`` models with ``H3``+``STIG``. ``"full"`` is
+            PINT's default (Eq. 29); ``"absorbed"`` (Eq. 28) is what Tempo2
+            ELL1H/T2 mode 1 evaluates and is required for cross-engine residual
+            parity on mixed PINT+Tempo2 stacks.
 
     Returns:
         PINT TimingModel instance
@@ -303,7 +495,6 @@ def create_pint_model(parfile_data) -> TimingModel:
         InvalidModelParameters,
         ComponentConflict,
     )
-    from io import StringIO
     from loguru import logger
 
     try:
@@ -311,9 +502,19 @@ def create_pint_model(parfile_data) -> TimingModel:
 
         # Handle both string and dict inputs
         if isinstance(parfile_data, str):
-            model = builder(StringIO(parfile_data), allow_tcb=True, allow_T2=True)
-        else:  # dict
-            model = builder(parfile_data, allow_tcb=True, allow_T2=True)
+            parfile_data = StringIO(parfile_data)
+        elif isinstance(parfile_data, dict) and "C" in parfile_data:
+            # PINT's *text* parser treats a leading "C " as a comment
+            # (``parse_parfile``'s ``comments=("#", "C ")``), but the dict path
+            # bypasses that and warns "Unrecognized parfile line". Drop comment
+            # entries so a dict round-trips like its serialized form.
+            parfile_data = {k: v for k, v in parfile_data.items() if k != "C"}
+        model = builder(
+            parfile_data,
+            allow_tcb=True,
+            allow_T2=True,
+            ell1h_shapiro=ell1h_shapiro,
+        )
 
         return model
     except (
@@ -343,7 +544,7 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     Returns:
         Formatted parfile string using PINT's exact formatting
     """
-    from datetime import datetime
+    from .parfile_header import format_metapulsar_par_header
 
     result = ""
 
@@ -351,9 +552,7 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     if format.lower() == "tempo2":
         result += "MODE 1\n"
     elif format.lower() == "pint":
-        result += "# Created: " + datetime.now().isoformat() + "\n"
-        result += "# Format:  PINT\n"
-        result += "# By:      MetaPulsar\n"
+        result += format_metapulsar_par_header(format="PINT")
 
     # Format ALL parameters using PINT's exact formatting
     for param_name, param_data in parfile_dict.items():
@@ -392,63 +591,17 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     return result
 
 
-def create_minimal_parfile_for_component(parfile_dict: Dict, component) -> str:
-    """Create minimal parfile for component discovery using PINT component system.
+def parse_par_token(param_name: str, param_value) -> Tuple[Any, bool]:
+    """Split a par line into (value-as-written, is_frozen).
 
-    Args:
-        parfile_dict: Parsed parfile dictionary
-        component: String or list of strings specifying component(s) to include.
-                  Spindown is always included as PINT requires it.
-    """
-    # Normalize component to list
-    if isinstance(component, str):
-        components = [component]
-    else:
-        components = list(component)
+    The value is the raw token, NOT resolved through any unit convention: for
+    Tempo-convention parameters (EPS dots, A1DOT/XDOT, PBDOT, EDOT) the token
+    is not the physical value. Use ``si_from_par`` / ``si_quantity_from_token``
+    for physics, and this function only for row-C reads, strings and fit
+    flags.
 
-    # Always include spindown - PINT cannot process parfile without it
-    if "spindown" not in components:
-        components.append("spindown")
-
-    # Create PINT model from parfile dictionary
-    model = create_pint_model(parfile_dict)
-
-    # Get category mapping from PINT
-    category_mapping = get_category_mapping_from_pint()
-
-    # Extract parameters from all requested components
-    component_params = set()
-    for comp_name in components:
-        target_category = category_mapping.get(comp_name)
-        if not target_category:
-            continue
-
-        for comp in model.components.values():
-            if hasattr(comp, "category") and comp.category == target_category:
-                if hasattr(comp, "params"):
-                    component_params.update(comp.params)
-
-    # Create minimal parfile content
-    minimal_lines = []
-    for param in component_params:
-        if param in parfile_dict:
-            value = parfile_dict[param]
-            if isinstance(value, list):
-                value_str = " ".join(str(v) for v in value)
-            else:
-                value_str = str(value)
-            minimal_lines.append(f"{param} {value_str}")
-
-    return "\n".join(minimal_lines)
-
-
-def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]:
-    """Parse parameter value using PINT's parsing approach.
-
-    This function elegantly handles parfile parameter parsing by extracting
-    the parsing logic from PINT's Parameter.from_parfile_line() method.
-    It handles the common parfile format of "value fit_status uncertainty" where:
-    - value: the parameter value (float for numeric params, string for text params)
+    Handles the common parfile format of "value fit_status uncertainty":
+    - value: the token as written (float when numeric, string otherwise)
     - fit_status: 0=frozen, 1=free (int)
     - uncertainty: optional uncertainty value
 
@@ -457,17 +610,17 @@ def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]
         param_value: Parameter value from parfile dict (string or list)
 
     Returns:
-        Tuple of (parsed_value, is_frozen)
+        Tuple of (value_as_written, is_frozen)
 
     Raises:
         ValueError: If parameter cannot be parsed
 
     Examples:
-        >>> parse_parameter_using_pint("DM", ["123.45 1 0.01"])
+        >>> parse_par_token("DM", ["123.45 1 0.01"])
         (123.45, False)
-        >>> parse_parameter_using_pint("DMEPOCH", ["55000 0"])
+        >>> parse_par_token("DMEPOCH", ["55000 0"])
         (55000.0, True)
-        >>> parse_parameter_using_pint("UNITS", ["TCB 0"])
+        >>> parse_par_token("UNITS", ["TCB 0"])
         ("TCB", True)
     """
     # Handle list format from parse_parfile
@@ -505,12 +658,169 @@ def parse_parameter_using_pint(param_name: str, param_value) -> Tuple[Any, bool]
     return value, is_frozen
 
 
+def _par_value_tokens_equal(a: Optional[str], b: Optional[str]) -> bool:
+    """Compare leading par-file value tokens, numerically when possible."""
+    if a is None or b is None:
+        return a == b
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return a == b
+
+
+def dedupe_nonrepeatable_par_lines(par_text: str) -> str:
+    """Collapse duplicate lines for non-repeatable parameters in par-file text.
+
+    Old tempo2 builds (before the NE_SW guard in textOutput.C, tempo2 commit
+    bf00f36) write NE_SW twice when it is explicitly set: once in the parameter
+    table and once (%.3f-formatted) in the conventions block. The IPTA DR2
+    dataset's own ``working/`` par files carry this signature, and PINT's
+    ModelBuilder rejects such content ("Parameter X is not a repeatable
+    parameter. However, multiple line use it."), so tempo2-written par content
+    is sanitized at the ingestion boundary.
+
+    Per parameter name (resolved through PINT aliases):
+    - unknown to PINT (tempo2 noise lines, control lines): left untouched
+    - PINT-repeatable (JUMP, EFAC, ...): left untouched
+    - duplicated non-repeatable with the same leading value (numeric compare
+      when possible): keep the first occurrence (the parameter-table line,
+      full precision), drop the rest with a warning
+    - duplicated non-repeatable with conflicting values: raise ValueError
+      rather than guess
+    """
+    all_components = _get_all_components()
+    repeatable = all_components.repeatable_param
+
+    def _canonical(name: str) -> Optional[str]:
+        try:
+            canonical, _ = all_components.alias_to_pint_param(name)
+            return str(canonical)
+        except Exception:
+            return None
+
+    first_values: Dict[str, Optional[str]] = {}
+    out_lines: List[str] = []
+    for line in par_text.splitlines():
+        if not is_active_par_line(line):
+            out_lines.append(line)
+            continue
+        tokens = line.split()
+        name = tokens[0]
+        canonical = _canonical(name)
+        if canonical is None or name in repeatable or canonical in repeatable:
+            out_lines.append(line)
+            continue
+        value = tokens[1] if len(tokens) > 1 else None
+        if canonical not in first_values:
+            first_values[canonical] = value
+            out_lines.append(line)
+            continue
+        if _par_value_tokens_equal(first_values[canonical], value):
+            loguru_logger.warning(
+                f"Dropping duplicate par line for non-repeatable parameter "
+                f"{canonical}: {line.strip()!r} (keeping first occurrence)"
+            )
+            continue
+        raise ValueError(
+            f"Conflicting duplicate par lines for non-repeatable parameter "
+            f"{canonical}: first value {first_values[canonical]!r} vs "
+            f"duplicate line {line.strip()!r}"
+        )
+    return join_par_lines(out_lines, like=par_text)
+
+
 # ----------------------- Pulse-number helper utilities ----------------------- #
 
 from pint.toa import get_TOAs, TOAs  # noqa: E402 (import after top-level defs)
+from loguru import logger as loguru_logger  # noqa: E402
+
+PulseNumberMode = Literal["no", "yes", "reuse", "overwrite"]
+PULSE_NUMBER_MODES: Tuple[str, ...] = ("no", "yes", "reuse", "overwrite")
+TimPulseNumberStatus = Literal["complete", "mixed", "none"]
 
 
-def ensure_pulse_numbers(toas: TOAs, model: TimingModel) -> TOAs:
+def validate_pulse_number_mode(value: object) -> PulseNumberMode:
+    """Validate and normalize use_pulse_numbers mode string."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"use_pulse_numbers must be one of {PULSE_NUMBER_MODES!r}, "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    mode = value.strip().lower()
+    if mode not in PULSE_NUMBER_MODES:
+        raise ValueError(
+            f"use_pulse_numbers must be one of {PULSE_NUMBER_MODES!r}, got {value!r}"
+        )
+    return mode  # type: ignore[return-value]
+
+
+def pulse_number_tracking_enabled(mode: PulseNumberMode) -> bool:
+    return mode in ("yes", "reuse", "overwrite")
+
+
+def sanitize_tempo2_tim_noise_directives(tim_text: str) -> str:
+    """Remove Tempo2 white-noise directive lines (T2E*, TNE*) from .tim text."""
+    kept: List[str] = []
+    for line in tim_text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if stripped.startswith("#") or stripped.upper().startswith("C "):
+            kept.append(line)
+            continue
+        first_token = stripped.split()[0]
+        if first_token.startswith("T2E") or first_token.startswith("TNE"):
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
+def _should_derive_pulse_numbers(
+    mode: PulseNumberMode,
+    status: TimPulseNumberStatus,
+    tim_path: Path,
+    n_with: int,
+    n_without: int,
+) -> bool:
+    """Return True when pulse numbers must be re-derived for this mode/status."""
+    if mode == "no":
+        return False
+    if mode == "overwrite":
+        return True
+    if status == "complete":
+        return False
+    if status == "mixed":
+        loguru_logger.warning(
+            "Mixed -pn flags in {}: {} TOAs with -pn, {} without; re-deriving pulse numbers",
+            tim_path,
+            n_with,
+            n_without,
+        )
+        return True
+    # none
+    if mode == "reuse":
+        loguru_logger.warning(
+            "No complete -pn in {}; re-deriving pulse numbers (reuse mode)",
+            tim_path,
+        )
+    return True
+
+
+def ensure_pint_track_minus_2(model: TimingModel) -> None:
+    """Set PINT TRACK to -2 for pulse-number tracking."""
+    if "TRACK" in model.params:
+        model.TRACK.value = "-2"
+    else:
+        loguru_logger.warning(
+            "TRACK parameter not in PINT timing model; "
+            "pulse-number tracking may be ineffective"
+        )
+
+
+def ensure_pulse_numbers(
+    toas: TOAs, model: TimingModel, *, force_recompute: bool = False
+) -> TOAs:
     """Ensure TOAs has a complete pulse_number column.
 
     If a -pn flag was present in the .tim, PINT already parsed it into
@@ -521,6 +831,9 @@ def ensure_pulse_numbers(toas: TOAs, model: TimingModel) -> TOAs:
 
     if "delta_pulse_number" not in toas.table.colnames:
         toas.table["delta_pulse_number"] = np.zeros(len(toas))
+    if force_recompute:
+        toas.compute_pulse_numbers(model)
+        return toas
     if ("pulse_number" not in toas.table.colnames) or (
         toas.table["pulse_number"] != toas.table["pulse_number"]
     ).any():  # NaN check
@@ -537,13 +850,16 @@ def write_pn_tim(toas: TOAs, out_path: Path) -> Path:
 
 @contextmanager
 def temporary_pn_tim_from_par_tim_pint(
-    parfile_text: str, tim_path: Path
+    parfile_text: str,
+    tim_path: Path,
+    *,
+    force_recompute: bool = False,
 ) -> Iterator[str]:
     """Yield a temporary pn-tagged .tim derived via PINT; file is deleted on exit."""
     tim_path = Path(tim_path)
     model = create_pint_model(parfile_text)
     toas = get_TOAs(str(tim_path), model=model, include_pn=True)
-    ensure_pulse_numbers(toas, model)
+    ensure_pulse_numbers(toas, model, force_recompute=force_recompute)
     with tempfile.TemporaryDirectory(prefix="withpn_pint_") as td:
         out_path = Path(td) / "withpn.tim"
         write_pn_tim(toas, out_path)
@@ -570,6 +886,7 @@ def temporary_pn_tim_from_par_tim_tempo2(
         par_tmp.write_text(parfile_text, encoding="utf-8")
         cmd = [
             "tempo2",
+            "-nofit",
             "-f",
             str(par_tmp),
             str(tim_path),
@@ -638,16 +955,63 @@ def temporary_pn_tim_from_par_tim_tempo2(
         src = td_path / "withpn.tim"
         if not src.exists():
             raise RuntimeError("tempo2 plugin did not produce withpn.tim")
+        sanitized = sanitize_tempo2_tim_noise_directives(
+            src.read_text(encoding="utf-8")
+        )
+        src.write_text(sanitized, encoding="utf-8")
         yield str(src)
     # temp dir auto-removed
+
+
+@contextmanager
+def resolved_tim_for_pulse_numbers(
+    mode: PulseNumberMode,
+    parfile_text: str,
+    tim_path: Path,
+    *,
+    derive_backend: Literal["pint", "tempo2"],
+    tim_metadata: Optional["TimMetadata"] = None,
+) -> Iterator[str]:
+    """Yield the .tim path to load for the given pulse-number mode."""
+    from .tim_file_analyzer import TimFileAnalyzer
+
+    tim_path = Path(tim_path)
+    if mode == "no":
+        yield str(tim_path)
+        return
+
+    if tim_metadata is None:
+        tim_metadata = TimFileAnalyzer().get_tim_metadata(tim_path)
+
+    status = tim_metadata.pn_status
+    n_with = tim_metadata.pn_with_count
+    n_without = tim_metadata.pn_without_count
+    derive = _should_derive_pulse_numbers(mode, status, tim_path, n_with, n_without)
+
+    if not derive:
+        yield str(tim_path)
+        return
+
+    force_recompute = mode == "overwrite"
+    if derive_backend == "pint":
+        with temporary_pn_tim_from_par_tim_pint(
+            parfile_text,
+            tim_path,
+            force_recompute=force_recompute,
+        ) as pn_tim:
+            yield pn_tim
+    else:
+        with temporary_pn_tim_from_par_tim_tempo2(parfile_text, tim_path) as pn_tim:
+            yield pn_tim
 
 
 def _write_pn_tim_libstempo(psr, out_path: Path) -> None:
     """Write a Tempo2-format .tim with -pn flags from a libstempo tempopulsar.
 
-    Writes FORMAT 1, MODE 1, then one line per observation with name, freq, MJD,
+    Writes FORMAT 1, then one line per observation with name, freq, MJD,
     error, type 'g', all flags, and -pn <pulse_number>. Pulse numbers must already
-    be filled (e.g. by calling psr.pulsenumbers()).
+    be filled (e.g. by calling psr.pulsenumbers()). MODE is omitted; fit-mode
+    lives on the engine-facing .par after release-tim MODE transfer.
     """
     out_path = Path(out_path)
     # Compute pulse numbers (fills obsn[].pulseN and returns array)
@@ -657,7 +1021,7 @@ def _write_pn_tim_libstempo(psr, out_path: Path) -> None:
     stoas = psr.stoas
     errs = psr.toaerrs
     flag_names = psr.flags()
-    lines = ["FORMAT 1\n", "MODE 1\n"]
+    lines = ["FORMAT 1\n"]
     for i in range(psr.nobs):
         # name freq mjd error type
         # Keep TOA MJD in longdouble precision; do not downcast to float64.
@@ -719,12 +1083,285 @@ def temporary_pn_tim_from_par_tim_libstempo(
         yield str(out_tim)
 
 
+SECONDS_PER_DAY_LD = np.longdouble(86400)
+
+# tempo2 binary models whose implementation actually reads ``param_fb``.
+# Verified against tempo2 source: only ELL1model.C and BTXmodel.C reference
+# param_fb. ELL1H, ELL1k, DD, DDGR, DDK, and T2 silently ignore every FBn.
+TEMPO2_FB_CAPABLE_BINARY_MODELS = frozenset({"ELL1", "BTX"})
+
+# Matches FB0..FBn and the bare ``FB`` alias (PINT alias for FB0; tempo2
+# readParfile.C:2055-2063 reads ``FB`` as index 0). Deliberately does not match
+# FBJ / TFBJ, which are orbital-frequency jumps, a different parameter.
+_FB_NAME_RE = re.compile(r"^FB(\d*)$", re.IGNORECASE)
+
+
+class OrbitalChartError(ValueError):
+    """A par file cannot be aligned to the canonical FBX orbital chart."""
+
+
+def format_longdouble_par_value(value) -> str:
+    """Format a computed par value with an exact long-double round trip.
+
+    NORMATIVE. ``unique=True`` asks numpy for the shortest decimal string that
+    reparses to the identical long double. It is the only option measured to be
+    exact for *computed* values; do not substitute any of these:
+
+    ==========================================  ============================
+    Alternative                                 Why it is rejected
+    ==========================================  ============================
+    ``format(x, '.20g')``, f-string, ``%g``     routes through float64;
+                                                rel err 2.7e-17 on J2241 FB0,
+                                                ~10 ns of orbital phase over
+                                                the 4409-day PPTA span
+    ``format_float_scientific(precision=19)``   rel err 1.2e-21 (FB0) and
+                                                2.5e-21 (sigma_FB0); the
+                                                round trip is NOT exact
+    ``precision=np.finfo(longdouble).precision``  failed 8895 of 20000 random
+                                                long doubles; also wrong on
+                                                x86-64, where ``.precision``
+                                                is 18 but 21 digits are needed
+    ==========================================  ============================
+
+    ``unique=True`` had 0 failures over the same 20000-sample stress test and
+    adapts automatically to 80-bit (x86-64) and 128-bit (aarch64) long doubles,
+    where any fixed digit count cannot.
+    """
+    value = np.longdouble(value)
+    if not np.isfinite(value):
+        raise OrbitalChartError(f"Non-finite computed par value: {value!r}")
+    return np.format_float_scientific(value, unique=True)
+
+
+def _require_wide_longdouble() -> None:
+    """Refuse to compute par values where ``longdouble`` is only float64.
+
+    On some platforms (notably arm64 macOS) ``np.longdouble`` aliases float64.
+    Computing FB0 there would introduce the ~10 ns error described above with
+    no visible symptom, so it is a hard error rather than a warning.
+    """
+    if np.finfo(np.longdouble).eps >= np.finfo(np.float64).eps:
+        raise OrbitalChartError(
+            "np.longdouble is not wider than float64 on this platform; "
+            "orbital chart alignment would lose ~10 ns of orbital phase. "
+            "Run inside the project devcontainer."
+        )
+
+
+def _par_token_longdouble(token: str) -> np.longdouble:
+    """Parse a par token as written, accepting Fortran ``D`` exponents.
+
+    Token reader only (row C: PB/FB0 chart alignment, where token and value
+    coincide); no unit convention is resolved. Physics reads go through
+    ``si_from_par`` / ``si_quantity_from_token`` instead.
+    """
+    try:
+        return np.longdouble(token.replace("D", "E").replace("d", "e"))
+    except (ValueError, TypeError) as exc:
+        raise OrbitalChartError(f"Unparsable par value token {token!r}") from exc
+
+
+def align_orbital_chart(
+    par_text: str,
+    model,
+    *,
+    timing_package: str,
+    pta_name: str = "?",
+) -> tuple[str, bool]:
+    """Rewrite a par so its orbital chart matches the one its PINT model reports.
+
+    MetaPulsar names parameters from ``TimingModel.free_params`` and then
+    resolves Enterprise design-matrix columns by that name
+    (``metapulsar.py:561``), so the par and the model must agree on which
+    parameter carries each degree of freedom. They disagree for a published
+    hybrid ``PB + FB1..FBn`` par: PINT canonicalizes it to a complete FBX series
+    with free ``FB0`` (``PulsarBinary._bridge_pb_to_fb0``, upstream #2023) while
+    the par -- and hence a tempo2 engine reading it -- still says ``PB``.
+
+    This does not reimplement that canonicalization. It asks the model which
+    parameter is free and, when the par does not declare it, rewrites the one
+    line that does. tempo2 evaluates ``pb = 1/FB0`` whenever ``FB0`` is set
+    (``ELL1model.C:75-76``), so the edit is a coordinate relabel that leaves
+    residuals unchanged.
+
+    Applies to every PTA regardless of ``timing_package``: an
+    unaligned hybrid par used as the merge reference would reintroduce ``PB`` as
+    the shared binary chart even for PTAs that needed no alignment themselves.
+    ``timing_package`` selects only the tempo2 FB-capability guard.
+
+    Args:
+        par_text: Par text to align. Not mutated; a new string is returned.
+        model: PINT ``TimingModel`` built from **this same** par text.
+        timing_package: ``"tempo2"`` or ``"pint"``. Callers that cannot declare
+            an engine must pass ``"tempo2"`` (the strict default).
+        pta_name: Diagnostic label only.
+
+    Returns:
+        ``(aligned_text, changed)``. ``changed`` is False when the par already
+        agrees with its model, in which case ``aligned_text is par_text``.
+
+    Raises:
+        OrbitalChartError: when a tempo2-backed par sets FB terms on a binary
+            model tempo2 does not evaluate them for; when the model reports free
+            ``FB0`` but the par declares neither ``FB0`` nor ``PB``; on duplicate
+            ``BINARY``/``PB``/``FB`` entries; on non-finite or non-positive
+            ``PB``; on a platform where ``np.longdouble`` is only float64.
+
+    Idempotent: re-running on the returned text yields ``changed is False``.
+    """
+    parfile_dict = parse_parfile(StringIO(par_text))
+
+    def _single(name: str) -> str | None:
+        """Return the sole entry for ``name``, or None; raise on duplicates."""
+        entries = parfile_dict.get(name)
+        if not entries:
+            return None
+        if len(entries) > 1:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: duplicate {name} entries in par content: "
+                f"{entries!r}"
+            )
+        return entries[0]
+
+    fb_indices: dict[int, str] = {}
+    for name in parfile_dict:
+        match = _FB_NAME_RE.fullmatch(name)
+        if match is None:
+            continue
+        index = int(match.group(1)) if match.group(1) else 0
+        if index in fb_indices:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: FB{index} declared twice, as "
+                f"{fb_indices[index]!r} and {name!r}"
+            )
+        fb_indices[index] = name
+        _single(name)  # rejects a repeated FBn line
+
+    # Capability guard -- tempo2 only (invariant 3). Only ELL1 and BTX read
+    # param_fb in tempo2; every other binary model silently ignores FB terms, so
+    # PINT (which evaluates the full series for any binary model) and tempo2
+    # would be solving different physics with no error from either.
+    #
+    # DELIBERATELY evaluated whenever the par carries FB terms, including when no
+    # rewrite follows. That is intended, not an oversight to be "optimized" into
+    # the rewrite-only path: the cross-engine mismatch exists whichever spelling
+    # the constant term uses. It is a behaviour change for latent bad data that
+    # currently loads with silently dropped FB terms; the corpus survey (S1.2)
+    # finds zero such files, and failing loudly beats loading quietly.
+    if fb_indices and str(timing_package).strip().lower() == "tempo2":
+        binary_entry = _single("BINARY")
+        if binary_entry is None:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: par sets FB parameters but declares no "
+                f"BINARY model; tempo2 cannot evaluate an orbital frequency "
+                f"series without one"
+            )
+        binary_model = binary_entry.split()[0].upper()
+        if binary_model not in TEMPO2_FB_CAPABLE_BINARY_MODELS:
+            raise OrbitalChartError(
+                f"PTA {pta_name!r}: BINARY {binary_model} does not evaluate FB "
+                f"parameters in tempo2 (only "
+                f"{sorted(TEMPO2_FB_CAPABLE_BINARY_MODELS)} read param_fb), but "
+                f"the par sets FB{sorted(fb_indices)}. tempo2 would silently "
+                f"drop these terms while PINT evaluates them. Refusing to build "
+                f"a cross-engine model that is not the same physics."
+            )
+
+    # The model is the authority on which parameter is free (invariant 2).
+    if "FB0" not in model.free_params or 0 in fb_indices:
+        return par_text, False
+
+    pb_entry = _single("PB")
+    if pb_entry is None:
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PINT reports free FB0 but the par declares "
+            f"neither FB0 nor PB; the constant orbital frequency has no source"
+        )
+
+    _require_wide_longdouble()
+
+    # Token layout: VALUE [FITFLAG] [UNCERTAINTY]. The fit flag is copied
+    # verbatim -- tempo2 accepts 0/1 and Y/N, and re-encoding would corrupt it.
+    pb_tokens = pb_entry.split()
+    pb_days = _par_token_longdouble(pb_tokens[0])
+    if not np.isfinite(pb_days) or pb_days <= 0:
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PB must be finite and positive, got {pb_days!r}"
+        )
+
+    # Computed from THIS par's PB, never from model.FB0.
+    fb0 = 1 / (SECONDS_PER_DAY_LD * pb_days)
+    new_tokens = [format_longdouble_par_value(fb0)]
+    if len(pb_tokens) >= 2:
+        new_tokens.append(pb_tokens[1])
+    if len(pb_tokens) >= 3:
+        # sigma_FB0 = |d(FB0)/d(PB)| * sigma_PB = sigma_PB / (86400 * PB**2)
+        sigma_fb0 = abs(_par_token_longdouble(pb_tokens[2])) / (
+            SECONDS_PER_DAY_LD * pb_days * pb_days
+        )
+        new_tokens.append(format_longdouble_par_value(sigma_fb0))
+
+    # parse_parfile already proved there is exactly one active PB entry, so the
+    # first non-comment line whose leading token is PB is unambiguous.
+    out_lines = par_text.splitlines()
+    for index, line in enumerate(out_lines):
+        if not is_active_par_line(line):
+            continue
+        if par_line_key(line) == "PB":
+            prefix = line[: len(line) - len(line.lstrip())]
+            out_lines[index] = f"{prefix}{'FB0':<15}{' '.join(new_tokens)}"
+            break
+    else:  # pragma: no cover - parse_parfile guarantees the line exists
+        raise OrbitalChartError(
+            f"PTA {pta_name!r}: PB present in the parfile dict but no active "
+            f"PB line found in the text"
+        )
+
+    result = join_par_lines(out_lines, like=par_text)
+
+    loguru_logger.info(
+        f"PTA {pta_name!r}: aligned orbital chart to canonical FBX: "
+        f"PB={pb_tokens[0]} -> FB0={new_tokens[0]} "
+        f"(FB{sorted(fb_indices)} present, timing_package={timing_package!r})"
+    )
+    if "PBDOT" in parfile_dict and 1 in fb_indices:
+        # Both engines resolve this the same way -- explicit FB1 wins and PBDOT
+        # is ignored (tempo2 ELL1model.C:134-142; PINT #2023 likewise) -- so the
+        # par is not rewritten further. Log it: a reader seeing a retained PBDOT
+        # next to FB1 should know it is inert, not applied.
+        loguru_logger.warning(
+            f"PTA {pta_name!r}: par sets both PBDOT and FB1; explicit FB1 wins "
+            f"in both tempo2 and PINT and the retained PBDOT is inert."
+        )
+    return result, True
+
+
+def par_text_with_track_minus_2(par_text: str) -> str:
+    """Return par text with TRACK set to -2 using line-based editing.
+
+    Avoids PINT re-serialization, which can fail on Tempo2 fit flags (``N``/``Y``).
+    """
+    out_lines: List[str] = []
+    replaced = False
+    for line in par_text.splitlines():
+        if not is_active_par_line(line):
+            out_lines.append(line)
+            continue
+        if par_line_key(line) == "TRACK":
+            prefix = line[: len(line) - len(line.lstrip())]
+            out_lines.append(f"{prefix}TRACK -2")
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        out_lines.append("TRACK -2")
+    return join_par_lines(out_lines, like=par_text)
+
+
 @contextmanager
 def temporary_par_with_track_minus_2(par_text: str) -> Iterator[str]:
     """Yield a temporary tempo2-formatted par file with TRACK -2; deleted on exit."""
-    par_dict = parse_parfile(StringIO(par_text))
-    par_dict["TRACK"] = ["-2"]
-    par_out = dict_to_parfile_string(par_dict, format="tempo2")
+    par_out = par_text_with_track_minus_2(par_text)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".par", delete=False) as tf:
         tf.write(par_out)
         tf.flush()

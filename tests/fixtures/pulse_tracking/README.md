@@ -25,7 +25,7 @@ matters over a 10-year span:
 - `DM2 = 0.05 pc cm^-3 / yr^2`
 - observing band spanning `300-1600 MHz`
 
-When `MetaPulsarFactory.create_metapulsar(..., combination_strategy="consistent")`
+When `MetaPulsarFactory.create_metapulsar(..., combination_strategy="shared")`
 processes these datasets, the consistency path removes DMX and resets
 `DM1`/`DM2`, producing a wrong pre-fit timing model. A weighted linear solve on
 the merged design matrix behaves very differently depending on whether pulse

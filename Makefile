@@ -23,9 +23,6 @@ fast:
 test-integration:
 	@pytest tests/ -m "integration" -v
 
-test-legacy:
-	@pytest tests/ -m "legacy_comparison" -v
-
 test-real-data:
 	@pytest tests/ -m "real_data" -v
 
@@ -37,7 +34,7 @@ install:  ## Install package in production mode
 	pip install -e .
 
 install-dev:  ## Install package in development mode with all dependencies
-	pip install -e ".[dev,libstempo,analysis]"
+	pip install -e ".[dev,libstempo]"
 	pre-commit install
 
 test-cov:  ## Run tests with coverage
@@ -45,7 +42,6 @@ test-cov:  ## Run tests with coverage
 
 lint:  ## Run linting
 	ruff check src/ tests/
-	mypy src/
 
 format:  ## Format code
 	black src/ tests/
@@ -67,7 +63,6 @@ docs:  ## Build documentation
 check:  ## Run all checks (lint, format, test)
 	black --check src/ tests/
 	ruff check src/ tests/
-	mypy src/
 	pytest
 
 ci:  ## Run CI pipeline locally
@@ -89,7 +84,6 @@ help:
 	@echo "  test             - run all tests with pytest"
 	@echo "  fast             - run fast tests only (excludes slow tests)"
 	@echo "  test-integration - run integration tests only"
-	@echo "  test-legacy      - run legacy comparison tests"
 	@echo "  test-real-data   - run real data tests"
 	@echo "  test-slow        - run slow tests only"
 	@echo "  test-cov         - run tests with coverage report"

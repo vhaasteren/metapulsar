@@ -15,8 +15,13 @@ from metapulsar.mockpulsar import create_mock_libstempo
 class TestMetaPulsarPositionAndFinalization:
     """Test class for MetaPulsar position setup and finalization functionality."""
 
-    def setup_method(self):
-        """Set up test fixtures."""
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_metapulsar):
+        """Set up test fixtures.
+
+        An autouse fixture rather than ``setup_method`` because MetaPulsar needs
+        retained pta_files, and ``mock_metapulsar`` writes them under tmp_path.
+        """
         self.pulsars = {
             "test_pta1": create_mock_libstempo(
                 n_toas=30, name="J1857+0943", telescope="test_pta1", seed=10
@@ -25,7 +30,8 @@ class TestMetaPulsarPositionAndFinalization:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.metapulsar = MetaPulsar(self.pulsars, combination_strategy="composite")
+        self.build = mock_metapulsar
+        self.metapulsar = mock_metapulsar(self.pulsars, combination_strategy="per_pta")
 
     def test_setup_position_and_planets_basic(self):
         """Test basic position and planetary data setup."""
@@ -55,9 +61,10 @@ class TestMetaPulsarPositionAndFinalization:
 
     def test_setup_position_and_planets_empty_pulsars(self):
         """Test position setup with empty pulsar list."""
-        # Empty pulsars should raise an exception
-        with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+        with pytest.raises(
+            ValueError, match="MetaPulsar requires at least one PTA input"
+        ):
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_validate_consistency_success(self):
         """Test successful consistency validation."""
@@ -65,8 +72,8 @@ class TestMetaPulsarPositionAndFinalization:
         assert pulsar_name == "J1857+0943"
 
     def test_validate_consistency_different_pulsars(self):
-        """Test consistency validation with different pulsars."""
-        inconsistent_mp = MetaPulsar(
+        """Different catalog names fail validate_consistency()."""
+        inconsistent_mp = self.build(
             {
                 "pta1": create_mock_libstempo(
                     n_toas=10, name="J1857+0943", telescope="test_pta1", seed=1
@@ -75,7 +82,7 @@ class TestMetaPulsarPositionAndFinalization:
                     n_toas=10, name="J1900+0000", telescope="test_pta2", seed=2
                 ),
             },
-            combination_strategy="composite",
+            combination_strategy="per_pta",
         )
 
         with pytest.raises(ValueError, match="Not all the same pulsar"):
@@ -83,43 +90,43 @@ class TestMetaPulsarPositionAndFinalization:
 
     def test_validate_consistency_no_pulsars(self):
         """Test consistency validation with no pulsars."""
-        # Empty pulsars should raise an exception during construction
-        with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+        with pytest.raises(
+            ValueError, match="MetaPulsar requires at least one PTA input"
+        ):
+            MetaPulsar({}, combination_strategy="per_pta")
 
-    def test_validate_consistency_no_epulsars(self):
-        """Test consistency validation before Enterprise Pulsars are created."""
-        # Create MetaPulsar but don't initialize it
+    def test_validate_consistency_no_pta_data(self):
+        """Test consistency validation before PTA timing records are created."""
         mp = MetaPulsar.__new__(MetaPulsar)
-        mp._epulsars = None
+        mp._pta_data = None
 
-        with pytest.raises(ValueError, match="No Enterprise Pulsars created yet"):
+        with pytest.raises(ValueError, match="No PTA timing records created yet"):
             mp.validate_consistency()
 
     def test_position_attributes_consistency(self):
-        """Test that _pos is the reference pulsar's sky unit vector and _pos_t is per-PTA."""
-        ref_psr = next(iter(self.metapulsar._epulsars.values()))
+        """Test that _pos is the reference record's sky unit vector and _pos_t is per-PTA."""
+        ref_psr = next(iter(self.metapulsar._pta_data.values()))
 
         # _pos should be the reference pulsar's sky unit vector
         np.testing.assert_array_equal(self.metapulsar._pos, ref_psr._pos)
 
         # _pos_t should be filled per-PTA from each pulsar's _pos_t
         pta_slices = self.metapulsar._get_pta_slices()
-        for pta, psr in self.metapulsar._epulsars.items():
+        for pta, psr in self.metapulsar._pta_data.items():
             np.testing.assert_array_almost_equal(
                 self.metapulsar._pos_t[pta_slices[pta], :], psr._pos_t
             )
 
     def test_planetary_data_setup(self):
         """Test that planetary data is properly set up per-PTA."""
-        ref_psr = next(iter(self.metapulsar._epulsars.values()))
+        ref_psr = next(iter(self.metapulsar._pta_data.values()))
 
         # _pdist is still taken directly from the reference pulsar
         assert self.metapulsar._pdist is ref_psr._pdist
 
         # _planetssb and _sunssb are now per-PTA sliced arrays
         pta_slices = self.metapulsar._get_pta_slices()
-        for pta, psr in self.metapulsar._epulsars.items():
+        for pta, psr in self.metapulsar._pta_data.items():
             np.testing.assert_array_equal(
                 self.metapulsar._planetssb[pta_slices[pta], :, :], psr._planetssb
             )
@@ -129,7 +136,7 @@ class TestMetaPulsarPositionAndFinalization:
 
     def test_position_coordinates(self):
         """Test that position coordinates are properly set."""
-        ref_psr = next(iter(self.metapulsar._epulsars.values()))
+        ref_psr = next(iter(self.metapulsar._pta_data.values()))
 
         # RA and Dec should match reference pulsar
         assert self.metapulsar._raj == ref_psr._raj
@@ -163,7 +170,7 @@ class TestMetaPulsarPositionAndFinalization:
 
         # This should raise an AttributeError when trying to access the missing name
         with pytest.raises(AttributeError):
-            MetaPulsar({"test_pta": adapted_pulsar}, combination_strategy="composite")
+            self.build({"test_pta": adapted_pulsar}, combination_strategy="per_pta")
 
     def test_all_equal_helper_method(self):
         """Test the _all_equal helper method."""

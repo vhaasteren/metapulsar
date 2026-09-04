@@ -12,10 +12,23 @@ We welcome contributions to MetaPulsar! This document provides guidelines for co
    cd metapulsar
    ```
 
-2. **Install in Development Mode**
+2. **Install in Development Mode** (Python 3.11+; pulls git PINT `@metapulsar` and git nltiming)
    ```bash
    pip install -e ".[dev,libstempo]"
    ```
+
+   Prefer an editable [nanograv/PINT](https://github.com/nanograv/PINT/tree/main)
+   checkout when developing against PINT:
+
+   ```bash
+   pip install -e . --no-deps   # from the local PINT checkout
+   ```
+
+   A stale non-editable `pint` under `~/.local/lib/.../site-packages` can shadow
+   that install: user site precedes the editable finder on `sys.path`, and
+   `pip show` still reports the *correct version from the wrong metadata*.
+   Diagnose with `pathlib.Path(pint.__file__).resolve()`, never with `pip show`
+   alone.
 
 3. **Install Pre-commit Hooks**
    ```bash
@@ -90,8 +103,8 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 3. **Test Changes**
    ```bash
    pytest
-   black --check .
-   ruff check .
+   black --check src/ tests/
+   ruff check src/ tests/
    ```
 
 4. **Commit Changes**
@@ -100,7 +113,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
    git commit -m "feat: add new feature"
    ```
 
-5. **Push and Create MR**
+5. **Push and Create PR**
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -133,12 +146,19 @@ Use `MockLibstempo` for testing timing-object integration:
 ```python
 from metapulsar.mockpulsar import create_mock_libstempo
 
-def test_metapulsar_creation():
-    """Test MetaPulsar creation with MockLibstempo."""
+def test_metapulsar_creation(mock_metapulsar):
+    """Test MetaPulsar creation with MockLibstempo.
+
+    MetaPulsar requires `pta_files` for every PTA -- it reads each leg's par
+    text from that file and never re-serializes an engine object. The
+    `mock_metapulsar` fixture (tests/conftest.py) writes the mocks' own pars
+    under tmp_path and passes them; `mockpulsar.write_mock_pta_files()` does the
+    same outside a pytest fixture.
+    """
     mock_lt = create_mock_libstempo(
         n_toas=100, name="J1857+0943", telescope="test", seed=42
     )
-    metapulsar = MetaPulsar({"test": mock_lt})
+    metapulsar = mock_metapulsar({"test": mock_lt})
     assert len(metapulsar._toas) == 100
 ```
 
@@ -227,7 +247,7 @@ When requesting features, please include:
 
 ## 📞 Getting Help
 
-- **Issues**: [GitLab Issues](https://www.github.com/vhaasteren/metapulsar/issues)
+- **Issues**: [GitHub Issues](https://www.github.com/vhaasteren/metapulsar/issues)
 - **Email**: [rutger@vhaasteren.com](mailto:rutger@vhaasteren.com)
 
 ## 📄 License

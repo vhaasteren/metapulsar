@@ -21,7 +21,7 @@ from metapulsar.position_helpers import (
     bj_name_from_pulsar,
     extract_coordinates_from_parfile_optimized,
     bj_name_from_coordinates_optimized,
-    discover_pulsars_by_coordinates_optimized,
+    discover_pulsars_by_position,
     _parse_parfile_optimized,
     _get_first_par_value_by_aliases,
     _parse_ra_string_optimized,
@@ -392,15 +392,13 @@ DM 10.0
         }
 
         # Run optimized discovery
-        coordinate_map = discover_pulsars_by_coordinates_optimized(file_data)
+        coordinate_map = discover_pulsars_by_position(file_data)
 
-        # Verify results
+        # Verify results (catalog name from parfile, not truncated coords)
         assert len(coordinate_map) > 0, "No pulsars discovered"
-        assert "J1857+0943" in coordinate_map, "Expected pulsar not found"
-        assert "EPTA" in coordinate_map["J1857+0943"], "PTA not found in results"
-        assert (
-            len(coordinate_map["J1857+0943"]["EPTA"]) == 1
-        ), "Incorrect number of files"
+        group_name = next(iter(coordinate_map))
+        assert "EPTA" in coordinate_map[group_name], "PTA not found in results"
+        assert len(coordinate_map[group_name]["EPTA"]) == 1
 
     def test_optimized_vs_original_consistency(self, load_parfile_text):
         """Test that optimized functions produce same results as original."""
@@ -733,12 +731,87 @@ class TestProperMotionJ2000Normalization:
                 "POSEPOCH" in call or "proper motion" in call.lower()
                 for call in warning_calls
             ), "Warning should mention POSEPOCH or proper motion"
+            # Warning should also identify the offending pulsar.
+            assert any(
+                "[J1857+0943]" in call for call in warning_calls
+            ), "Warning should be tagged with the pulsar name from the parfile"
 
         assert coords is not None
 
         # Should still produce valid J-name (no propagation, uses catalogued position)
         j_name = bj_name_from_coordinates_optimized(coords[0], coords[1], "J")
         assert j_name == "J1857+0943"
+
+    def test_pulsar_name_helper_prefers_psrj_then_psrb_then_psr(self):
+        """Diagnostic helper must try PSRJ -> PSRB -> PSR and fall back gracefully."""
+        from metapulsar.position_helpers import _get_pulsar_name_from_parfile_dict
+
+        assert (
+            _get_pulsar_name_from_parfile_dict(
+                {"PSRJ": "J1857+0943", "PSRB": "B1855+09", "PSR": "J0000+0000"}
+            )
+            == "J1857+0943"
+        )
+        assert (
+            _get_pulsar_name_from_parfile_dict({"PSRB": "B1855+09", "PSR": "B0000+00"})
+            == "B1855+09"
+        )
+        assert _get_pulsar_name_from_parfile_dict({"PSR": "J1857+0943"}) == "J1857+0943"
+        assert _get_pulsar_name_from_parfile_dict({}) == "<unknown>"
+        # Whitespace-only PSR is treated as missing (downstream call uses .get()
+        # truthiness via the helper itself), so the next available key wins.
+        assert (
+            _get_pulsar_name_from_parfile_dict({"PSRJ": "   J1857+0943   "})
+            == "J1857+0943"
+        )
+
+    def test_posepoch_falls_back_to_pepoch_no_warning(self, load_parfile_text):
+        """POSEPOCH should fall back to PEPOCH and suppress the warning.
+
+        This mirrors the NANOGrav 9-yr/12.5-yr ``.gls.par`` convention: ecliptic
+        position with PMLAMBDA/PMBETA, only PEPOCH (no explicit POSEPOCH).
+        """
+        from unittest.mock import patch
+        from loguru import logger
+
+        parfile = load_parfile_text("test_ecliptic_pmlambda_no_posepoch.par")
+
+        with patch.object(logger, "warning") as mock_warning:
+            coords = extract_coordinates_from_parfile_optimized(parfile)
+
+        assert coords is not None
+        assert not mock_warning.called, (
+            "No warning should be issued when PEPOCH provides the POSEPOCH "
+            f"fallback. Got calls: {mock_warning.call_args_list}"
+        )
+
+        # And propagation must actually have happened (relative to the cataloged
+        # ecliptic position at PEPOCH=54500 with the large PMLAMBDA in the fixture).
+        sibling_with_posepoch = load_parfile_text("test_ecliptic_pmlambda.par")
+        coords_ref = extract_coordinates_from_parfile_optimized(sibling_with_posepoch)
+        assert coords_ref is not None
+        # POSEPOCH and PEPOCH are identical (54500) in the two fixtures, so the
+        # propagated J2000 coordinates must agree to numerical precision.
+        assert abs(coords[0] - coords_ref[0]) < 1e-9
+        assert abs(coords[1] - coords_ref[1]) < 1e-9
+
+    def test_pepoch_fallback_pint_model_path(self, mb, load_parfile_text):
+        """PINT-model coordinate path also falls back to PEPOCH when POSEPOCH is absent."""
+        from metapulsar.position_helpers import _skycoord_from_pint_model
+
+        parfile = load_parfile_text("test_ecliptic_pmlambda_no_posepoch.par")
+        sibling = load_parfile_text("test_ecliptic_pmlambda.par")
+
+        model_no_pose = _build_pint_model(mb, parfile)
+        model_with_pose = _build_pint_model(mb, sibling)
+
+        c_no_pose = _skycoord_from_pint_model(model_no_pose)
+        c_with_pose = _skycoord_from_pint_model(model_with_pose)
+
+        assert c_no_pose.separation(c_with_pose).to(u.mas).value < 1.0, (
+            "PINT-model coordinates must match between explicit-POSEPOCH and "
+            "PEPOCH-fallback parfiles."
+        )
 
     def test_b_name_generation_with_propagation(self, mb, load_parfile_text):
         """Test that B-name generation also normalizes to J2000."""

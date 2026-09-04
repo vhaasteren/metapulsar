@@ -83,3 +83,6 @@ plots/
 *.jpg
 *.jpeg
 *.gif
+
+# Notebook execution artifacts (figures, exported products)
+examples/notebooks/output/

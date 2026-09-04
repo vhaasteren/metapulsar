@@ -12,10 +12,10 @@ Usage (drop-in):
     r = psr.residuals()
 
 Advanced with logging:
-    from sandbox import tempopulsar, configure_logging, Policy
+    from sandbox import tempopulsar, configure_logging, WorkerConfig
     configure_logging(level="DEBUG", log_file="tempo2.log")
-    policy = Policy(ctor_retry=5, call_timeout_s=300.0)
-    psr = tempopulsar(parfile="J1713.par", timfile="J1713.tim", policy=policy)
+    worker_config = WorkerConfig(ctor_retry=5, call_timeout_s=300.0)
+    psr = tempopulsar(parfile="J1713.par", timfile="J1713.tim", worker_config=worker_config)
 
 With specific environment:
     psr = tempopulsar(parfile="J1713.par", timfile="J1713.tim", env_name="myenv")
@@ -23,17 +23,17 @@ With specific environment:
     # or explicit path: env_name="python:/path/to/python"
 
 With persistent workers (no recycling/timeouts):
-    policy = Policy(
+    worker_config = WorkerConfig(
         call_timeout_s=None,        # No RPC timeouts
         max_calls_per_worker=None,  # Never recycle by call count
         max_age_s=None,            # Never recycle by age
         rss_soft_limit_mb=None     # Never recycle by memory
     )
-    psr = tempopulsar(parfile="J1713.par", timfile="J1713.tim", policy=policy)
+    psr = tempopulsar(parfile="J1713.par", timfile="J1713.tim", worker_config=worker_config)
 
 Advanced:
-    from sandbox import load_many, Policy
-    ok, retried, failed = load_many([("J1713.par","J1713.tim"), ...], policy=Policy())
+    from sandbox import load_many, WorkerConfig
+    ok, retried, failed = load_many([("J1713.par","J1713.tim"), ...], worker_config=WorkerConfig())
 
 Environment selection (Apple Silicon + Rosetta etc.):
     psr = tempopulsar(..., env_name="tempo2_intel")       # conda env
@@ -117,10 +117,10 @@ class Tempo2ConstructorFailed(Tempo2Error):
     """Constructor failed even after retries."""
 
 
-# ------------------------------- Policy knobs ----------------------------- #
+# ------------------------------- WorkerConfig knobs ----------------------------- #
 @dataclass(frozen=True)
-class Policy:
-    """Configuration policy for sandbox worker behavior and lifecycle management.
+class WorkerConfig:
+    """Configuration worker_config for sandbox worker behavior and lifecycle management.
 
     Controls retry behavior, timeouts, and worker recycling policies.
     """
@@ -723,8 +723,10 @@ class _WorkerProc:
     Launches the worker in the requested environment (conda/venv/arch/system).
     """
 
-    def __init__(self, policy: Policy, cmd: List[str], require_x86_64: bool = False):
-        self.policy = policy
+    def __init__(
+        self, worker_config: WorkerConfig, cmd: List[str], require_x86_64: bool = False
+    ):
+        self.worker_config = worker_config
         self.cmd = cmd
         self.proc: Optional[subprocess.Popen] = None
         self._id = 0
@@ -772,12 +774,17 @@ class _WorkerProc:
         import threading
         import collections
 
-        self._log_buf = collections.deque(maxlen=self.policy.stderr_ring_max_lines)
+        self._log_buf = collections.deque(
+            maxlen=self.worker_config.stderr_ring_max_lines
+        )
         log_file = None
-        if self.policy.stderr_log_file:
+        if self.worker_config.stderr_log_file:
             try:
                 log_file = open(
-                    self.policy.stderr_log_file, "a", buffering=1, encoding="utf-8"
+                    self.worker_config.stderr_log_file,
+                    "a",
+                    buffering=1,
+                    encoding="utf-8",
                 )
             except Exception:
                 log_file = None
@@ -815,9 +822,9 @@ class _WorkerProc:
 
         # Hello handshake (one line of JSON)
         logger.debug("Waiting for worker hello handshake...")
-        hello = self._readline_with_timeout(self.policy.call_timeout_s)
+        hello = self._readline_with_timeout(self.worker_config.call_timeout_s)
         if hello is None:
-            if self.policy.call_timeout_s is None:
+            if self.worker_config.call_timeout_s is None:
                 logger.error("Worker did not send hello - worker disconnected")
                 self._hard_kill()
                 raise Tempo2Crashed("worker did not send hello - worker disconnected")
@@ -906,7 +913,7 @@ class _WorkerProc:
             t0 = time.time()
             while (
                 self.proc.poll() is None
-                and (time.time() - t0) < self.policy.kill_grace_s
+                and (time.time() - t0) < self.worker_config.kill_grace_s
             ):
                 time.sleep(0.01)
             if self.proc.poll() is None:
@@ -978,7 +985,7 @@ class _WorkerProc:
             raise Tempo2Crashed(f"send failed: {e!r}")
 
         # Wait for response
-        t = self.policy.call_timeout_s if timeout is None else timeout
+        t = self.worker_config.call_timeout_s if timeout is None else timeout
         if t is None:
             logger.debug(f"Waiting for RPC {method} response (no timeout)")
         else:
@@ -1018,11 +1025,11 @@ class _WorkerProc:
             tail = ""
             if (
                 getattr(self, "_log_buf", None)
-                and (self.policy.include_stderr_tail_in_errors or 0) > 0
+                and (self.worker_config.include_stderr_tail_in_errors or 0) > 0
             ):
                 try:
                     tail_lines = list(self._log_buf)[
-                        -self.policy.include_stderr_tail_in_errors :
+                        -self.worker_config.include_stderr_tail_in_errors :
                     ]
                     if tail_lines:
                         blob = "\n".join(tail_lines)
@@ -1291,7 +1298,7 @@ class tempopulsar:
     Args:
         env_name: Environment name (conda env or venv name, 'arch', or 'python:/abs/python').
                  If None (default), uses the current Python environment.
-        policy: Optional Policy instance to configure worker behavior
+        worker_config: Optional WorkerConfig instance to configure worker behavior
         **kwargs: Additional arguments passed to libstempo.tempopulsar
 
     Example:
@@ -1301,7 +1308,7 @@ class tempopulsar:
     """
 
     __slots__ = (
-        "_policy",
+        "_worker_config",
         "_wp",
         "_state",
         "_ctor_kwargs",
@@ -1310,8 +1317,10 @@ class tempopulsar:
     )
 
     def __init__(self, env_name: Optional[str] = None, **kwargs):
-        policy = kwargs.pop("policy", None)
-        self._policy: Policy = policy if isinstance(policy, Policy) else Policy()
+        worker_config = kwargs.pop("worker_config", None)
+        self._worker_config: WorkerConfig = (
+            worker_config if isinstance(worker_config, WorkerConfig) else WorkerConfig()
+        )
         self._env_name = env_name
         self._ctor_kwargs = dict(kwargs)
         self._wp: Optional[_WorkerProc] = None
@@ -1322,7 +1331,7 @@ class tempopulsar:
             f"Creating tempopulsar with env_name='{env_name}', kwargs={self._ctor_kwargs}"
         )
         logger.info(
-            f"Using policy: ctor_retry={self._policy.ctor_retry}, ctor_backoff={self._policy.ctor_backoff}s"
+            f"Using worker_config: ctor_retry={self._worker_config.ctor_retry}, ctor_backoff={self._worker_config.ctor_backoff}s"
         )
         self._construct_with_retries()
 
@@ -1330,7 +1339,7 @@ class tempopulsar:
 
     def _construct_with_retries(self):
         logger.info(
-            f"Starting construction with {self._policy.ctor_retry + 1} total attempts"
+            f"Starting construction with {self._worker_config.ctor_retry + 1} total attempts"
         )
 
         # Fast-fail on missing input files to avoid noisy retries
@@ -1356,13 +1365,13 @@ class tempopulsar:
             )
 
         # Proactive TOA counting to avoid "Too many TOAs" errors
-        if self._policy.auto_nobs_retry:
+        if self._worker_config.auto_nobs_retry:
             self._proactive_nobs_setup()
 
         last_exc: Optional[Exception] = None
-        for attempt in range(1 + self._policy.ctor_retry):
+        for attempt in range(1 + self._worker_config.ctor_retry):
             logger.info(
-                f"Construction attempt {attempt + 1}/{self._policy.ctor_retry + 1}"
+                f"Construction attempt {attempt + 1}/{self._worker_config.ctor_retry + 1}"
             )
             try:
                 cmd, require_x86 = _resolve_worker_cmd(self._env_name)
@@ -1370,11 +1379,14 @@ class tempopulsar:
                 logger.debug(f"Resolved worker command: {' '.join(cmd)}")
                 logger.debug(f"Require x86_64: {require_x86}")
 
-                self._wp = _WorkerProc(self._policy, cmd, require_x86_64=require_x86)
+                self._wp = _WorkerProc(
+                    self._worker_config, cmd, require_x86_64=require_x86
+                )
                 # ctor on the worker (libstempo.tempopulsar)
                 logger.info("Calling constructor on worker...")
                 self._wp.ctor(
-                    self._ctor_kwargs, preload_residuals=self._policy.preload_residuals
+                    self._ctor_kwargs,
+                    preload_residuals=self._worker_config.preload_residuals,
                 )
                 self._state.created_at = time.time()
                 self._state.calls_ok = 0
@@ -1413,9 +1425,13 @@ class tempopulsar:
                     logger.warning(f"Cleanup failed: {cleanup_e}")
                     pass
                 self._wp = None
-                if attempt < self._policy.ctor_retry:  # Don't sleep after last attempt
-                    logger.info(f"Waiting {self._policy.ctor_backoff}s before retry...")
-                    time.sleep(self._policy.ctor_backoff)
+                if (
+                    attempt < self._worker_config.ctor_retry
+                ):  # Don't sleep after last attempt
+                    logger.info(
+                        f"Waiting {self._worker_config.ctor_backoff}s before retry..."
+                    )
+                    time.sleep(self._worker_config.ctor_backoff)
         logger.error(f"All construction attempts failed. Last error: {last_exc}")
         raise Tempo2ConstructorFailed(
             f"tempopulsar ctor failed after retries: {last_exc}"
@@ -1436,19 +1452,21 @@ class tempopulsar:
 
             logger.info(f"Proactively counting TOAs in {timfile_path}")
             analyzer = TimFileAnalyzer()
-            toa_count = analyzer.count_toas(timfile_path)
+            toa_count = analyzer.get_tim_metadata(timfile_path).toa_count
 
-            if toa_count > self._policy.nobs_threshold:
-                maxobs_with_margin = int(toa_count * self._policy.nobs_safety_margin)
+            if toa_count > self._worker_config.nobs_threshold:
+                maxobs_with_margin = int(
+                    toa_count * self._worker_config.nobs_safety_margin
+                )
                 self._ctor_kwargs["maxobs"] = maxobs_with_margin
                 logger.info(
                     f"Proactively added maxobs={maxobs_with_margin} parameter "
-                    f"(TOAs: {toa_count}, threshold: {self._policy.nobs_threshold}, "
-                    f"margin: {self._policy.nobs_safety_margin})"
+                    f"(TOAs: {toa_count}, threshold: {self._worker_config.nobs_threshold}, "
+                    f"margin: {self._worker_config.nobs_safety_margin})"
                 )
             else:
                 logger.debug(
-                    f"TOA count {toa_count} below threshold {self._policy.nobs_threshold}, no maxobs parameter needed"
+                    f"TOA count {toa_count} below threshold {self._worker_config.nobs_threshold}, no maxobs parameter needed"
                 )
 
         except Exception as e:
@@ -1513,7 +1531,7 @@ class tempopulsar:
             "calls_since_creation": self._state.calls_ok,
         }
 
-    # ----------------------------- recycling policy --------------------------- #
+    # ----------------------------- recycling worker_config --------------------------- #
 
     def _should_recycle(self) -> bool:
         if self._wp is None:
@@ -1523,29 +1541,32 @@ class tempopulsar:
         age = time.time() - self._state.created_at
 
         # Check age limit (if set)
-        if self._policy.max_age_s is not None and age > self._policy.max_age_s:
+        if (
+            self._worker_config.max_age_s is not None
+            and age > self._worker_config.max_age_s
+        ):
             logger.info(
-                f"Should recycle: worker age {age:.1f}s exceeds max_age_s {self._policy.max_age_s}"
+                f"Should recycle: worker age {age:.1f}s exceeds max_age_s {self._worker_config.max_age_s}"
             )
             return True
 
         # Check call limit (if set)
         if (
-            self._policy.max_calls_per_worker is not None
-            and self._state.calls_ok >= self._policy.max_calls_per_worker
+            self._worker_config.max_calls_per_worker is not None
+            and self._state.calls_ok >= self._worker_config.max_calls_per_worker
         ):
             logger.info(
                 f"Should recycle: calls_ok {self._state.calls_ok} exceeds "
-                f"max_calls_per_worker {self._policy.max_calls_per_worker}"
+                f"max_calls_per_worker {self._worker_config.max_calls_per_worker}"
             )
             return True
 
         # Check RSS limit (if set)
-        if self._policy.rss_soft_limit_mb is not None:
+        if self._worker_config.rss_soft_limit_mb is not None:
             rss = self._wp.rss()
-            if rss and rss > self._policy.rss_soft_limit_mb:
+            if rss and rss > self._worker_config.rss_soft_limit_mb:
                 logger.info(
-                    f"Should recycle: RSS {rss}MB exceeds limit {self._policy.rss_soft_limit_mb}MB"
+                    f"Should recycle: RSS {rss}MB exceeds limit {self._worker_config.rss_soft_limit_mb}MB"
                 )
                 return True
 
@@ -1908,7 +1929,7 @@ class LoadReport:
 
 def load_many(
     pairs: Iterable[Tuple[str, Optional[str]]],
-    policy: Optional[Policy] = None,
+    worker_config: Optional[WorkerConfig] = None,
     parallel: int = 8,
 ) -> Tuple[Dict[str, tempopulsar], Dict[str, LoadReport], List[LoadReport]]:
     """
@@ -1919,12 +1940,14 @@ def load_many(
     retried_by_name: {psr_name: LoadReport} (those that required >=1 retry)
     failed_list:     [LoadReport,...]
     """
-    pol = policy if isinstance(policy, Policy) else Policy()
+    worker_config = (
+        worker_config if isinstance(worker_config, WorkerConfig) else WorkerConfig()
+    )
     logger.info(
         f"Starting bulk load of {len(list(pairs))} pulsars with {parallel} parallel workers"
     )
     logger.info(
-        f"Using policy: ctor_retry={pol.ctor_retry}, ctor_backoff={pol.ctor_backoff}s"
+        f"Using worker_config: ctor_retry={worker_config.ctor_retry}, ctor_backoff={worker_config.ctor_backoff}s"
     )
 
     def _one(par, tim):
@@ -1933,10 +1956,10 @@ def load_many(
         attempts = 0
         report = LoadReport(par=par, tim=tim, attempts=0, ok=False)
         last_exc = None
-        for _ in range(1 + pol.ctor_retry):
+        for _ in range(1 + worker_config.ctor_retry):
             attempts += 1
             try:
-                psr = tempopulsar(parfile=par, timfile=tim, policy=pol)
+                psr = tempopulsar(parfile=par, timfile=tim, worker_config=worker_config)
                 name = getattr(psr, "name")
                 report.attempts = attempts
                 report.ok = True
@@ -1946,7 +1969,7 @@ def load_many(
             except Exception as e:
                 logger.warning(f"Failed to load {par} (attempt {attempts}): {e}")
                 last_exc = e
-                time.sleep(pol.ctor_backoff)
+                time.sleep(worker_config.ctor_backoff)
         report.attempts = attempts
         report.ok = False
         report.error = f"{last_exc.__class__.__name__}: {last_exc}"
