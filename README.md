@@ -304,14 +304,23 @@ until those two are released packages.
 
 ## Troubleshooting
 
-### Debug Mode
+### Logging
+
+MetaPulsar, PINT, and nltiming all log through `loguru`. `import metapulsar`
+replaces loguru's built-in DEBUG-to-stderr handler with a `WARNING`-and-above
+sink. Anything you configure yourself, before or after the import, is
+respected. To see more:
 
 ```python
-import loguru
-import sys
-loguru.logger.remove()
-loguru.logger.add(sys.stdout, level="DEBUG")
+from metapulsar import configure_logging
+
+configure_logging("DEBUG")                    # or "INFO"
+configure_logging("DEBUG", log_file="mp.log") # also write to a file
 ```
+
+`configure_logging` only replaces loguru's untouched default handler; pass
+`force=True` to replace every handler (equivalent to `logger.remove()` followed
+by `logger.add(...)`).
 
 ### CI import error with `pkg_resources`
 

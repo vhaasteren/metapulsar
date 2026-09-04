@@ -900,22 +900,11 @@ class MetaPulsarFactory:
         """
         import warnings
 
-        # Suppress PINT warnings and loguru output for clean summary display
-        import sys
-        from loguru import logger as loguru_logger
-
-        # Store original loguru configuration (for potential future use)
-
-        try:
-            # Remove all existing loguru handlers
-            loguru_logger.remove()
-
-            # Add a new handler that only shows CRITICAL messages
-            loguru_logger.add(lambda msg: None, level="CRITICAL")
-
-            # Also suppress Python warnings
-            warnings.filterwarnings("ignore")
-
+        # PINT warns about every unrecognized par line while the summary parses
+        # each par file; keep that out of the summary output. Scoped: the
+        # caller's warning filters and loguru configuration are untouched.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
             with self.logger.catch():
                 print("Quickly processing PTA files...")
 
@@ -994,12 +983,6 @@ class MetaPulsarFactory:
                         )
 
                     print()
-
-        finally:
-            # Restore original loguru configuration
-            loguru_logger.remove()
-            # Re-add default handler
-            loguru_logger.add(sys.stderr, level="DEBUG")
 
     def _create_pulsar_objects(
         self,

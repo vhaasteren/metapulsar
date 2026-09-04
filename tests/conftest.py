@@ -5,18 +5,6 @@ import pytest
 import numpy as np
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--sandbox-tempo2-debug",
-        action="store_true",
-        default=False,
-        help=(
-            "Enable DEBUG/INFO logs from metapulsar.sandbox_tempo2 during tests. "
-            "By default these logs are suppressed (WARNING+ only)."
-        ),
-    )
-
-
 def _has_wide_longdouble() -> bool:
     """True when np.longdouble is strictly wider than float64 (80-bit or quad)."""
     return np.finfo(np.longdouble).eps < np.finfo(np.float64).eps
@@ -40,31 +28,6 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.get_closest_marker("requires_wide_longdouble"):
             item.add_marker(skip_wide)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def suppress_sandbox_tempo2_debug_logs(request):
-    """Reduce sandbox tempo2 logging noise during tests.
-
-    Keep WARNING and above visible while suppressing DEBUG/INFO chatter.
-    """
-    if request.config.getoption("--sandbox-tempo2-debug"):
-        # Explicit debug mode: keep full sandbox logger output.
-        yield
-        return
-
-    import metapulsar.sandbox_tempo2 as sandbox_tempo2
-
-    original_debug = sandbox_tempo2.logger.debug
-    original_info = sandbox_tempo2.logger.info
-
-    sandbox_tempo2.logger.debug = lambda *args, **kwargs: None
-    sandbox_tempo2.logger.info = lambda *args, **kwargs: None
-    try:
-        yield
-    finally:
-        sandbox_tempo2.logger.debug = original_debug
-        sandbox_tempo2.logger.info = original_info
 
 
 @pytest.fixture
