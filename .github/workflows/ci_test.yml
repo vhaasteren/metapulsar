@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.11', '3.12']
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,13 +44,13 @@ jobs:
         shell: bash
       - name: Lint with black
         run: |
-          black . --check
+          black src/ tests/ --check
       - name: Install package in editable mode
         run: pip install -e ".[dev]"
         shell: bash
       - name: Run tests with pytest
         env:
-          PYTEST_ADDOPTS: -m "not requires_libstempo and not requires_ipta_data and not legacy_comparison and not requires_legacy"
+          PYTEST_ADDOPTS: -m "not requires_libstempo and not requires_ipta_data and not requires_enterprise and not requires_vela and not requires_jug"
         run: |
           pytest --cov=src/metapulsar --cov-report xml:coverage.xml
       - name: Upload coverage to Codecov

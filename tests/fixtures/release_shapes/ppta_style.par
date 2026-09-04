@@ -1,0 +1,26 @@
+# PPTA-style shape: aggregate TEMPO1 mode plus an incidental DMMODEL grid.
+PSR              J1600-3053
+EPHEM            DE421
+CLK              TT(BIPM2013)
+TEMPO1
+LAMBDA           244.347677 1
+BETA             -10.071873 1
+PMLAMBDA         -0.35 1
+PMBETA           -7.0 1
+ECL              IERS2003
+POSEPOCH         55000
+F0               277.937 1
+F1               -7.3e-16 1
+PEPOCH           55000
+DM               52.3
+DMEPOCH          55000
+DMMODEL          1
+CONSTRAIN        DMMODEL
+_DM 54500.0 0.001 1
+_DM 54600.0 -0.002 1
+BINARY           ELL1
+PB               14.348466 1
+A1               8.801653 1
+TASC             55000.0 1
+EPS1             1.7e-05 1
+EPS2             -9.1e-06 1

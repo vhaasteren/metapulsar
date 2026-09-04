@@ -1,0 +1,53 @@
+name: Optional Vela backend
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/metapulsar/engines/vela.py"
+      - "src/metapulsar/parfile_lines.py"
+      - "tests/engines/test_timing_vela_engine.py"
+      - "tests/engines/test_vela_par_preparation.py"
+      - ".github/workflows/optional_vela.yml"
+
+jobs:
+  vela-python312-julia111:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_JULIACALL_HANDLE_SIGNALS: "yes"
+      PYTHON_JULIACALL_THREADS: "4"
+      JULIA_NUM_THREADS: "4"
+      JULIA_CONDAPKG_BACKEND: "Null"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.11"
+      - uses: julia-actions/cache@v2
+      - name: Configure JuliaCall
+        run: |
+          echo "PYTHON_JULIACALL_EXE=$(command -v julia)" >> "$GITHUB_ENV"
+          echo "PYTHON_JULIACALL_PROJECT=$(julia -e 'print(joinpath(DEPOT_PATH[1], "environments", "v$(VERSION.major).$(VERSION.minor)"))')" >> "$GITHUB_ENV"
+          echo "PYTHON_JULIAPKG_OFFLINE=true" >> "$GITHUB_ENV"
+      - name: Install Vela and MetaPulsar
+        run: |
+          # Point juliacall at the default Julia env (PYTHON_JULIACALL_PROJECT)
+          # and disable juliapkg. That env must already contain PythonCall —
+          # otherwise `from pyvela import SPNTA` dies with
+          # `Package PythonCall not found in current path`.
+          # Matches Vela.jl's documented install (PythonCall + Vela in the
+          # same environment); skip LocalRegistry/JuliaFormatter/BenchmarkTools.
+          julia -e 'import Pkg
+                    try Pkg.Registry.add("General") catch; end
+                    Pkg.Registry.add(url="https://github.com/abhisrkckl/julia_registry")
+                    Pkg.add(["PythonCall", "Distributions", "DoubleFloats", "GeometricUnits"])
+                    Pkg.add(url="https://github.com/abhisrkckl/Vela.jl")'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e ".[dev,vela]"
+          python -c 'from pyvela import SPNTA'
+      - name: Test Vela adapter
+        run: pytest -m requires_vela tests/engines/test_timing_vela_engine.py

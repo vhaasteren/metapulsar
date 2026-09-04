@@ -11,7 +11,10 @@ from metapulsar.pint_helpers import resolve_parameter_alias
 class TestMetaPulsarDesignMatrix:
     """Design matrix behavior using MockLibstempo -> Enterprise pipeline."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_metapulsar):
+        """An autouse fixture rather than ``setup_method``: MetaPulsar needs
+        retained pta_files, which ``mock_metapulsar`` writes under tmp_path."""
         self.pulsars = {
             "test_pta1": create_mock_libstempo(
                 n_toas=30, name="J1857+0943", telescope="test_pta1", seed=10
@@ -20,8 +23,12 @@ class TestMetaPulsarDesignMatrix:
                 n_toas=30, name="J1857+0943", telescope="test_pta2", seed=20
             ),
         }
-        self.composite_mp = MetaPulsar(self.pulsars, combination_strategy="composite")
-        self.consistent_mp = MetaPulsar(self.pulsars, combination_strategy="consistent")
+        self.composite_mp = mock_metapulsar(
+            self.pulsars, combination_strategy="per_pta"
+        )
+        self.consistent_mp = mock_metapulsar(
+            self.pulsars, combination_strategy="shared"
+        )
 
     def test_design_matrix_creation(self):
         """Test that design matrix is created correctly for both strategies."""
@@ -131,14 +138,17 @@ class TestMetaPulsarDesignMatrix:
 
     def test_design_matrix_empty_pulsars(self):
         """Test design matrix with empty pulsar list."""
-        # Empty pulsars should raise an exception
-        with pytest.raises(StopIteration):
-            MetaPulsar({}, combination_strategy="composite")
+        with pytest.raises(
+            ValueError, match="MetaPulsar requires at least one PTA input"
+        ):
+            MetaPulsar({}, combination_strategy="per_pta")
 
     def test_timing_package_detection(self):
-        """Test timing package detection fallback for unknown object types."""
-        assert self.composite_mp._get_timing_package(object()) == "unknown"
-        assert self.consistent_mp._get_timing_package(object()) == "unknown"
+        """Test typed timing-package field on PTA records."""
+        for record in self.composite_mp._pta_data.values():
+            assert self.composite_mp._get_timing_package(record) == "tempo2"
+        for record in self.consistent_mp._pta_data.values():
+            assert self.consistent_mp._get_timing_package(record) == "tempo2"
 
     def test_design_matrix_parameter_mapping(self):
         """Test that parameter mapping works correctly for both strategies."""

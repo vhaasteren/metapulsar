@@ -7,24 +7,14 @@ repos:
     rev: 25.11.0
     hooks: 
       - id: black
-        exclude: ^(pylk-old/|old-rag-code/|src-old/|legacy/|src/metapulsar/legacy/)
+        exclude: ^(pylk-old/|old-rag-code/|src-old/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9
     hooks:
       - id: ruff
         args: ["--fix"]
-        exclude: ^(pylk-old/|old-rag-code/|src-old/|legacy/|src/metapulsar/legacy/)
-
-  # Removing mypy, because it caused problems
-  # - repo: local
-  #   hooks:
-  #     - id: mypy
-  #       name: mypy
-  #       entry: tools/pre-commit/mypy.sh
-  #       language: system
-  #       types: [python]
-  #       exclude: ^(pylk-old/|old-rag-code/|src-old/)
+        exclude: ^(pylk-old/|old-rag-code/|src-old/)
 
   # detect-secrets disabled due to setuptools compatibility issues
   # - repo: https://github.com/Yelp/detect-secrets

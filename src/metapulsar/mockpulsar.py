@@ -1,4 +1,4 @@
-"""Mock libstempo.tempopulsar for testing with Enterprise."""
+"""Mock libstempo.tempopulsar for testing without a tempo2 install."""
 
 import numpy as np
 from loguru import logger
@@ -13,7 +13,7 @@ class MockParameter:
 
 
 class MockLibstempo:
-    """Mock libstempo.tempopulsar with the interface Enterprise expects."""
+    """Mock libstempo.tempopulsar with a libstempo-compatible duck surface."""
 
     def __init__(
         self,
@@ -349,6 +349,69 @@ def create_mock_libstempo(
         include_astrometry=include_astrometry,
         include_spin=include_spin,
     )
+
+
+def write_mock_tim(pulsar, tim_path):
+    """Write a mock pulsar's TOAs as a ``FORMAT 1`` ``.tim``.
+
+    The file describes the same arrival times the mock serves in memory, so a
+    retained par/tim pair is a truthful record of the leg rather than a stub.
+    That matters beyond parsing: ``MetaPulsar._pta_files_available()`` gates
+    file-reloading engines (JUG, Vela) on these files existing, and an empty
+    ``.tim`` would advertise a capability the leg cannot honor.
+    """
+    from pathlib import Path
+
+    lines = ["FORMAT 1"]
+    for index in range(len(pulsar._toas_mjd)):
+        flags = " ".join(
+            f"-{key} {values[index]}"
+            for key, values in pulsar._flag_dict.items()
+            if index < len(values) and str(values[index])
+        )
+        line = (
+            f"mock{index:05d} "
+            f"{pulsar._freqs_hz[index] / 1e6:.6f} "
+            f"{pulsar._toas_mjd[index]:.15f} "
+            f"{pulsar._toaerrs_us[index]:.6f} "
+            f"{pulsar._telescope[index]}"
+        )
+        lines.append(f"{line} {flags}".rstrip())
+    Path(tim_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_mock_pta_files(pulsars, directory):
+    """Materialize ``pta_files`` for mock pulsars, one par/tim pair per PTA.
+
+    :class:`~metapulsar.metapulsar.MetaPulsar` reads every PTA's par from the
+    file it was handed and never re-serializes an engine object, so mock-backed
+    construction has to put the mock's own par on disk first.
+
+    Args:
+        pulsars: ``{pta_name: MockLibstempo}``
+        directory: Destination directory (created if absent).
+
+    Returns:
+        ``{pta_name: {"par_path": ..., "tim_path": ..., "timing_package": ...}}``,
+        ready to pass as ``MetaPulsar(pta_files=...)``.
+    """
+    from pathlib import Path
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    pta_files = {}
+    for pta_name, pulsar in pulsars.items():
+        par_path = directory / f"{pta_name}.par"
+        tim_path = directory / f"{pta_name}.tim"
+        pulsar.savepar(str(par_path))
+        write_mock_tim(pulsar, tim_path)
+        pta_files[pta_name] = {
+            "par_path": par_path,
+            "tim_path": tim_path,
+            "timing_package": "tempo2",
+        }
+    return pta_files
 
 
 def validate_mock_data(toas, residuals, errors, freqs, flags=None):

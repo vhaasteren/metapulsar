@@ -70,10 +70,8 @@ class TestTimFileAnalyzer:
 
     def test_missing_file(self):
         missing_file = self.test_data_dir / "missing.tim"
-        meta = self.analyzer.get_tim_metadata(missing_file)
-
-        assert meta.toa_count == 0
-        assert meta.timespan_days == 0.0
+        with pytest.raises(FileNotFoundError):
+            self.analyzer.get_tim_metadata(missing_file)
 
     def test_short_format1_lines(self):
         """Short FORMAT 1 lines (<80 chars) must be counted as TOAs."""
@@ -167,11 +165,27 @@ INCLUDE file2.tim
             f"FORMAT 1\nINCLUDE missing.tim\n{_tempo2_line(55087.1109722889085)}\n"
         )
         main_file = self._create_test_tim_file("main_missing.tim", main_content)
-        meta = self.analyzer.get_tim_metadata(main_file)
+        with pytest.raises(FileNotFoundError, match="INCLUDE file not found"):
+            self.analyzer.get_tim_metadata(main_file)
 
-        assert meta.toa_count == 1
-        assert meta.timespan_days == 0.0
-        assert any("not found" in w for w in meta.parse_warnings)
+    def test_include_without_filename(self):
+        main_file = self._create_test_tim_file(
+            "include_without_filename.tim", "FORMAT 1\nINCLUDE\n"
+        )
+        with pytest.raises(ValueError, match="INCLUDE command without filename"):
+            self.analyzer.get_tim_metadata(main_file)
+
+    def test_include_target_must_be_file(self):
+        include_dir = self.test_data_dir / "include_dir"
+        include_dir.mkdir()
+        try:
+            main_file = self._create_test_tim_file(
+                "include_directory.tim", "FORMAT 1\nINCLUDE include_dir\n"
+            )
+            with pytest.raises(FileNotFoundError, match="INCLUDE file not found"):
+                self.analyzer.get_tim_metadata(main_file)
+        finally:
+            include_dir.rmdir()
 
     def test_include_circular_reference(self):
         file_a_content = (
@@ -183,10 +197,8 @@ INCLUDE file2.tim
         file_a = self._create_test_tim_file("file_a.tim", file_a_content)
         self._create_test_tim_file("file_b.tim", file_b_content)
 
-        meta = self.analyzer.get_tim_metadata(file_a)
-        assert meta.toa_count >= 1
-        assert meta.timespan_days >= 0.0
-        assert any("Circular INCLUDE" in w for w in meta.parse_warnings)
+        with pytest.raises(RuntimeError, match="Circular INCLUDE detected"):
+            self.analyzer.get_tim_metadata(file_a)
 
     def test_include_same_file_twice(self):
         """Repeated INCLUDE of the same file counts TOAs each time."""
@@ -260,6 +272,36 @@ JUMP 55000 55001
         tim_file = self._create_test_tim_file("comments_only.tim", content)
         meta = self.analyzer.get_tim_metadata(tim_file)
         assert meta.toa_count == 0
+
+    def test_cc_comment_is_not_counted_as_a_toa(self):
+        """A ``CC`` line read as data records a phantom TOA at its freq token."""
+        content = f"""FORMAT 1
+CC ?c062776.align.pazr.30min 1345.999 56522.2190165978952 4.381 g -group EFF
+CC? c062799.align.pazr.30min 1354.224 56522.287303339192132 1.275 g
+C? TIME -1
+Cc055877.align.pazr.30min 2625.499 55995.8838774191826 5.166 g
+CTHE 2007 TOAS may be wrong - the settings were not correct
+   C indented comment
+cc lowercase two-char marker
+{_tempo2_line(55087.1109722889085)}
+{_tempo2_line(55090.1109722889085)}
+"""
+        tim_file = self._create_test_tim_file("cc_comments.tim", content)
+        meta = self.analyzer.get_tim_metadata(tim_file)
+        assert meta.toa_count == 2
+        assert meta.mjd_min == pytest.approx(55087.1109722889085)
+
+    def test_bare_cr_mid_record_does_not_invent_a_toa(self, tmp_path):
+        body = (
+            b"FORMAT 1\n"
+            + _tempo2_line(55087.1109722889085).encode()
+            + b" -padd 0.1\r -group WSRT\n"
+        )
+        tim_file = tmp_path / "cr_mid.tim"
+        tim_file.write_bytes(body)
+        meta = self.analyzer.get_tim_metadata(tim_file)
+        assert meta.toa_count == 1
+        assert meta.mjd_min == pytest.approx(55087.1109722889085)
 
     def test_cache_hit_behavior(self):
         content = f"FORMAT 1\n{_tempo2_line(55087.1109722889085)}\n{_tempo2_line(55090.1109722889085)}\n"

@@ -20,23 +20,23 @@ Complete API documentation for the MetaPulsar package.
 The main class for combining pulsar timing data from multiple PTA collaborations.
 
 ```python
-class MetaPulsar(enterprise.pulsar.BasePulsar):
+class MetaPulsar:
     """Elegant composite pulsar for multi-PTA data combination.
     
     This class combines pulsar timing data from multiple PTA collaborations
     into a unified object suitable for gravitational wave detection analysis.
-    Inherits from enterprise.pulsar.BasePulsar for full Enterprise compatibility.
+    Implements the Enterprise/Discovery pulsar surface by duck typing.
     
     Supports two combination strategies:
-    - "consistent": Astrophysical consistency (modifies par files for consistency)
-    - "composite": Multi-PTA composition (preserves original parameters)
+    - "shared": Share selected timing-model parameters across PTAs
+    - "per_pta": Preserve per-PTA timing-model parameters
     """
     
     def __init__(
         self,
         pulsars,
         *,
-        combination_strategy="consistent",
+        combination_strategy="shared",
         combine_components: List[str] = [
             "astrometry",
             "spindown", 
@@ -44,7 +44,10 @@ class MetaPulsar(enterprise.pulsar.BasePulsar):
             "dispersion",
         ],
         add_dm_derivatives: bool = True,
-        sort=True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
+        pta_files: dict[str, dict] | None = None,
+        clock_dir: str | Path | None = None,
+        sort=False,
     ):
         """Initialize MetaPulsar.
         
@@ -53,18 +56,59 @@ class MetaPulsar(enterprise.pulsar.BasePulsar):
                 - PINT: {pta: (pint_model, pint_toas)}
                 - Tempo2: {pta: tempo2_psr}
             combination_strategy: Strategy for combining PTAs:
-                - "consistent": Astrophysical consistency (modifies par files for consistency)
-                - "composite": Multi-PTA composition (preserves original parameters)
-            combine_components: List of components to make consistent (consistent strategy only):
+                - "shared": Share selected timing-model parameters across PTAs
+                - "per_pta": Preserve per-PTA timing-model parameters
+            combine_components: List of components to share (shared strategy only):
                 - "astrometry": Position and proper motion parameters
                 - "spindown": Spin frequency and derivatives
                 - "binary": Binary orbital parameters
                 - "dispersion": Dispersion measure parameters
                 Defaults to all components
-            add_dm_derivatives: Whether to ensure DM1, DM2 are present (consistent strategy only)
+            add_dm_derivatives: Whether to ensure DM1, DM2 are present (shared strategy only)
+            pta_files: Required, one entry per PTA:
+                {pta: {"par_path": ..., "tim_path": ..., "timing_package": ...}}.
+                Every leg's par text is read from par_path; MetaPulsar never
+                re-serializes an engine object to recover it, so a PTA without a
+                retained par is rejected. create_metapulsar() supplies this.
             sort: Whether to sort data by time
         """
 ```
+
+`MetaPulsar` is a view over the files it is given: prefer
+[`create_metapulsar()`](#create_metapulsar), which retains the engine inputs and
+passes `pta_files` for you. Constructing it directly means supplying those files
+yourself (tests can use `metapulsar.mockpulsar.write_mock_pta_files`).
+
+### Interactive timing evaluation
+
+`MetaPulsar.timing()` opens nltiming's immutable, engine-independent evaluator.
+
+Locked linear vocabulary (see [`design_matrix_terminology.md`](design_matrix_terminology.md)):
+`design_matrix` / \(M\) = delay tangent (fitter sign); `residual_jacobian` /
+\(J=-M\) from the gauge-free residual. The old `waveform_jacobian` noun is
+deleted. The evaluator’s `jacobian(...)` is a **residual Jacobian**, not a
+design matrix.
+
+```python
+timing = metapulsar.timing(
+    engines={"pint": "jug", "tempo2": "jug"},
+    derivative_method="autodiff",
+)
+
+timing.parameters["F0"]       # reference, units, uncertainty, PTA aliases
+evaluation = timing.evaluate({"F0": 1e-10}, frame="delta")
+evaluation.residual_delta     # r(theta) - r(theta_ref), seconds
+evaluation.residuals          # absolute residuals, seconds
+evaluation.delay              # -residual_delta, likelihood convention
+
+scan = timing.scan("TASC", [-0.5, 0.0, 0.5], scale="PB")
+jacobian = timing.jacobian(method="autodiff")  # residual Jacobian J
+fit = timing.fit(["F0", "F1"])
+```
+
+The evaluator and its result objects live in the standalone `nltiming`
+package. MetaPulsar owns only host construction, multi-PTA parameter/session
+mapping, and the convenience constructor.
 
 ### MetaPulsarFactory
 
@@ -77,22 +121,36 @@ class MetaPulsarFactory:
     def create_metapulsar(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
+        use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
+        canonicalize_tim: bool = False,
     ) -> MetaPulsar:
         """Create MetaPulsar using specified combination strategy."""
-    
+
     def create_all_metapulsars(
         self,
         file_data: Dict[str, List[Dict[str, Any]]],
-        combination_strategy: str = "consistent",
+        combination_strategy: str = "shared",
         reference_pta: str = None,
         combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
         add_dm_derivatives: bool = True,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
         parfile_output_dir: Path = None,
+        timfile_output_dir: Path = None,
+        use_pulse_numbers: str = "yes",
+        clock_dir: Path | str | None = None,
+        alignment_policy: AlignmentPolicy | None = None,
+        convert_jump_mjd: bool = False,
+        canonicalize_tim: bool = False,
     ) -> Dict[str, MetaPulsar]:
         """Create MetaPulsars for all pulsars in file_data."""
 ```
@@ -106,32 +164,64 @@ Create a single MetaPulsar object.
 ```python
 def create_metapulsar(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
+    use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
+    alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
+    canonicalize_tim: bool = False,
 ) -> MetaPulsar:
     """Create MetaPulsar using specified combination strategy.
 
     Args:
-        file_data: File data from FileDiscoveryService (should contain data for single pulsar only)
+        file_data: File data from FileDiscovery (should contain data for single pulsar only)
         combination_strategy: Strategy for combining PTAs:
-            - "consistent": Astrophysical consistency (modifies par files for consistency, the default)
-            - "composite": Multi-PTA composition (preserves original parameters, Borg/FrankenStat methods)
-        reference_pta: PTA to use as reference (for consistent strategy). If None, uses first PTA in file_data.
-        combine_components: List of components to make consistent (for consistent strategy).
+            - "shared": Share selected timing-model parameters across PTAs (default)
+            - "per_pta": Preserve per-PTA timing-model parameters
+        reference_pta: PTA to use as reference (for shared strategy). If None, uses first PTA in file_data.
+        combine_components: List of components to share (for shared strategy).
             Defaults to all components: ["astrometry", "spindown", "binary", "dispersion"]
-        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for consistent strategy)
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
+        add_dm_derivatives: Whether to ensure DM1, DM2 are present in all par files (for shared strategy)
+        exclude_from_shared: Canonical parameter names kept PTA-specific even
+            when their component is merged. Defaults to ("DM",).
+        parfile_output_dir: Directory to save shared par files (for shared strategy only).
             If None, par files are not saved to disk.
+        timfile_output_dir: Directory to export standalone canonical engine inputs,
+            as {pulsar}_{pta}.tim. Requires canonicalize_tim=True. These are
+            Tempo2 FORMAT 1 files (INCLUDEs flattened; TIME baked into MJDs;
+            TIME/MODE omitted; TOA names rewritten to toaNNNNN) carrying -pta,
+            -pta_dataset, -timing_package, and (when the release par has JUMP MJD
+            windows) -mjd_jump_pta flags on post-bake SATs. Release-tim MODE is
+            transferred onto the engine .par (absent MODE = no override). If None,
+            they are not saved to disk.
+        use_pulse_numbers: Pulse-number mode: "no", "yes" (default), "reuse", "overwrite".
+            Independent of canonicalize_tim; controls pulse numbers only.
+        clock_dir: Optional directory containing local clock-correction files.
+        alignment_policy: AlignmentPolicy for the multi-PTA common profile.
+            None means AlignmentPolicy(). Passing a policy together with
+            combination_strategy="per_pta" raises ValueError.
+        convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
+            JUMP -mjd_jump_pta {pta}_{k} ... using the same values stamped on
+            the canonical tim. Default False. Requires canonicalize_tim=True.
+        canonicalize_tim: If True, rewrite every release .tim into a
+            dual-engine-reloadable canonical artifact before load. Default
+            False: engines load the release .tim path in place and do not copy
+            its INCLUDE tree (no TIME bake, safe-name rewrite, or
+            -mjd_jump_pta stamps). Opt in explicitly (AEI-DR2/DR3 rebuild
+            scripts do).
 
     Returns:
         MetaPulsar object
 
     Raises:
         ValueError: If no files found, multiple pulsars detected, or invalid parameters
-        RuntimeError: If Enterprise Pulsar creation fails
+        RuntimeError: If PTA timing-record materialization fails
     """
 ```
 
@@ -142,22 +232,40 @@ Create MetaPulsar objects for multiple pulsars.
 ```python
 def create_all_metapulsars(
     file_data: Dict[str, List[Dict[str, Any]]],
-    combination_strategy: str = "consistent",
+    combination_strategy: str = "shared",
     reference_pta: str = None,
     combine_components: List[str] = DEFAULT_COMBINE_COMPONENTS,
     add_dm_derivatives: bool = True,
+    exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
     parfile_output_dir: Path = None,
+    timfile_output_dir: Path = None,
+    use_pulse_numbers: str = "yes",
+    clock_dir: Path | str | None = None,
+    alignment_policy: AlignmentPolicy | None = None,
+    convert_jump_mjd: bool = False,
+    canonicalize_tim: bool = False,
 ) -> Dict[str, MetaPulsar]:
     """Create MetaPulsars for all pulsars in file_data.
 
     Args:
-        file_data: File data from FileDiscoveryService (per data release)
+        file_data: File data from FileDiscovery (per data release)
         combination_strategy: Strategy for combining PTAs
         reference_pta: PTA to use as reference for all pulsars. If None, auto-selects by timespan.
-        combine_components: List of components to make consistent
+        combine_components: List of components to share
         add_dm_derivatives: Whether to ensure DM1, DM2 are present
-        parfile_output_dir: Directory to save consistent par files (for consistent strategy only).
-            If None, par files are not saved to disk. Creates subdirectories for each pulsar.
+        exclude_from_shared: Canonical parameter names kept PTA-specific.
+        parfile_output_dir: Directory to save shared par files (for shared strategy only).
+            If None, par files are not saved to disk. Files are named per pulsar.
+        timfile_output_dir: Directory to export standalone canonical engine
+            inputs, as {pulsar}_{pta}.tim. Requires canonicalize_tim=True. If
+            None, they are not saved to disk.
+        use_pulse_numbers: Pulse-number tracking mode.
+        clock_dir: Optional directory containing local clock-correction files.
+        alignment_policy: Alignment policy for the shared strategy.
+        convert_jump_mjd: If True, rewrite each engine-par JUMP MJD line to
+            JUMP -mjd_jump_pta {pta}_{k} ... Default False. Requires
+            canonicalize_tim=True.
+        canonicalize_tim: Forwarded to each create_metapulsar call. Default False.
 
     Returns:
         Dictionary mapping pulsar names to MetaPulsar objects
@@ -173,7 +281,7 @@ def pta_summary(file_data: Dict[str, List[Dict[str, Any]]]) -> None:
     """Print summary of discovered PTA data.
     
     Args:
-        file_data: File data from FileDiscoveryService
+        file_data: File data from FileDiscovery
     """
 ```
 
@@ -225,25 +333,25 @@ def discover_files(
 
 ### get_pulsar_names_from_file_data
 
-Extract pulsar names from file data using coordinate-based matching.
+Extract B-preferred catalog pulsar names from file data (10″ J2000 position grouping).
 
 ```python
 def get_pulsar_names_from_file_data(
     file_data: Dict[str, List[Dict[str, Any]]]
 ) -> List[str]:
-    """Extract pulsar names from file data using coordinate-based matching.
+    """Extract pulsar names from file data using position-based catalog identity.
     
     Args:
-        file_data: File data from FileDiscoveryService
+        file_data: File data from FileDiscovery
         
     Returns:
-        List of canonical J-names (e.g., 'J0613-0200')
+        List of catalog names (B-preferred when parfiles use B-names, e.g. 'B1855+09')
     """
 ```
 
 ### filter_file_data_by_pulsars
 
-Filter file data to specific pulsars.
+Filter file data to specific pulsars by catalog or path alias.
 
 ```python
 def filter_file_data_by_pulsars(
@@ -253,12 +361,24 @@ def filter_file_data_by_pulsars(
     """Filter file data to specific pulsars.
     
     Args:
-        file_data: File data from FileDiscoveryService
-        pulsar_names: Single pulsar name or list of names (J or B formats accepted)
+        file_data: File data from FileDiscovery
+        pulsar_names: Catalog names (PSRJ/PSR/PSRB) or path-derived aliases
         
     Returns:
         Filtered file data containing only specified pulsars
     """
+```
+
+### discover_pulsars_by_position
+
+Group discovered file pairs by on-sky position (default 10″ at J2000) and catalog identity.
+
+```python
+def discover_pulsars_by_position(
+    file_data: Dict[str, List[Dict[str, Any]]],
+    match_tol_arcsec: float = 10.0,
+) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Returns dict keyed by B-preferred catalog name → PTA → file records."""
 ```
 
 ## Layout Discovery
@@ -315,6 +435,90 @@ def combine_layouts(
 
 ## Parameter Management
 
+### AlignmentPolicy
+
+Policy for the multi-PTA `shared` combination strategy. This is the only
+user-facing knob on the cross-engine alignment; everything else in the profile
+is fixed, because only that combination is validated for residual parity.
+
+```python
+from metapulsar import AlignmentPolicy
+
+
+@dataclass(frozen=True)
+class AlignmentPolicy:
+    unsupported: Literal["strip", "error"] = "strip"
+    ephem: str | None = None
+    clock: str | None = None
+    bipm_version: int | None = None
+    ne_sw: float | None = None
+
+    # Gated ELL1-family -> DD/DDH conversion (mixed PINT+Tempo2 only)
+    binary_conversion: Literal["auto", "off", "always"] = "auto"
+    binary_conversion_threshold_s: float = 1e-9
+    unsupported_binary: Literal["error", "keep"] = "error"
+    binary_fidelity_floor_s: float = 1e-10
+    binary_fidelity_tolerance_factor: float = 1.0
+    h3_only: Literal["error", "sample_stigma"] = "error"
+    stigma_central: float | None = None
+    stigma_provenance: str | None = None
+```
+
+| Field | Meaning |
+|-------|---------|
+| `unsupported` | `"strip"` (default) removes deterministic families outside the common PINT/Tempo2 surface, logging a warning that names the PTA and every removed key. `"error"` raises `ValueError` listing every offender instead. |
+| `ephem` | Override the reference PTA's `EPHEM`. Required when no PTA declares one. |
+| `clock` | Override the reference PTA's `CLOCK`/`CLK`. Required when no PTA declares one. |
+| `bipm_version` | Year used to resolve a bare `TT(BIPM)`, which is otherwise ambiguous across environments and raises. A dated clock that disagrees with this year also raises. |
+| `ne_sw` | Override the resolved constant solar-wind density in cm⁻³. Without it: the reference PTA's explicit `NE_SW`/`NE1AU`/`SOLARN0`, else `4` when Tempo2 is in the stack, else no line. |
+| `binary_conversion` | `"auto"` (default) rewrites a shared ELL1-family binary to `DD`/`DDH` only when the scale gate fires; `"off"` never classifies or converts; `"always"` bypasses the threshold but **never** widens the supported family set. |
+| `binary_conversion_threshold_s` | Scale gate on `a1_max·e_max² + ½·n_b·a1_max²·e_max`, in seconds. Must be finite and > 0. This is a *scale gate*, not a predicted residual. |
+| `unsupported_binary` | What to do when the gate fires on a family outside the supported sets (ELL1k, `FB` series, ELL1H domain violation, H4 tail above threshold, H3-only under the default `h3_only`, unknown span, unsupported fit pattern). `"error"` (default) raises `BinaryConversionError` with the reason and a remediation list; `"keep"` warns, records the decision, and proceeds unconverted. |
+| `binary_fidelity_floor_s` | Absolute floor of the mandatory delay-fidelity tolerance. Must be finite and > 0. |
+| `binary_fidelity_tolerance_factor` | Multiplier on every delay-fidelity tolerance (Roemer, Shapiro, total) after the derived budget and floor. Default `1.0` is unchanged behaviour; `> 1` loosens (e.g. `1.05` for +5%), `(0, 1)` tightens. Does not alter the scale gate or the conversion map. Must be finite and > 0. |
+| `h3_only` | ELL1H sources carrying `H3` but neither `STIGMA` nor `H4`. `"error"` (default) refuses: no fixed ς is determined by such a par. `"sample_stigma"` converts at `stigma_central` and marks `required_sampling=("STIGMA",)` — the emitted ς is a **prior center, never a measurement**, and the analysis must sample it (or use a proper z-prior). |
+| `stigma_central` | Prior-central ς in (0, 1] for `h3_only="sample_stigma"`. Required by, and only valid with, that mode. |
+| `stigma_provenance` | Free-text provenance for `stigma_central` (e.g. `"mass-function closure, m_p=1.4"`), copied into the conversion record and the emitted par comment. Required by, and only valid with, `"sample_stigma"`. |
+
+Constructor validation: `unsupported` must be `"strip"` or `"error"`; `ne_sw`
+must be non-negative; `binary_conversion_threshold_s`,
+`binary_fidelity_floor_s`, and `binary_fidelity_tolerance_factor` must be
+finite and > 0; and `stigma_central`/`stigma_provenance` may be set only when
+`h3_only="sample_stigma"` (which in turn requires both).
+
+Conversion applies only to `shared` stacks that carry **both** PINT and Tempo2
+and share `"binary"`; single-engine, non-shared-binary, and `per_pta` stacks are
+never converted. The result is reachable as
+`MetaPulsar.binary_conversion_report` (and `MetaPulsar.conversion_metadata()`
+for the nltiming STIGMA contract), reset on every materialization.
+
+The policy applies only to `combination_strategy="shared"`. Passing it with
+`"per_pta"` raises `ValueError` rather than being silently ignored; the
+per-PTA strategy exists precisely to preserve engine-native models.
+
+```python
+# Default: strip unsupported deterministic terms with a warning.
+mp = create_metapulsar(files, combination_strategy="shared")
+
+# Fail instead of stripping.
+mp = create_metapulsar(
+    files,
+    combination_strategy="shared",
+    alignment_policy=AlignmentPolicy(unsupported="error"),
+)
+
+# Pin the reference conventions explicitly.
+mp = create_metapulsar(
+    files,
+    combination_strategy="shared",
+    alignment_policy=AlignmentPolicy(
+        ephem="DE440",
+        clock="TT(BIPM2023)",
+        ne_sw=4.0,
+    ),
+)
+```
+
 ### ParameterManager
 
 Manages parameter consistency across PTAs.
@@ -322,7 +526,7 @@ Manages parameter consistency across PTAs.
 ```python
 class ParameterManager:
     """Manages parameter consistency and mapping across PTAs."""
-    
+
     def __init__(
         self,
         file_data: Dict[str, Dict[str, Any]],
@@ -330,9 +534,17 @@ class ParameterManager:
         add_dm_derivatives: bool = True,
         output_dir: Path = None,
         pulsar_name: str = None,
+        exclude_from_shared: List[str] | tuple[str, ...] = ("DM",),
+        alignment_policy: AlignmentPolicy | None = None,
     ):
         """Initialize parameter manager with file data and configuration."""
 ```
+
+`ParameterManager.ell1h_shapiro` reports which orthometric Shapiro expression
+PINT should evaluate for this stack: `"absorbed"` (Freire & Wex 2010, Eq. 28)
+for mixed PINT+Tempo2 stacks, `"full"` (PINT's default, Eq. 29) otherwise. The
+factory passes it to `get_model_and_toas` so materialization matches the
+temporary models built during alignment.
 
 ### ParameterMapping
 
@@ -396,6 +608,17 @@ class PINTDiscoveryError(Exception):
     """Raised when PINT model discovery fails."""
 ```
 
+```python
+class FileSelectionError(ValueError):
+    """Raised when a release layout cannot name exactly one file for a pulsar."""
+
+class AmbiguousFileError(FileSelectionError):
+    """Several release files match one pulsar with equal precedence."""
+
+class MissingOverrideError(FileSelectionError):
+    """A release override names a file that is not on disk."""
+```
+
 ## Constants
 
 ### PTA_DATA_RELEASES
@@ -410,11 +633,27 @@ Contains regex patterns and directory structures for:
 - EPTA DR1 v2.2
 - EPTA DR2
 - InPTA DR1
+- InPTA DR2
 - MPTA DR1
+- MPTA DR2
 - NANOGrav 9-year
 - NANOGrav 12-year
 - NANOGrav 15-year
 - PPTA DR1+DR2
+- PPTA DR3
+
+Each release spec has four required keys (`base_dir`, `par_pattern`, `tim_pattern`,
+`timing_package`) and four optional selection keys, used when a release ships more than
+one par or tim per pulsar:
+
+- `par_precedence` / `tim_precedence` — ordered selectors, first match wins. An entry is
+  a regex string, or `{"pattern": ..., "timing_package": ...}` to apply only when the
+  spec's `timing_package` matches. Rules must be mutually disjoint.
+- `par_overrides` / `tim_overrides` — `{pulsar_name: release-relative path}`. Highest
+  precedence, may name a file the pattern does not match, and must exist on disk.
+
+When several files remain tied at the best rank, discovery raises `AmbiguousFileError`
+rather than picking one.
 
 ## Data Structures
 
@@ -426,10 +665,18 @@ The standard file data format used throughout MetaPulsar:
 file_data = {
     "pta_name": [
         {
-            "par": "path/to/file.par",
-            "tim": "path/to/file.tim", 
+            "par": Path("path/to/file.par"),
+            "tim": Path("path/to/file.tim"),
             "timing_package": "tempo2",  # or "pint"
-            "parfile_content": "par file content as string",  # optional
+            "par_content": "par file content as string",
+            "tim_metadata": TimMetadata(...),
+            "par_selection": {           # how the par was chosen
+                "chosen": Path(...),
+                "candidates": [Path(...), ...],
+                "reason": "sole",        # or "precedence" / "override"
+                "rule": None,            # matched pattern or override string
+            },
+            "tim_selection": {...},      # same shape
         }
     ]
 }

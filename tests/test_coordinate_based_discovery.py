@@ -13,9 +13,10 @@ import astropy.units as u
 from astropy.coordinates import Angle
 from pint.models.model_builder import ModelBuilder
 
-from metapulsar.file_discovery_service import FileDiscoveryService
+from metapulsar.file_discovery import FileDiscovery
 from metapulsar.position_helpers import (
     bj_name_from_pulsar,
+    discover_pulsars_by_position,
     discover_pulsars_by_coordinates_optimized,
 )
 from metapulsar.metapulsar import MetaPulsar
@@ -26,9 +27,9 @@ from tests.helpers import make_tim_metadata
 
 
 @pytest.fixture
-def mock_file_discovery_service():
-    """Mock FileDiscoveryService with test configurations."""
-    service = FileDiscoveryService(pta_data_releases={})  # Start with empty config
+def mock_file_discovery():
+    """Mock FileDiscovery with test configurations."""
+    service = FileDiscovery(pta_data_releases={})  # Start with empty config
     service.add_data_release(
         "test_data_release1",
         {
@@ -169,75 +170,45 @@ class TestCoordinateBasedDiscovery:
         self,
         mock_model_builder_class,
         mock_parse_parfile,
-        mock_file_discovery_service,
+        mock_file_discovery,
         mock_file_system,
     ):
-        """Test coordinate-based pulsar discovery."""
-        # Mock parse_parfile to return a dictionary
-        mock_par_dict = {
-            "PSRJ": ["J1857+0943"],
-            "RAJ": ["18:57:36.3906121"],
-            "DECJ": ["+09:43:17.20714"],
-            "F0": ["186.494081"],
+        """Test position-based pulsar discovery merges B/J catalog aliases."""
+        file_data = {
+            "test_data_release1": [
+                {
+                    "par": mock_file_system / "data1" / "J1857+0943.par",
+                    "tim": mock_file_system / "data1" / "J1857+0943.tim",
+                    "par_content": (
+                        mock_file_system / "data1" / "J1857+0943.par"
+                    ).read_text(),
+                    "timing_package": "pint",
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                }
+            ],
+            "test_data_release2": [
+                {
+                    "par": mock_file_system / "data2" / "B1855+09.par",
+                    "tim": mock_file_system / "data2" / "B1855+09.tim",
+                    "par_content": (
+                        mock_file_system / "data2" / "B1855+09.par"
+                    ).read_text(),
+                    "timing_package": "pint",
+                    "tim_metadata": make_tim_metadata(timespan_days=1000.0),
+                }
+            ],
         }
-        mock_parse_parfile.return_value = mock_par_dict
+        coordinate_map = discover_pulsars_by_position(file_data)
 
-        # Mock ModelBuilder to return a TimingModel-like object with components
-        mock_model = self._create_mock_model_with_components()
-        mock_model_builder = Mock()
-        mock_model_builder.return_value = mock_model
-        mock_model_builder_class.return_value = mock_model_builder
-
-        # Update registry with real paths
-        mock_file_discovery_service.data_releases["test_data_release1"]["base_dir"] = (
-            str(mock_file_system / "data1")
-        )
-        mock_file_discovery_service.data_releases["test_data_release2"]["base_dir"] = (
-            str(mock_file_system / "data2")
-        )
-
-        # factory = MetaPulsarFactory()
-
-        # Mock the coordinate extraction
-        with patch("metapulsar.position_helpers.bj_name_from_pulsar") as mock_bj_name:
-            mock_bj_name.side_effect = lambda model, name_type: (
-                "J1857+0943" if name_type == "J" else "B1855+09"
-            )
-
-            # Create file_data format expected by the method
-            file_data = {
-                "test_data_release1": [
-                    {
-                        "par": mock_file_system / "data1" / "J1857+0943.par",
-                        "tim": mock_file_system / "data1" / "J1857+0943.tim",
-                        "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
-                        "timing_package": "pint",
-                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
-                    }
-                ],
-                "test_data_release2": [
-                    {
-                        "par": mock_file_system / "data2" / "J1857+0943.par",
-                        "tim": mock_file_system / "data2" / "J1857+0943.tim",
-                        "par_content": "PSR J1857+0943\nRAJ 18:57:36.4\nDECJ 09:43:17.1\n",
-                        "timing_package": "pint",
-                        "tim_metadata": make_tim_metadata(timespan_days=1000.0),
-                    }
-                ],
-            }
-            coordinate_map = discover_pulsars_by_coordinates_optimized(file_data)
-
-            # Should find both PTAs have the same pulsar
-            assert "J1857+0943" in coordinate_map
-            pulsar_info = coordinate_map["J1857+0943"]
-            assert "test_data_release1" in pulsar_info
-            assert "test_data_release2" in pulsar_info
-            # Check that both PTAs have file data
-            assert len(pulsar_info["test_data_release1"]) > 0
-            assert len(pulsar_info["test_data_release2"]) > 0
+        assert "B1855+09" in coordinate_map
+        pulsar_info = coordinate_map["B1855+09"]
+        assert "test_data_release1" in pulsar_info
+        assert "test_data_release2" in pulsar_info
+        assert len(pulsar_info["test_data_release1"]) > 0
+        assert len(pulsar_info["test_data_release2"]) > 0
 
     def test_create_metapulsar_with_canonical_name(
-        self, mock_file_discovery_service, mock_file_system
+        self, mock_file_discovery, mock_file_system, mock_metapulsar
     ):
         """Test MetaPulsar creation includes canonical name."""
         from metapulsar.mockpulsar import create_mock_libstempo
@@ -260,9 +231,9 @@ class TestCoordinateBasedDiscovery:
                 seed=20,
             ),
         }
-        metapulsar = MetaPulsar(
-            pulsars=adapted_pulsars,
-            combination_strategy="composite",
+        metapulsar = mock_metapulsar(
+            adapted_pulsars,
+            combination_strategy="per_pta",
         )
 
         assert isinstance(metapulsar, MetaPulsar)
@@ -271,10 +242,10 @@ class TestCoordinateBasedDiscovery:
         assert hasattr(metapulsar, "_pulsars")
         assert len(metapulsar._pulsars) == 2
 
-    def test_discover_files_coordinate_matching(self, mock_file_discovery_service):
-        """Test file discovery with coordinate matching using FileDiscoveryService."""
-        # Test that FileDiscoveryService can discover files for a pulsar
-        files = mock_file_discovery_service.discover_files(
+    def test_discover_files_coordinate_matching(self, mock_file_discovery):
+        """Test file discovery with coordinate matching using FileDiscovery."""
+        # Test that FileDiscovery can discover files for a pulsar
+        files = mock_file_discovery.discover_files(
             ["test_data_release1", "test_data_release2"]
         )
 
@@ -282,18 +253,18 @@ class TestCoordinateBasedDiscovery:
         assert "test_data_release1" in files
         assert "test_data_release2" in files
 
-    def test_discover_files_pulsar_not_found(self, mock_file_discovery_service):
-        """Test file discovery when pulsar not found using FileDiscoveryService."""
-        # Test that FileDiscoveryService handles unknown PTAs gracefully
+    def test_discover_files_pulsar_not_found(self, mock_file_discovery):
+        """Test file discovery when pulsar not found using FileDiscovery."""
+        # Test that FileDiscovery handles unknown PTAs gracefully
         with pytest.raises(KeyError):
-            mock_file_discovery_service.discover_files(["unknown_pta"])
+            mock_file_discovery.discover_files(["unknown_pta"])
 
 
 class TestEdgeCases:
     """Test edge cases and error conditions."""
 
     def test_coordinate_discovery_with_malformed_parfile(
-        self, mock_file_discovery_service, mock_file_system
+        self, mock_file_discovery, mock_file_system
     ):
         """Test coordinate discovery handles malformed parfiles gracefully."""
         # Create malformed parfile
@@ -301,8 +272,8 @@ class TestEdgeCases:
         malformed_par.write_text("This is not a valid parfile")
 
         # Update the mock service with the test directory
-        mock_file_discovery_service.data_releases["test_data_release1"]["base_dir"] = (
-            str(mock_file_system / "data1")
+        mock_file_discovery.data_releases["test_data_release1"]["base_dir"] = str(
+            mock_file_system / "data1"
         )
 
         # factory = MetaPulsarFactory()
@@ -338,18 +309,37 @@ class TestEdgeCases:
 # === INTEGRATION TESTS ===
 
 
-def test_discover_pulsars_different_posepoch_match(load_parfile_text):
-    """Test that pulsars with correct positions at different POSEPOCH are matched correctly.
+def test_discover_pulsars_same_j2000_position_merge(load_parfile_text):
+    """Two PTAs with identical parfiles merge into one catalog-named group."""
+    parfile = load_parfile_text("test_same_pulsar_epoch1_54500.par")
 
-    Uses generated parfiles with correct positions at each epoch (reflecting proper motion),
-    which should normalize to the same J2000 position and match.
+    file_data = {
+        "PTA1": [
+            {
+                "par": "test1.par",
+                "par_content": parfile,
+                "tim": "test1.tim",
+            }
+        ],
+        "PTA2": [
+            {
+                "par": "test2.par",
+                "par_content": parfile,
+                "tim": "test2.tim",
+            }
+        ],
+    }
 
-    Note: This is an integration test for the discovery system. The unit test for normalization
-    logic is in test_position_helpers.py::test_same_pulsar_different_posepoch_produces_same_j_name
-    """
-    # Use generated parfiles with correct positions at different epochs
-    # These have different positions at different POSEPOCH but same PM,
-    # so they normalize to the same J2000 position
+    coordinate_map = discover_pulsars_by_position(file_data)
+    assert len(coordinate_map) == 1
+    group_name = next(iter(coordinate_map))
+    assert len(coordinate_map[group_name]) == 2
+
+
+def test_discover_pulsars_same_catalog_name_over_tolerance_raises(
+    load_parfile_text,
+):
+    """Same PSRJ on files with J2000 separation > match tolerance is a hard error."""
     parfile_epoch1 = load_parfile_text("test_same_pulsar_epoch1_54500.par")
     parfile_epoch2 = load_parfile_text("test_same_pulsar_epoch2_56000.par")
 
@@ -370,66 +360,5 @@ def test_discover_pulsars_different_posepoch_match(load_parfile_text):
         ],
     }
 
-    coordinate_map = discover_pulsars_by_coordinates_optimized(file_data)
-
-    # Should match as same pulsar despite different POSEPOCH
-    # (because positions are correctly different at each epoch, normalizing to same J2000)
-    assert len(coordinate_map) == 1, "Should match as single pulsar"
-    assert "J1857+0943" in coordinate_map
-    pulsar_data = coordinate_map["J1857+0943"]
-    assert len(pulsar_data) == 2, "Both PTAs should be matched"
-    assert "PTA1" in pulsar_data, "PTA1 should be in matched pulsar data"
-    assert "PTA2" in pulsar_data, "PTA2 should be in matched pulsar data"
-
-
-def test_discover_pulsars_same_position_different_posepoch_should_not_match(
-    load_parfile_text,
-):
-    """Test that parfiles with identical positions but different POSEPOCH and PM should NOT match.
-
-    This tests the error case: if someone incorrectly provides the same position at different
-    epochs when proper motion exists, they normalize to different J2000 positions and should
-    be discovered as separate pulsars.
-
-    Uses very large PM values (15000 mas/yr) for testing to ensure coordinate difference > 1 arcmin,
-    which produces different J-names and allows the discovery system to correctly separate them.
-
-    The unit test for this normalization behavior is in
-    test_position_helpers.py::test_same_position_different_posepoch_with_pm_should_not_match
-    """
-    # Use generated parfiles with same position at different POSEPOCH
-    parfile_epoch1 = load_parfile_text("test_same_position_large_pm_epoch1_54500.par")
-    parfile_epoch2 = load_parfile_text("test_same_position_large_pm_epoch2_56000.par")
-
-    # Test discovery system behavior
-    file_data = {
-        "PTA1": [
-            {
-                "par": "test1.par",
-                "par_content": parfile_epoch1,
-                "tim": "test1.tim",
-            }
-        ],
-        "PTA2": [
-            {
-                "par": "test2.par",
-                "par_content": parfile_epoch2,
-                "tim": "test2.tim",
-            }
-        ],
-    }
-
-    coordinate_map = discover_pulsars_by_coordinates_optimized(file_data)
-
-    # With large PM (15000 mas/yr), coordinate difference is > 1 arcmin,
-    # so J-names should differ and they should be discovered as separate pulsars
-    assert (
-        len(coordinate_map) == 2
-    ), "Should discover as two separate pulsars when same position at different POSEPOCH with large PM"
-
-    # Verify they have different J-names
-    j_names = list(coordinate_map.keys())
-    assert len(j_names) == 2, f"Should have two different J-names, got: {j_names}"
-    assert (
-        j_names[0] != j_names[1]
-    ), f"J-names should differ: {j_names[0]} == {j_names[1]}"
+    with pytest.raises(ValueError, match="distinct sky positions"):
+        discover_pulsars_by_position(file_data)

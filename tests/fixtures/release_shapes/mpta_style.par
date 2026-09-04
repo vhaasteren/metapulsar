@@ -1,0 +1,43 @@
+# Development PINT shape: non-constant solar wind, DMWaveX, WaveX, chromatic CM.
+PSR              J1600-3053
+EPHEM            DE440
+CLOCK            TT(BIPM2021)
+UNITS            TDB
+ELONG            244.347677 1
+ELAT             -10.071873 1
+PMELONG          -0.35 1
+PMELAT           -7.0 1
+ECL              IERS2003
+POSEPOCH         55000
+F0               277.937 1
+F1               -7.3e-16 1
+PEPOCH           55000
+DM               52.3
+DMEPOCH          55000
+NE_SW            5.0
+NE_SW1           0.1
+SWM              1
+SWP              2.0
+SWEPOCH          55000
+SWXDM_0001       0.01 1
+SWXR1_0001       54500.0
+SWXR2_0001       54600.0
+DMWXEPOCH        55000
+DMWXFREQ_0001    0.0002
+DMWXSIN_0001     1e-05 1
+DMWXCOS_0001     2e-05 1
+WXEPOCH          55000
+WXFREQ_0001      0.0002
+WXSIN_0001       1e-08 1
+WXCOS_0001       2e-08 1
+CM               0.5 1
+CMEPOCH          55000
+CMX_0001         0.01 1
+BINARY           ELL1
+PB               14.348466 1
+A1               8.801653 1
+TASC             55000.0 1
+EPS1             1.7e-05 1
+EPS2             -9.1e-06 1
+TNRedAmp         -14.2
+TNRedGam         3.1
