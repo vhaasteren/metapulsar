@@ -45,6 +45,7 @@ def _linear_model():
     )
 
 
+@pytest.mark.requires_jug
 def test_jug_engine_is_jax_traceable():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp

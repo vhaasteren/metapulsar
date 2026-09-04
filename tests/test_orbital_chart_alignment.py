@@ -59,6 +59,7 @@ def _fb0_line(text):
     return next(line for line in text.splitlines() if line.split()[0] == "FB0")
 
 
+@pytest.mark.requires_wide_longdouble
 def test_hybrid_is_aligned():
     out, changed = _align(HYBRID)
     assert changed is True
@@ -71,6 +72,7 @@ def test_hybrid_is_aligned():
     assert np.longdouble(tokens[3]) == sigma_pb / (np.longdouble(86400) * pb * pb)
 
 
+@pytest.mark.requires_wide_longdouble
 def test_tab_separated_par_is_aligned():
     """Published par files use tabs; a space-anchored pattern silently misses."""
     out, changed = _align(HYBRID_TABS)
@@ -78,6 +80,7 @@ def test_tab_separated_par_is_aligned():
     assert len(_fb0_line(out).split()) == 3  # no uncertainty column to carry
 
 
+@pytest.mark.requires_wide_longdouble
 def test_alignment_is_idempotent():
     once, first = _align(HYBRID)
     twice, second = _align(once)
@@ -85,6 +88,7 @@ def test_alignment_is_idempotent():
     assert twice == once
 
 
+@pytest.mark.requires_wide_longdouble
 def test_alignment_touches_exactly_one_line():
     """Relabel discipline: UNITS, BINARY, TASC, EPS*, FBn all untouched."""
     before, after = HYBRID.splitlines(), _align(HYBRID)[0].splitlines()
@@ -103,6 +107,7 @@ def test_par_already_agreeing_with_its_model_is_returned_unchanged(text, package
     assert out is text
 
 
+@pytest.mark.requires_wide_longdouble
 def test_alignment_applies_to_pint_backed_pars_too():
     """Invariant 3: align every par. A hybrid PINT-backed reference would
     otherwise reintroduce PB as the shared binary chart."""
@@ -118,6 +123,7 @@ def test_tempo2_non_fb_capable_binary_model_raises(model_name):
         _align(text, timing_package="tempo2", model_text=HYBRID)
 
 
+@pytest.mark.requires_wide_longdouble
 @pytest.mark.parametrize("model_name", ["ELL1H", "DD"])
 def test_pint_backed_non_fb_capable_model_is_allowed(model_name):
     """PINT evaluates FBX for any binary model; the guard is tempo2-specific."""
@@ -174,6 +180,7 @@ def test_formatter_is_exact_over_random_longdoubles():
         assert np.longdouble(format_longdouble_par_value(x)) == x
 
 
+@pytest.mark.requires_wide_longdouble
 @pytest.mark.parametrize(
     "rejected",
     [
@@ -212,6 +219,7 @@ def _pm(**pta_texts):
     )
 
 
+@pytest.mark.requires_wide_longdouble
 def test_release_par_content_is_never_mutated():
     """Invariant 1. The single most important thing to keep true."""
     pm = _pm(PPTA=HYBRID)
@@ -221,6 +229,7 @@ def test_release_par_content_is_never_mutated():
     assert pm._get_parfile_content("PPTA") == HYBRID
 
 
+@pytest.mark.requires_wide_longdouble
 def test_engine_parfiles_writes_only_what_changed(tmp_path):
     """Invariant 5."""
     from metapulsar.parameter_manager import ParameterManager
@@ -255,6 +264,7 @@ def test_engine_parfiles_writes_only_what_changed(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.requires_wide_longdouble
 def test_shared_merge_is_reference_order_independent():
     """The latent ordering bug: MPTA+PPTA built, PPTA+MPTA raised.
 
@@ -275,6 +285,7 @@ def test_shared_merge_is_reference_order_independent():
             )
 
 
+@pytest.mark.requires_wide_longdouble
 def test_shared_merge_aligns_hybrid_pint_reference():
     """Invariant 3 / poison-pill case: hybrid reference with timing_package=pint.
 

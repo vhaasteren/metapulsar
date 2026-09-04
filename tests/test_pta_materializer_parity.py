@@ -127,6 +127,7 @@ def test_golden_fixtures_load_without_pickle():
     assert "enterprise_version" in manifest
 
 
+@pytest.mark.requires_wide_longdouble
 def test_pint_equatorial_parity():
     model, toas = get_model_and_toas(
         str(SAMPLE_DIR / "simple.par"),
@@ -137,6 +138,7 @@ def test_pint_equatorial_parity():
     _assert_record_parity(record, _load_fixture("pint_equatorial.npz"))
 
 
+@pytest.mark.requires_wide_longdouble
 def test_pint_ecliptic_parity():
     model, toas = get_model_and_toas(
         str(PULSE_DIR / "nanograv_like.par"),
@@ -147,6 +149,7 @@ def test_pint_ecliptic_parity():
     _assert_record_parity(record, _load_fixture("pint_ecliptic.npz"))
 
 
+@pytest.mark.requires_wide_longdouble
 def test_tempo2_mock_equatorial_parity():
     mock = create_mock_libstempo(
         n_toas=30, name="J1857+0943", telescope="pta_a", seed=10
@@ -155,6 +158,7 @@ def test_tempo2_mock_equatorial_parity():
     _assert_record_parity(record, _load_fixture("tempo2_mock_equatorial.npz"))
 
 
+@pytest.mark.requires_wide_longdouble
 def test_metapulsar_public_surface_parity(mock_metapulsar):
     pulsars = {
         "pta_a": create_mock_libstempo(

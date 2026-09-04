@@ -389,6 +389,7 @@ class TestGlsUpdateAndWritePar:
         assert "# reference_pta: nanograv_9y" not in body
 
     @pytest.mark.slow
+    @pytest.mark.requires_wide_longdouble
     def test_reverted_parameters_are_left_byte_identical(self, tmp_path):
         """A parameter reverted by PINT validate() must not reach the transplant."""
         import numpy as np

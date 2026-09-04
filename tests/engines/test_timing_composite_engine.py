@@ -186,7 +186,9 @@ def test_mapped_but_unevaluable_param_uses_exact_linear_design_column():
     np.testing.assert_allclose(exact_backend.design_matrix()[:, 1], [10.0, 11.0])
 
 
+@pytest.mark.requires_jug
 def test_composite_keeps_jug_effective_exact_linear_column():
+    pytest.importorskip("jax")
     model = LinearModel.from_design(
         fitpars=("PB", "JUMP"),
         design=np.array([[2.0, 10.0], [3.0, 11.0]], dtype=float),

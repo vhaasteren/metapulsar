@@ -17,6 +17,31 @@ def pytest_addoption(parser):
     )
 
 
+def _has_wide_longdouble() -> bool:
+    """True when np.longdouble is strictly wider than float64 (80-bit or quad)."""
+    return np.finfo(np.longdouble).eps < np.finfo(np.float64).eps
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip wide-longdouble tests on platforms where longdouble aliases float64.
+
+    GitHub macOS and host CPython cannot compute hybrid PB→FB0 (or match
+    extended-precision goldens) without silently losing ~10 ns of orbital
+    phase. Ubuntu CI and the project devcontainer keep these tests.
+    """
+    if _has_wide_longdouble():
+        return
+    skip_wide = pytest.mark.skip(
+        reason=(
+            "np.longdouble is not wider than float64 on this platform; "
+            "run these tests in the project devcontainer"
+        )
+    )
+    for item in items:
+        if item.get_closest_marker("requires_wide_longdouble"):
+            item.add_marker(skip_wide)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def suppress_sandbox_tempo2_debug_logs(request):
     """Reduce sandbox tempo2 logging noise during tests.

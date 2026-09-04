@@ -75,6 +75,7 @@ def test_linearized_leaf_engines_sign_contract():
         _assert_sign_contract(eng)
 
 
+@pytest.mark.requires_jug
 def test_jug_engine_exact_linear_sign_contract():
     pytest.importorskip("jax")
     model = _model(("PB", "Offset"), n=3)

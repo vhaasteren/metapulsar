@@ -29,6 +29,7 @@ def test_linearized_jug_residual_jacobian_is_minus_m():
     np.testing.assert_allclose(eng.residual_jacobian(), -model.design)
 
 
+@pytest.mark.requires_jug
 def test_jug_engine_residual_jacobian_matches_jacfwd():
     pytest.importorskip("jax")
     import jax
@@ -65,6 +66,7 @@ def test_jug_engine_residual_jacobian_matches_jacfwd():
     np.testing.assert_allclose(-J, engine.design_matrix(), atol=1e-12)
 
 
+@pytest.mark.requires_jug
 def test_ecliptic_zero_column_guard():
     pytest.importorskip("jax")
     model = LinearModel.from_design(

@@ -1159,6 +1159,7 @@ def test_t21_report_lifecycle(tmp_path):
 
 
 @slow
+@pytest.mark.requires_wide_longdouble
 def test_t30_harmonic_identity():
     from pint.models.stand_alone_psr_binaries.ELL1H_model import ELL1Hmodel
     import astropy.units as u
@@ -1997,6 +1998,7 @@ def test_ddh_patch_propagates_uncertainties_through_the_map():
 
 
 @slow
+@pytest.mark.requires_libstempo
 def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
     """The required-sampling channel must survive the whole factory path, not just the unit.
 
@@ -2005,6 +2007,7 @@ def test_factory_exposes_conversion_metadata_end_to_end(tmp_path):
     ``create_metapulsar`` actually answers ``conversion_metadata()`` — which is
     the exact call nltiming's ``for_pulsar`` makes.
     """
+    pytest.importorskip("libstempo")
     from metapulsar import create_metapulsar
 
     par = COMMON_HEAD + (

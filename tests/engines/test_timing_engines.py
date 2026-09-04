@@ -192,7 +192,7 @@ def test_jug_engine_jax_surface_and_precision_metadata():
     assert engine.compatibility == "tempo2"
     assert engine.precision_critical_fitpars() == frozenset({"F0"})
 
-    jnp = __import__("jax.numpy", fromlist=["*"])
+    jnp = pytest.importorskip("jax.numpy")
     delta = jnp.asarray([0.1, 0.3], dtype=jnp.float64)
     np.testing.assert_allclose(
         np.asarray(engine.residual_delta_jax(delta)),
@@ -202,18 +202,23 @@ def test_jug_engine_jax_surface_and_precision_metadata():
 
 
 def test_native_engines_wrap_engines_with_pulsar_metadata():
+    from importlib.util import find_spec
+
     model = _linear_model()
     engines = [
         PintEngine(engine=_FakeDeltaEngine(), linear_model=model),
         LibstempoEngine(engine=_FakeDeltaEngine(), linear_model=model),
-        JugEngine(state=_FakeJaxState(), linear_model=model),
     ]
+    if find_spec("jax") is not None:
+        engines.append(JugEngine(state=_FakeJaxState(), linear_model=model))
     for engine in engines:
         _assert_linear_tangent(engine)
         assert engine.reference_theta_exact()["F0"] == "1234.567890123456789"
 
 
+@pytest.mark.requires_jug
 def test_jug_engine_adds_exact_linear_to_numpy_and_jax_paths():
+    pytest.importorskip("jax")
     model = LinearModel.from_design(
         fitpars=("PB", "Offset"),
         design=np.array(
@@ -257,6 +262,7 @@ def test_jug_engine_adds_exact_linear_to_numpy_and_jax_paths():
     np.testing.assert_allclose(engine.residual_jacobian(), -model.design)
 
 
+@pytest.mark.requires_jug
 def test_jug_engine_converts_astrometry_fit_units_to_native():
     """RAJ/DECJ deltas are scaled from pulsar fit units to JUG native radians.
 

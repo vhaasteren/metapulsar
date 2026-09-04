@@ -149,5 +149,6 @@ markers = [
     "requires_ipta_data: marks tests that need IPTA data files present",
     "requires_enterprise: marks tests that need enterprise-pulsar installed",
     "requires_vela: marks tests that need pyvela/Julia Vela backend",
+    "requires_wide_longdouble: marks tests that need np.longdouble wider than float64",
     "jug_numpy_jax_parity_deprecated: TEMPORARY — compares deprecated NumPy residual path to JAX; remove after JAX migration",
 ]

@@ -106,13 +106,14 @@ def test_numpy_and_jax_host_only_fallback_errors_match():
     delta = np.array([0.0, 1.0], dtype=float)
     with pytest.raises(ValueError, match="no pulsar design matrix"):
         engine.residual_delta(delta)
-    import jax.numpy as jnp
+    jnp = pytest.importorskip("jax.numpy")
 
     with pytest.raises(ValueError, match="no pulsar design matrix"):
         engine.residual_delta_jax(jnp.asarray(delta))
 
 
 @pytest.mark.slow
+@pytest.mark.requires_jug
 def test_pulsar_jax_engine_exposes_residual_jacobian():
     pytest.importorskip("jax")
     leaf = LinearizedJugEngine.from_linear_model(
