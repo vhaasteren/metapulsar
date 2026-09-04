@@ -30,11 +30,21 @@ jobs:
       - name: Configure JuliaCall
         run: |
           echo "PYTHON_JULIACALL_EXE=$(command -v julia)" >> "$GITHUB_ENV"
-          julia -e 'print("PYTHON_JULIACALL_PROJECT=" * joinpath(DEPOT_PATH[1], "environments", "v$(VERSION.major).$(VERSION.minor)"))' >> "$GITHUB_ENV"
+          echo "PYTHON_JULIACALL_PROJECT=$(julia -e 'print(joinpath(DEPOT_PATH[1], "environments", "v$(VERSION.major).$(VERSION.minor)"))')" >> "$GITHUB_ENV"
+          echo "PYTHON_JULIAPKG_OFFLINE=true" >> "$GITHUB_ENV"
       - name: Install Vela and MetaPulsar
         run: |
-          julia -e 'import Pkg; Pkg.Registry.add("General"); Pkg.Registry.add(url="https://github.com/abhisrkckl/julia_registry")'
-          julia -e 'import Pkg; Pkg.add(url="https://github.com/abhisrkckl/Vela.jl")'
+          # Point juliacall at the default Julia env (PYTHON_JULIACALL_PROJECT)
+          # and disable juliapkg. That env must already contain PythonCall —
+          # otherwise `from pyvela import SPNTA` dies with
+          # `Package PythonCall not found in current path`.
+          # Matches Vela.jl's documented install (PythonCall + Vela in the
+          # same environment); skip LocalRegistry/JuliaFormatter/BenchmarkTools.
+          julia -e 'import Pkg
+                    try Pkg.Registry.add("General") catch; end
+                    Pkg.Registry.add(url="https://github.com/abhisrkckl/julia_registry")
+                    Pkg.add(["PythonCall", "Distributions", "DoubleFloats", "GeometricUnits"])
+                    Pkg.add(url="https://github.com/abhisrkckl/Vela.jl")'
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -e ".[dev,vela]"

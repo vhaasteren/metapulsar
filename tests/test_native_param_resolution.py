@@ -418,7 +418,9 @@ class TestEngineOverrideSpelling:
 
         assert excinfo.value.mapping == {"F0": "F0", "A1DOT_epta": "XDOT"}
 
+    @pytest.mark.requires_jug
     def test_jug_resolves_against_the_live_session_names(self, tmp_path, monkeypatch):
+        pytest.importorskip("jug")
         from metapulsar.engines import JugEngine
 
         pulsar = _engine_mapping_pulsar(tmp_path, "pint")
@@ -438,8 +440,10 @@ class TestEngineOverrideSpelling:
 
         assert excinfo.value.mapping == {"F0": "F0", "A1DOT_epta": "XDOT"}
 
+    @pytest.mark.requires_jug
     def test_jug_omits_columns_the_session_does_not_know(self, tmp_path, monkeypatch):
         """Omitted entries fail validate_fit_param and become exact-linear."""
+        pytest.importorskip("jug")
         from metapulsar.engines import JugEngine
 
         pulsar = _engine_mapping_pulsar(tmp_path, "pint")

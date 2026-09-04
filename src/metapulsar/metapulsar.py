@@ -1293,9 +1293,23 @@ class MetaPulsar:
                 "linearized stand-in evaluates every fitpar as -M @ delta"
             )
 
-        from jug.timing import resolve_tempo2_jug_options
+        # JUG is an optional extra: import it only when a leg actually uses a
+        # JUG engine. libstempo/PINT linearized stand-ins must not require it.
+        needs_jug = not linearized and any(
+            _IMPL_FAMILY[engines[self._native_compat(pta)]] == "jug"
+            for pta in self._pta_data
+        )
+        if needs_jug:
+            from jug.timing import resolve_tempo2_jug_options
 
-        resolved_options = resolve_tempo2_jug_options(tempo2_jug_options)
+            resolved_options = resolve_tempo2_jug_options(tempo2_jug_options)
+        else:
+            if tempo2_jug_options:
+                raise ValueError(
+                    "tempo2_jug_options is a JUG knob, but no leg of this "
+                    f"pulsar uses a JUG engine (engines={engines})"
+                )
+            resolved_options = {}
         cache_key = (
             tuple(sorted(engines.items())),
             linearized,

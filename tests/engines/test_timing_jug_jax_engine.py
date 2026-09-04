@@ -6,8 +6,6 @@ import pytest
 from nltiming.engine_support import LinearModel
 from metapulsar.engines.jug import LinearizedJugEngine
 
-pytestmark = [pytest.mark.requires_jug]
-
 
 def _jug_backend(compatibility: str) -> LinearizedJugEngine:
     return LinearizedJugEngine.from_linear_model(

@@ -35,7 +35,7 @@ from nltiming.space import ParameterSpace  # noqa: E402
 from pylk.flexfit import fastfit  # noqa: E402
 from pylk.flexfit.adapters import discovery as fx_dx, nltiming as fx_nx  # noqa: E402
 
-ENGINES = {"tempo2": "libstempo", "pint": "jug"}
+ENGINES = {"tempo2": "libstempo", "pint": "pint"}
 
 
 @pytest.fixture(scope="module")

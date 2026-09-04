@@ -149,8 +149,9 @@ def test_metapulsar_timing_pulsar_surface_and_engine_roundtrip(mock_metapulsar):
     assert isinstance(pulsar, TimingPulsar)
     validate_pulsar_surface(pulsar)
 
-    # Native in-memory tempo2 adapters are available for tempo2-origin hosts.
-    native_engines = {"tempo2": "libstempo", "pint": "jug"}
+    # Native in-memory adapters; JUG is an optional extra and is not required
+    # for this roundtrip. The pint key is unused on a tempo2-origin mock.
+    native_engines = {"tempo2": "libstempo", "pint": "pint"}
     assert pulsar.can_use_engines(native_engines)
     # Both of these resolve to the JUG family for a tempo2-origin leg (the
     # "pint" entry never applies), and a nonlinear JUG engine reloads the
@@ -196,12 +197,12 @@ def test_metapulsar_reference_theta_missing_values_raise(mock_metapulsar):
     pulsar._invalidate_timing_caches()
 
     with pytest.raises(ValueError, match="Missing reference theta"):
-        pulsar.timing_engine({"tempo2": "libstempo", "pint": "jug"}, linearized=True)
+        pulsar.timing_engine({"tempo2": "libstempo", "pint": "pint"}, linearized=True)
 
 
 def test_metapulsar_timing_engine_cache_tracks_pulsar_state(mock_metapulsar):
     pulsar = _build_real_pulsar(mock_metapulsar)
-    native_engines = {"tempo2": "libstempo", "pint": "jug"}
+    native_engines = {"tempo2": "libstempo", "pint": "pint"}
     engine = pulsar.timing_engine(native_engines, linearized=True)
     token = pulsar.state_id()
 
@@ -221,7 +222,9 @@ def test_timing_engine_accepts_nonlinear_params_kwarg():
     )
 
 
+@pytest.mark.requires_jug
 def test_build_jug_session_forwards_nonlinear_params(monkeypatch, tmp_path):
+    pytest.importorskip("jug")
     captured: dict = {}
 
     class FakeSession:
@@ -250,7 +253,7 @@ def test_metapulsar_timing_opens_nltiming_evaluator(mock_metapulsar):
 
     pulsar = _build_real_pulsar(mock_metapulsar)
     timing = pulsar.timing(
-        {"tempo2": "libstempo", "pint": "jug"},
+        {"tempo2": "libstempo", "pint": "pint"},
         linearized=True,
     )
 
@@ -351,11 +354,11 @@ def test_filtered_pulsar_rejects_unaligned_live_timing_contributions(mock_metapu
     pulsar.filter_data(mask=np.arange(len(pulsar.toas)) % 2 == 0)
 
     assert not pulsar.can_use_engines(
-        {"tempo2": "libstempo", "pint": "jug"}, linearized=True
+        {"tempo2": "libstempo", "pint": "pint"}, linearized=True
     )
     with pytest.raises(ValueError, match="after filter_data"):
         pulsar.timing(
-            {"tempo2": "libstempo", "pint": "jug"},
+            {"tempo2": "libstempo", "pint": "pint"},
             linearized=True,
         )
     assert pulsar.Mmat.shape[1] == len(pulsar.fitpars)

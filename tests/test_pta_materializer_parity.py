@@ -33,6 +33,10 @@ EXACT_ARRAYS = (
     "_pos",
 )
 TOLERANCED_ARRAYS = ("_pos_t", "_planetssb", "_sunssb")
+# PINT barycentric times and residuals move by a couple of float64 ULPs across
+# PINT commits; bit-identity is not part of the materializer contract.
+PINT_FLOAT_RTOL = 1.0e-15
+PINT_FLOAT_ATOL = 1.0e-9
 EPHEMERIS_RTOL = 5.0e-14
 EPHEMERIS_ATOL = 5.0e-14
 
@@ -72,7 +76,19 @@ def _assert_record_parity(record: _PtaTimingData, npz) -> None:
     np.testing.assert_array_equal(record._pdist, npz["_pdist"])
 
     for key in EXACT_ARRAYS:
-        np.testing.assert_array_equal(getattr(record, key), npz[key], err_msg=key)
+        got = getattr(record, key)
+        expected = npz[key]
+        if np.issubdtype(np.asarray(got).dtype, np.floating):
+            np.testing.assert_allclose(
+                got,
+                expected,
+                rtol=PINT_FLOAT_RTOL,
+                atol=PINT_FLOAT_ATOL,
+                equal_nan=True,
+                err_msg=key,
+            )
+        else:
+            np.testing.assert_array_equal(got, expected, err_msg=key)
 
     for key in TOLERANCED_ARRAYS:
         got = getattr(record, key)
@@ -160,7 +176,19 @@ def test_metapulsar_public_surface_parity(mock_metapulsar):
     assert "dmx" in MetaPulsar.__dict__
 
     for key in PUBLIC_EXACT:
-        np.testing.assert_array_equal(getattr(mp, key), npz[key], err_msg=key)
+        got = getattr(mp, key)
+        expected = npz[key]
+        if np.issubdtype(np.asarray(got).dtype, np.floating):
+            np.testing.assert_allclose(
+                got,
+                expected,
+                rtol=PINT_FLOAT_RTOL,
+                atol=PINT_FLOAT_ATOL,
+                equal_nan=True,
+                err_msg=key,
+            )
+        else:
+            np.testing.assert_array_equal(got, expected, err_msg=key)
     for key in PUBLIC_TOLERANCED:
         np.testing.assert_allclose(
             getattr(mp, key),
