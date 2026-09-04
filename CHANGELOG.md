@@ -10,6 +10,17 @@ This file tracks user-facing changes; it is not a substitute for the tag.
 
 ## [Unreleased]
 
+### Logging
+- `import metapulsar` now defaults loguru to `WARNING` and above (loguru's own
+  default is `DEBUG`), replacing only loguru's untouched built-in handler so a
+  user's own configuration wins. `metapulsar.configure_logging(level, force=,
+  log_file=)` is the one knob; `sandbox_tempo2.configure_logging` wraps it.
+- `MetaPulsarFactory.pta_summary` no longer removes loguru handlers and re-adds
+  a `DEBUG` sink on exit, and its PINT-warning suppression is scoped to the call.
+- `tests/test_nltiming_quickstart.py` runs the nltiming README quickstart
+  scripts end to end in the devcontainer (skips when the checkout or engines
+  are absent).
+
 The `feat/nlt` line landing on `main`. Alpha: install from GitHub. Runtime still
 pins git PINT (`vhaasteren/PINT@metapulsar`, [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023))
 and git [nltiming](https://github.com/vhaasteren/nltiming). That is not a PyPI

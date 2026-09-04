@@ -13,6 +13,10 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"
 
+# Importing log_config installs the default loguru sink (WARNING and above;
+# loguru's own default is DEBUG). Keep it the first package import.
+from .log_config import configure_logging
+
 # Core classes
 from .metapulsar import MetaPulsar, normalize_combination_strategy
 from .metapulsar_factory import (
@@ -140,6 +144,8 @@ __author__ = "Rutger van Haasteren, Wangwei Yu, David Wright"
 __email__ = "rutger@vhaasteren.com"
 
 __all__ = [
+    # Logging
+    "configure_logging",
     # Core classes
     "MetaPulsar",
     "MetaPulsarFactory",

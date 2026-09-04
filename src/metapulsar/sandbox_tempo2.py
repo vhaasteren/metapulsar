@@ -2000,48 +2000,15 @@ def load_many(
 # ------------------------------- Quick helpers ------------------------------ #
 
 
-def configure_logging(
-    level: str = "INFO", log_file: Optional[str] = None, enable_console: bool = True
-):
+def configure_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
+    """Replace the loguru configuration with a stderr sink at ``level``.
+
+    Thin wrapper over :func:`metapulsar.log_config.configure_logging` with
+    ``force=True``; ``log_file`` adds a file sink at the same level.
     """
-    Configure loguru logging for the sandbox.
+    from .log_config import configure_logging as _configure
 
-    Args:
-        level: Log level ("DEBUG", "INFO", "WARNING", "ERROR")
-        log_file: Optional file path to log to
-        enable_console: Whether to log to console
-    """
-    try:
-        from loguru import logger as loguru_logger
-
-        # Remove default handler
-        loguru_logger.remove()
-
-        # Add console handler if requested
-        if enable_console:
-            loguru_logger.add(
-                sys.stderr,
-                level=level,
-                format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>tempo2_sandbox</cyan> | <level>{message}</level>",
-                colorize=True,
-            )
-
-        # Add file handler if requested
-        if log_file:
-            loguru_logger.add(
-                log_file,
-                level=level,
-                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | tempo2_sandbox | {message}",
-                rotation="10 MB",
-                retention="7 days",
-            )
-
-        logger.info(
-            f"Logging configured: level={level}, console={enable_console}, file={log_file}"
-        )
-
-    except ImportError:
-        logger.warning("loguru not available, using basic logging")
+    _configure(level, force=True, log_file=log_file)
 
 
 def setup_instructions(env_name: str = "tempo2_intel"):
