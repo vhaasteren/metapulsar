@@ -63,12 +63,12 @@ def test_remove_nonidentifiable_never_silently_drops_gauge_column(tmp_path):
 
 # --- a vela-jax leg's gauge column (PR-4, D10) ------------------------------
 #
-# The check above is worth having only if it can fail, and a vela-jax leg
-# makes it non-trivial: its gauge column is 1/F_i over the *instantaneous*
-# doppler-shifted spin frequency, not the constant vector a constant-F0
-# engine gives, so the leg declares its own direction
-# (vela_jax.engine.Engine.gauge_direction). The negative test below is the
-# proof that the declaration is checked rather than assumed.
+# The check above is worth having only if it can fail. A vela-jax leg
+# declares its own gauge direction (vela_jax.engine.Engine.gauge_direction):
+# 1/F_i over the pulsar-frame spin frequency, which on a real MSP is the
+# constant vector to ~1e-10, below the check's 1e-8 tolerance. The negative
+# test below therefore fakes a column that is far from *any* plausible gauge
+# direction, and proves the declared direction is checked rather than assumed.
 
 LOCAL_DATA = Path(__file__).resolve().parents[1] / "data" / "aei-dr2"
 PSR = "J1853+1303"
@@ -82,7 +82,11 @@ real_leg = pytest.mark.skipif(
 
 
 def _leg_pulsar(release, package):
+    import jax
     from metapulsar import create_metapulsar
+
+    if not jax.config.jax_enable_x64:
+        pytest.skip("vela-jax requires JAX float64; run with JAX_ENABLE_X64=1")
 
     base = LOCAL_DATA / release
     return create_metapulsar(
@@ -116,11 +120,11 @@ def test_a_real_build_carries_its_gauge_column():
 @pytest.mark.real_data
 @real_leg
 def test_faked_gauge_columns_are_caught():
-    """Replace the leg's ``1/F_i`` column with ones and the check must raise.
+    """Replace the leg's gauge column with a ramp and the check must raise.
 
-    A constant column is what a constant-``F0`` engine would give, and it is
-    what the check accepted before the direction was declared. If this passes
-    silently the assertion has gone tautological.
+    A linear ramp is orthogonal-ish to every gauge direction an engine can
+    declare (constant, or ``1/F_i``). If this passes silently the assertion
+    has gone tautological.
     """
     pytest.importorskip("vela_jax")
     from nltiming.nonlinear_timing_model import assert_gauge_column_present
@@ -134,7 +138,7 @@ def test_faked_gauge_columns_are_caught():
         if name.startswith(("PHOFF", "Offset"))
     ]
     assert columns
-    design[:, columns] = 1.0
+    design[:, columns] = np.linspace(0.5, 1.5, design.shape[0])[:, None]
 
     class _Leaf:
         gauge_applied = False
