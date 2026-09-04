@@ -186,7 +186,16 @@ def test_formatter_is_exact_over_random_longdoubles():
     [
         lambda x: format(x, ".20g"),
         lambda x: f"{x:.20g}",
-        lambda x: np.format_float_scientific(x, precision=19, unique=False),
+        pytest.param(
+            lambda x: np.format_float_scientific(x, precision=19, unique=False),
+            marks=pytest.mark.skipif(
+                np.finfo(np.longdouble).nmant <= 64,
+                reason=(
+                    "precision=19 round-trips 80-bit longdouble; "
+                    "it is inexact only on quad"
+                ),
+            ),
+        ),
         lambda x: np.format_float_scientific(
             x, precision=np.finfo(np.longdouble).precision, unique=False
         ),
@@ -196,7 +205,8 @@ def test_rejected_formatters_are_inexact(rejected):
     """NOTE: the assertion is ``any``, not ``all``, and must stay that way. On a
     quad long double ``precision=finfo.precision`` is exact for FB0 and inexact
     only for sigma_FB0; on 80-bit x86-64 the failure set differs. Do not tighten
-    without re-measuring both widths."""
+    without re-measuring both widths. ``precision=19`` is skipped on 80-bit
+    because it accidentally round-trips there."""
     pb = np.longdouble("0.14567224091722622131")
     values = [
         1 / (np.longdouble(86400) * pb),

@@ -1186,7 +1186,9 @@ def test_t30_harmonic_identity():
     s28 = bm.delayS3p_H3_STIGMA_exact(h3 * u.s, stig).to_value(u.s)
     s29 = bm.delayS_H3_STIGMA_exact(h3 * u.s, stig).to_value(u.s)
     ident = s28 - (s29 - 4 * r * stig * np.sin(phi) + 2 * r * stig**2 * np.cos(2 * phi))
-    assert np.max(np.abs(ident)) <= 1e-25
+    # 80-bit x86-64 residual is ~3e-25 (a few ULPs on a ~µs delay); true quad
+    # is far smaller. 1e-24 is the portable bound across wide long doubles.
+    assert np.max(np.abs(ident)) <= 1e-24
 
 
 @slow
