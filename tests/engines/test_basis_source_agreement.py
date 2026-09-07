@@ -8,16 +8,6 @@ from nltiming.engine_support import LinearModel
 from metapulsar.engines.composite import PtaContribution, build_composite_engine
 from metapulsar.engines.jug import LinearizedJugEngine
 from metapulsar.engines.pint import LinearizedPintEngine
-from nltiming.protocols import GaugeProvenance
-
-
-def _gf():
-    return GaugeProvenance(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
 
 
 def test_leaf_design_matrix_matches_mmat_block():
@@ -27,8 +17,8 @@ def test_leaf_design_matrix_matches_mmat_block():
         fitpars=fitpars, design=M, theta_exact={"F0": "1.0", "Offset": "0.0"}
     )
     for eng in (
-        LinearizedJugEngine.from_linear_model(model, gauge_provenance=_gf()),
-        LinearizedPintEngine.from_linear_model(model, gauge_provenance=_gf()),
+        LinearizedJugEngine.from_linear_model(model),
+        LinearizedPintEngine.from_linear_model(model),
     ):
         np.testing.assert_allclose(eng.design_matrix(), M, rtol=1e-10, atol=0.0)
 
@@ -47,7 +37,6 @@ def test_composite_design_matrix_matches_mmat_per_contribution():
             design=M[:mid, :2],
             theta_exact={"F0": "1.0", "Offset_epta": "0.0"},
         ),
-        gauge_provenance=_gf(),
     )
     b = LinearizedJugEngine.from_linear_model(
         LinearModel.from_design(
@@ -55,7 +44,6 @@ def test_composite_design_matrix_matches_mmat_per_contribution():
             design=np.column_stack([M[mid:, 0], M[mid:, 2]]),
             theta_exact={"F0": "1.0", "Offset_ppta": "0.0"},
         ),
-        gauge_provenance=_gf(),
     )
     engine = build_composite_engine(
         fitpars=fitpars,

@@ -7,16 +7,6 @@ import pytest
 
 from nltiming.engine_support import LinearModel
 from metapulsar.engines.jug import JugEngine, LinearizedJugEngine
-from nltiming.protocols import GaugeProvenance
-
-
-def _gf():
-    return GaugeProvenance(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
 
 
 def test_linearized_jug_residual_jacobian_is_minus_m():
@@ -25,7 +15,7 @@ def test_linearized_jug_residual_jacobian_is_minus_m():
         design=np.array([[1.0, 1.0], [2.0, 1.0], [3.0, 1.0]], dtype=float),
         theta_exact={"F0": "1.0", "Offset": "0.0"},
     )
-    eng = LinearizedJugEngine.from_linear_model(model, gauge_provenance=_gf())
+    eng = LinearizedJugEngine.from_linear_model(model)
     np.testing.assert_allclose(eng.residual_jacobian(), -model.design)
 
 

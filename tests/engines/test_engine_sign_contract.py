@@ -13,25 +13,6 @@ from metapulsar.engines.composite import (
 from metapulsar.engines.jug import JugEngine, LinearizedJugEngine
 from metapulsar.engines.pint import LinearizedPintEngine, PintEngine
 from metapulsar.engines.tempo2 import LibstempoEngine, LinearizedLibstempoEngine
-from nltiming.protocols import GaugeProvenance
-
-
-def _gauge_free() -> GaugeProvenance:
-    return GaugeProvenance(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
-
-
-def _applied_unknown() -> GaugeProvenance:
-    return GaugeProvenance(
-        export="applied-unknown",
-        reference_mode="unknown",
-        reporting_mode="mean",
-        reporting_weighted=False,
-    )
 
 
 def _model(fitpars=("F0", "Offset"), n=4):
@@ -66,11 +47,9 @@ def _assert_sign_contract(
 def test_linearized_leaf_engines_sign_contract():
     model = _model()
     for eng in (
-        LinearizedPintEngine.from_linear_model(model, gauge_provenance=_gauge_free()),
-        LinearizedJugEngine.from_linear_model(model, gauge_provenance=_gauge_free()),
-        LinearizedLibstempoEngine.from_linear_model(
-            model, gauge_provenance=_gauge_free()
-        ),
+        LinearizedPintEngine.from_linear_model(model),
+        LinearizedJugEngine.from_linear_model(model),
+        LinearizedLibstempoEngine.from_linear_model(model),
     ):
         _assert_sign_contract(eng)
 
@@ -109,7 +88,6 @@ def test_composite_sign_contract_per_block():
             design=np.array([[1.0, 1.0], [2.0, 1.0]], dtype=float),
             theta_exact={"F0": "1.0", "Offset_epta": "0.0"},
         ),
-        gauge_provenance=_gauge_free(),
     )
     b = LinearizedJugEngine.from_linear_model(
         LinearModel.from_design(
@@ -117,7 +95,6 @@ def test_composite_sign_contract_per_block():
             design=np.array([[3.0, 1.0], [4.0, 1.0]], dtype=float),
             theta_exact={"F0": "1.0", "Offset_ppta": "0.0"},
         ),
-        gauge_provenance=_gauge_free(),
     )
     engine = build_composite_engine(
         fitpars=("F0", "Offset_epta", "Offset_ppta"),
@@ -156,7 +133,7 @@ def test_mixed_gauge_block_compares_modulo_constant():
         engine_fitpars=("F0", "Offset"),
         exact_linear_fitpars=frozenset(),
     )
-    assert leaf.gauge_applied is True
+    assert leaf.residual_centering["single"].stored_residuals == "unknown"
     offset = _assert_sign_contract(leaf, modulo_constant=True)
     assert abs(offset) > 0.0
 

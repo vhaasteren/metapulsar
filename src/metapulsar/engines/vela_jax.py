@@ -25,8 +25,9 @@ from typing import Any, Mapping
 
 import numpy as np
 from nltiming.engine_support import LinearModel, is_exact_linear_param
-from nltiming.protocols import GaugeProvenance
 from psrdata import TOARows  # noqa: F401  (re-exported; tests import it from here)
+
+from .centering import PINT_FAMILY, as_mapping
 
 from nltiming.hybrid import (
     is_hybrid_engine_axis,
@@ -182,6 +183,10 @@ class VelaJaxEngine:
         self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
+        centering = getattr(engine, "residual_centering", None) or PINT_FAMILY
+        self.residual_centering = (
+            dict(centering) if isinstance(centering, dict) else as_mapping(centering)
+        )
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
 
         engine_fitpars, exact_linear_fitpars = resolve_hybrid_partition(
@@ -413,18 +418,6 @@ class VelaJaxEngine:
 
     def design_matrix(self, params=None) -> np.ndarray:
         return np.asarray(self._model.design, dtype=float)
-
-    def gauge_provenance(self) -> GaugeProvenance:
-        return GaugeProvenance(
-            export="none",
-            reference_mode="none",
-            reporting_mode="mean",
-            reporting_weighted=True,
-        )
-
-    @property
-    def gauge_applied(self) -> bool:
-        return self.gauge_provenance().export != "none"
 
     def __repr__(self) -> str:
         return (

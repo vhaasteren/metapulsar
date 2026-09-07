@@ -6,9 +6,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from nltiming.protocols import GaugeProvenance
+from nltiming.engine_support import LinearModel, LinearModelEngine
 
-from nltiming.engine_support import LinearModel, LinearTimingEngine
+from .centering import PINT_FAMILY, as_mapping
 from .delta import PintDeltaEngine
 from nltiming.hybrid import (
     is_hybrid_engine_axis,
@@ -54,6 +54,7 @@ class PintEngine:
         self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
+        self.residual_centering = as_mapping(PINT_FAMILY)
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
         # A stamped mode always implies its partition, even for a direct
         # construction that passed no explicit native/exact-linear lists.
@@ -207,19 +208,6 @@ class PintEngine:
         )
         return -(columns @ delta[np.asarray(self._exact_linear_indices, dtype=int)])
 
-    def gauge_provenance(self) -> GaugeProvenance:
-        # Constructed with subtract_mean=False (gauge-free export).
-        return GaugeProvenance(
-            export="none",
-            reference_mode="none",
-            reporting_mode="mean",
-            reporting_weighted=True,
-        )
-
-    @property
-    def gauge_applied(self) -> bool:
-        return self.gauge_provenance().export != "none"
-
 
 def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, float]:
     delta = np.asarray(delta_theta, dtype=float).reshape(-1)
@@ -228,7 +216,7 @@ def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, 
     return {name: float(delta[i]) for i, name in enumerate(fitpars)}
 
 
-class LinearizedPintEngine(LinearTimingEngine):
+class LinearizedPintEngine(LinearModelEngine):
     """Explicit linearized PINT test double using a frozen design matrix."""
 
     engine_name = "pint"
@@ -238,13 +226,9 @@ class LinearizedPintEngine(LinearTimingEngine):
         cls,
         model: LinearModel,
         *,
-        gauge_provenance: GaugeProvenance | None = None,
+        residual_centering=None,
+        **_ignored,
     ) -> "LinearizedPintEngine":
-        if gauge_provenance is None:
-            gauge_provenance = GaugeProvenance(
-                export="none",
-                reference_mode="unknown",
-                reporting_mode="mean",
-                reporting_weighted=True,
-            )
-        return cls(model, gauge_provenance=gauge_provenance)
+        if residual_centering is None:
+            residual_centering = PINT_FAMILY
+        return cls(model, residual_centering=residual_centering)

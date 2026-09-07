@@ -8,7 +8,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from nltiming.protocols import GaugeProvenance, JaxTimingEngine, TimingEngine
+from psrdata import ResidualCentering
+
+from nltiming.protocols import JaxTimingEngine, TimingEngine
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,7 @@ class PulsarTimingEngine:
         design_matrix: np.ndarray | None = None,
     ):
         self.fitpars = fitpars
-        self.native_units = {name: "native" for name in fitpars}
+        self.native_units = {}
         self._nrows = int(nrows)
         self._contributions = list(contributions)
         self._global_index = {name: i for i, name in enumerate(self.fitpars)}
@@ -59,7 +61,9 @@ class PulsarTimingEngine:
             None if design_matrix is None else np.asarray(design_matrix, dtype=float)
         )
         self._ref_exact = self._merge_reference_theta_exact()
+        self.native_units = self._merge_native_units()
         self.nonlinear_params = self._merge_nonlinear_params()
+        self.residual_centering = self._merge_residual_centering()
 
     def _merge_nonlinear_params(self) -> str | None:
         """The one hybrid residual mode every contribution honours.
@@ -187,6 +191,15 @@ class PulsarTimingEngine:
                 )
         return merged
 
+    def _merge_native_units(self) -> dict[str, str]:
+        merged: dict[str, str] = {name: "native" for name in self.fitpars}
+        for contribution in self._contributions:
+            units = dict(getattr(contribution.engine, "native_units", {}) or {})
+            for name, unit in units.items():
+                if name in merged and unit not in ("native", "", "1"):
+                    merged[name] = unit
+        return merged
+
     def reference_theta_exact(self) -> Mapping[str, str]:
         return dict(self._ref_exact)
 
@@ -282,19 +295,22 @@ class PulsarTimingEngine:
                     ]
         return out
 
-    def gauge_provenance(self) -> GaugeProvenance:
-        """Composites have no own provenance; readers use the context map."""
-        raise AttributeError(
-            "PulsarTimingEngine has no own gauge_provenance; use "
-            "TimingSignal.gauge_provenance (one entry per contribution)"
-        )
+    def _merge_residual_centering(self) -> dict[str, ResidualCentering]:
+        """One entry per contribution, keyed by contribution name."""
+        out: dict[str, ResidualCentering] = {}
+        for contribution in self._contributions:
+            leaf = getattr(contribution.engine, "residual_centering", None) or {}
+            if isinstance(leaf, ResidualCentering):
+                out[str(contribution.name)] = leaf
+                continue
+            for value in dict(leaf).values():
+                out[str(contribution.name)] = value
+                break
+            else:
+                from .centering import LINEARIZED_UNKNOWN
 
-    @property
-    def gauge_applied(self) -> bool:
-        """OR over leaves — diagnostic only; never gates arithmetic."""
-        return any(
-            bool(getattr(c.engine, "gauge_applied", False)) for c in self._contributions
-        )
+                out[str(contribution.name)] = LINEARIZED_UNKNOWN
+        return out
 
 
 class PulsarJaxTimingEngine(PulsarTimingEngine):

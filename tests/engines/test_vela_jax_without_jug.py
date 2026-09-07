@@ -151,7 +151,7 @@ def _stand_in(pulsar, monkeypatch):
             engine=engine,
             engine_name="vela_jax",
             timing_package=record.timing_package,
-            record=SimpleNamespace(state_id="stand-in"),
+            record=SimpleNamespace(),
         )
 
 

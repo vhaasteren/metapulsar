@@ -13,16 +13,6 @@ from nltiming.nonlinear_timing_model import (
     _timing_design_matrix,
     assert_gauge_column_present,
 )
-from nltiming.protocols import GaugeProvenance
-
-
-def _gf():
-    return GaugeProvenance(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
 
 
 class _Pulsar:
@@ -47,7 +37,6 @@ def _mixed_engine():
             design=M[:mid, :2],
             theta_exact={"F0": "1.0", "Offset_epta": "0.0"},
         ),
-        gauge_provenance=_gf(),
     )
 
     class _Centered:
@@ -84,9 +73,9 @@ def _mixed_engine():
     return fitpars, M, engine
 
 
-def test_mixed_composite_reports_gauge_applied():
+def test_mixed_composite_reports_per_leg_centering():
     _, _, engine = _mixed_engine()
-    assert engine.gauge_applied is True
+    assert set(engine.residual_centering) == {"epta", "ppta"}
 
 
 def test_mixed_composite_passes_g6():

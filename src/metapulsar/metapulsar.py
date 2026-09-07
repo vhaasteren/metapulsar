@@ -588,8 +588,6 @@ class MetaPulsar:
         class _Leaf:
             """What nltiming's gauge check asks a leg about itself."""
 
-            gauge_applied = False
-
             def __init__(self, record):
                 leg = getattr(record, "_leg", None)
                 if leg is not None:
@@ -603,11 +601,6 @@ class MetaPulsar:
                     # those matrices divide by the constant F0. Declaring the
                     # direction lets the check stay exact for both.
                     self.gauge_direction = leg.engine.gauge_direction
-
-            def gauge_provenance(self):
-                from nltiming.protocols import GaugeProvenance
-
-                return GaugeProvenance(export="none", reference_mode="none")
 
         class _Contribution:
             def __init__(self, name: str, row_indices, record):
@@ -1074,25 +1067,19 @@ class MetaPulsar:
     def pulsar_data(self):
         """The composite as one :class:`psrdata.PulsarData`, in storage order.
 
-        The same record type a single-leg timing package emits, so a composite
-        and a one-pulsar file are the same object downstream. What makes it a
-        composite is metadata, not shape: ``timing_package="composite"``
-        because there is no single one, and ``extra["legs"]`` naming what each
-        leg was read and evaluated by.
+        The same record type a single-leg timing package emits, so a combined
+        and a one-pulsar file are the same object downstream. Data-set keys
+        are the PTA names this object was built with (psrdata R-3.4.3).
         """
         from psrdata import PulsarData
 
         legs = [
             {
                 "pta": pta,
-                "timing_package": record.timing_package,
+                "timing_package": self._calculating_package(pta),
+                "partim_compatibility": self._native_compat(pta),
                 "engine_name": (
                     record._leg.engine_name if getattr(record, "_leg", None) else None
-                ),
-                "state_id": (
-                    record._leg.record.state_id
-                    if getattr(record, "_leg", None)
-                    else None
                 ),
             }
             for pta, record in self._pta_data.items()
@@ -1101,6 +1088,7 @@ class MetaPulsar:
             name=self.name,
             fitpars=tuple(self.fitpars),
             setpars=tuple(self.setpars),
+            parameters=self._composite_parameters(),
             toas=self._toas,
             stoas=self._stoas,
             toaerrs=self._toaerrs,
@@ -1119,12 +1107,16 @@ class MetaPulsar:
             pdist=tuple(self.pdist),
             dm=float(self.dm or 0.0),
             dmx=self.dmx or None,
-            state_id=self.state_id(),
-            software="metapulsar",
-            timing_package="composite",
-            gauge={pta: self._leg_gauge_provenance(pta) for pta in self._pta_data},
-            reference_theta_exact=self._composite_theta_exact(),
-            native_units=self._composite_native_units(),
+            timing_package={
+                pta: self._calculating_package(pta) for pta in self._pta_data
+            },
+            partim_compatibility={
+                pta: self._native_compat(pta) for pta in self._pta_data
+            },
+            residual_centering={
+                pta: self._leg_residual_centering(pta) for pta in self._pta_data
+            },
+            producer="metapulsar",
             extra={
                 "legs": legs,
                 "combination_strategy": self.combination_strategy,
@@ -1168,19 +1160,94 @@ class MetaPulsar:
             out[name] = unit
         return out
 
-    def _leg_gauge_provenance(self, pta):
-        """This leg's gauge provenance, the psrdata type the record stores."""
-        from psrdata import GaugeProvenance
-
-        leg = getattr(self._pta_data[pta], "_leg", None)
+    def _calculating_package(self, pta) -> str:
+        """Software that calculated this PTA's stored residual/matrix block."""
+        record = self._pta_data[pta]
+        leg = getattr(record, "_leg", None)
         if leg is not None:
-            return GaugeProvenance.from_mapping(leg.engine.gauge_provenance())
-        return GaugeProvenance(
-            export="none",
-            reference_mode="none",
-            reporting_mode="mean",
-            reporting_weighted=True,
+            return str(leg.engine_name)
+        return self._get_timing_package(record)
+
+    def _leg_residual_centering(self, pta):
+        """This PTA's residual-centering fact (psrdata R-4.3)."""
+        from psrdata import ResidualCentering
+
+        from .engines.centering import PINT_FAMILY, TEMPO2_FAMILY
+
+        record = self._pta_data[pta]
+        leg = getattr(record, "_leg", None)
+        if leg is not None:
+            mapping = getattr(getattr(leg, "record", None), "residual_centering", None)
+            if mapping:
+                if pta in mapping:
+                    return mapping[pta]
+                return next(iter(dict(mapping).values()))
+            centering = getattr(leg.engine, "residual_centering", None)
+            if isinstance(centering, ResidualCentering):
+                return centering
+            if isinstance(centering, dict) and centering:
+                return next(iter(centering.values()))
+        compat = self._native_compat(pta)
+        return (
+            TEMPO2_FAMILY if str(compat).lower().startswith("tempo2") else PINT_FAMILY
         )
+
+    def _composite_parameters(self):
+        """Parameter facts for every setpar; fitpars are a subset (R-3.3.4)."""
+        from psrdata import ParameterFact
+        from psrdata.record import PHASE_OFFSET_RE, PHASE_OFFSET_UNITS
+
+        theta = self._composite_theta_exact()
+        units = self._composite_native_units()
+        facts = {}
+        for name in self.fitpars:
+            match = PHASE_OFFSET_RE.match(name)
+            if match:
+                facts[name] = ParameterFact("0", PHASE_OFFSET_UNITS[match.group(1)])
+                continue
+            unit = units.get(name, "s")
+            if unit in ("native", "1", ""):
+                unit = "dimensionless"
+            facts[name] = ParameterFact(str(theta.get(name, "0.0")), unit)
+        for name in self.setpars:
+            if name in facts:
+                continue
+            facts[name] = self._setpar_fact(name)
+        return facts
+
+    def _setpar_fact(self, name: str):
+        """A frozen setpar's fact, from a PINT model when one is attached."""
+        from pint.models.parameter import boolParameter, strParameter
+        from psrdata import ParameterFact
+
+        if name == "PSR":
+            return ParameterFact(str(self.name), None)
+        owners = self._setparameters.get(name, {})
+        for pta, native in owners.items():
+            record = self._pta_data[pta]
+            model = getattr(record, "model", None)
+            if model is None:
+                pint = getattr(record, "pint_model", None)
+                model = pint() if callable(pint) else pint
+            if model is None:
+                continue
+            pint_name = getattr(native, "pint_name", name)
+            if pint_name not in model:
+                continue
+            param = model[pint_name]
+            value = getattr(param, "value", None)
+            if value is None and getattr(param, "quantity", None) is None:
+                continue
+            if isinstance(param, (strParameter, boolParameter)) or isinstance(
+                value, str
+            ):
+                return ParameterFact(str(value), None)
+            units = getattr(param, "units", None)
+            unit_label = None if units is None else str(units).strip() or None
+            if unit_label in ("1",):
+                unit_label = "dimensionless"
+            return ParameterFact(str(value), unit_label)
+        return ParameterFact(str(self.name) if name == "PSR" else "0", None)
 
     def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
         """Return canonical fitpars mapped to their per-PTA retained-par spellings.
@@ -1562,10 +1629,20 @@ class MetaPulsar:
             pta_cols = [global_index[par] for par in pta_fitpars]
             pta_design = self._designmatrix[rows][:, pta_cols]
             theta_exact = self._pta_theta_exact(pta_name, pta_fitpars)
+            all_units = self._composite_native_units()
+            native_units = {
+                name: (
+                    "dimensionless"
+                    if all_units.get(name, "s") in ("native", "1", "")
+                    else all_units.get(name, "s")
+                )
+                for name in pta_fitpars
+            }
             linear_model = LinearModel.from_design(
                 fitpars=pta_fitpars,
                 design=pta_design,
                 theta_exact=theta_exact,
+                native_units=native_units,
             )
 
             native_compat = self._native_compat(pta_name)
@@ -1766,7 +1843,7 @@ class MetaPulsar:
         # everything its residual depends on; fold it in so a rebuild with a
         # different engine, conventions or par cannot reuse a cached context.
         legs = [
-            f"{pta}:{record._leg.record.state_id}"
+            f"{pta}:{record._leg.engine_name}:{record._leg.timing_package}"
             for pta, record in self._pta_data.items()
             if getattr(record, "_leg", None) is not None
         ]

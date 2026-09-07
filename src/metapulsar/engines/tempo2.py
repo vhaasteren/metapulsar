@@ -6,13 +6,13 @@ from typing import Mapping
 
 import numpy as np
 
-from nltiming.protocols import GaugeProvenance
-
 from nltiming.engine_support import (
     LinearModel,
-    LinearTimingEngine,
+    LinearModelEngine,
     is_exact_linear_param,
 )
+
+from .centering import TEMPO2_FAMILY, LINEARIZED_UNKNOWN, as_mapping
 from .delta import Tempo2DeltaEngine
 from nltiming.hybrid import (
     is_hybrid_engine_axis,
@@ -24,8 +24,8 @@ from nltiming.hybrid import (
 class LibstempoEngine:
     """Native libstempo residual-deltan engine.
 
-    libstempo centres residuals internally with no switch. Provenance
-    reports ``export="applied-unknown"``; ``gauge_applied`` is derived from that.
+    libstempo centres residuals internally with no switch, so stored
+    residual centering is ``"unknown"``.
 
     ``nonlinear_params`` (``None`` | ``"binary"`` | ``"binary+"``) is the same
     hybrid residual mode JUG executes: under a hybrid mode only the binary
@@ -50,6 +50,7 @@ class LibstempoEngine:
         self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
+        self.residual_centering = as_mapping(TEMPO2_FAMILY)
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
         # A stamped mode always implies its partition, even for a direct
         # construction that passed no explicit native/exact-linear lists.
@@ -151,18 +152,6 @@ class LibstempoEngine:
         )
         return -(columns @ delta[np.asarray(self._exact_linear_indices, dtype=int)])
 
-    def gauge_provenance(self) -> GaugeProvenance:
-        return GaugeProvenance(
-            export="applied-unknown",
-            reference_mode="unknown",
-            reporting_mode="mean",
-            reporting_weighted=False,
-        )
-
-    @property
-    def gauge_applied(self) -> bool:
-        return self.gauge_provenance().export != "none"
-
 
 def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, float]:
     delta = np.asarray(delta_theta, dtype=float).reshape(-1)
@@ -171,7 +160,7 @@ def _delta_dict(fitpars: tuple[str, ...], delta_theta: np.ndarray) -> dict[str, 
     return {name: float(delta[i]) for i, name in enumerate(fitpars)}
 
 
-class LinearizedLibstempoEngine(LinearTimingEngine):
+class LinearizedLibstempoEngine(LinearModelEngine):
     """Explicit linearized libstempo test double using a frozen design matrix."""
 
     engine_name = "tempo2"
@@ -181,14 +170,9 @@ class LinearizedLibstempoEngine(LinearTimingEngine):
         cls,
         model: LinearModel,
         *,
-        gauge_provenance: GaugeProvenance | None = None,
+        residual_centering=None,
+        **_ignored,
     ) -> "LinearizedLibstempoEngine":
-        if gauge_provenance is None:
-            # Residual product is gauge-free (LinearModel); host reference gauge
-            # is not known from a bare design matrix — do not claim "none".
-            gauge_provenance = GaugeProvenance(
-                export="none",
-                reference_mode="unknown",
-                reporting_mode="unknown",
-            )
-        return cls(model, gauge_provenance=gauge_provenance)
+        if residual_centering is None:
+            residual_centering = LINEARIZED_UNKNOWN
+        return cls(model, residual_centering=residual_centering)

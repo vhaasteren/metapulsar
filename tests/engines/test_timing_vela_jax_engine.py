@@ -307,8 +307,7 @@ def test_metadata_is_reported_in_host_fitpar_names():
     engine = _engine()
     assert engine.precision_critical_fitpars() == frozenset({"F0", "PB"})
     assert {"DM", "PHOFF"} <= engine.identically_linear_fitpars()
-    assert engine.gauge_provenance().export == "none"
-    assert engine.gauge_applied is False
+    assert engine.residual_centering["single"].stored_residuals == "none"
 
 
 # --- integration -----------------------------------------------------------

@@ -1,26 +1,16 @@
-"""Gauge provenance population at context construction."""
+"""Residual-centering facts on leaf and composite engines."""
 
 from __future__ import annotations
 
 import numpy as np
+from psrdata import ResidualCentering, SINGLE_KEY
 
 from nltiming.engine_support import LinearModel
+from metapulsar.engines.centering import PINT_FAMILY, TEMPO2_FAMILY
 from metapulsar.engines.composite import PtaContribution, build_composite_engine
 from metapulsar.engines.jug import JugEngine, LinearizedJugEngine
 from metapulsar.engines.pint import LinearizedPintEngine, PintEngine
 from metapulsar.engines.tempo2 import LibstempoEngine, LinearizedLibstempoEngine
-from nltiming.protocols import GaugeProvenance
-
-
-def _gf(**kwargs):
-    base = dict(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
-    base.update(kwargs)
-    return GaugeProvenance(**base)
 
 
 def _model():
@@ -31,50 +21,26 @@ def _model():
     )
 
 
-def test_leaf_provenance_table():
+def test_leaf_centering_table():
     model = _model()
-    cases = [
-        (
-            LinearizedPintEngine.from_linear_model(model),
-            "none",
-            "unknown",
-            False,
-        ),
-        (
-            LinearizedJugEngine.from_linear_model(model),
-            "none",
-            "unknown",
-            False,
-        ),
-        (
-            LinearizedLibstempoEngine.from_linear_model(model),
-            "none",
-            "unknown",
-            False,
-        ),
-        (
-            LibstempoEngine(
-                engine=type(
-                    "E",
-                    (),
-                    {"delta_residuals": lambda self, d: np.zeros(2)},
-                )(),
-                linear_model=model,
-            ),
-            "applied-unknown",
-            "unknown",
-            True,
-        ),
-    ]
-    for eng, export, ref_mode, applied in cases:
-        prov = eng.gauge_provenance()
-        assert prov.export == export
-        assert prov.reference_mode == ref_mode
-        assert eng.gauge_applied is applied
-        assert eng.gauge_applied == (prov.export != "none")
+    pint = LinearizedPintEngine.from_linear_model(model)
+    assert pint.residual_centering[SINGLE_KEY] == PINT_FAMILY
+
+    jug = LinearizedJugEngine.from_linear_model(model)
+    assert jug.residual_centering[SINGLE_KEY].stored_residuals == "unknown"
+    assert jug.residual_centering[SINGLE_KEY].standard_weighted is True
+
+    lib_lin = LinearizedLibstempoEngine.from_linear_model(model)
+    assert lib_lin.residual_centering[SINGLE_KEY].stored_residuals == "unknown"
+
+    lib = LibstempoEngine(
+        engine=type("E", (), {"delta_residuals": lambda self, d: np.zeros(2)})(),
+        linear_model=model,
+    )
+    assert lib.residual_centering[SINGLE_KEY] == TEMPO2_FAMILY
 
 
-def test_pint_engine_wrapper_provenance():
+def test_pint_engine_wrapper_centering():
     model = _model()
 
     class _Fake:
@@ -82,11 +48,10 @@ def test_pint_engine_wrapper_provenance():
             return np.zeros(2)
 
     eng = PintEngine(engine=_Fake(), linear_model=model)
-    assert eng.gauge_provenance().export == "none"
-    assert eng.gauge_applied is False
+    assert eng.residual_centering[SINGLE_KEY] == PINT_FAMILY
 
 
-def test_jug_engine_translates_reference_gauge_without_exporting_jug_type():
+def test_jug_engine_centering_is_psrdata_type():
     model = _model()
 
     class _RefGauge:
@@ -104,17 +69,16 @@ def test_jug_engine_translates_reference_gauge_without_exporting_jug_type():
             return jnp.zeros((2,))
 
     eng = JugEngine(state=_State(), linear_model=model)
-    prov = eng.gauge_provenance()
-    assert prov.export == "none"
-    assert prov.reference_mode == "mean"
-    assert prov.reference_weighted is True
-    # Provenance is backend-neutral — not a JUG ReferenceGauge.
-    assert type(prov).__name__ == "GaugeProvenance"
-    assert "jug" not in type(prov).__module__
+    centering = eng.residual_centering[SINGLE_KEY]
+    assert isinstance(centering, ResidualCentering)
+    assert centering.stored_residuals == "none"
+    assert centering.standard_output == "mean_removed"
+    assert centering.standard_weighted is True
+    assert "jug" not in type(centering).__module__
 
 
-def test_composite_or_gauge_applied():
-    jug = LinearizedJugEngine.from_linear_model(_model(), gauge_provenance=_gf())
+def test_composite_rekeys_centering_by_contribution():
+    jug = LinearizedJugEngine.from_linear_model(_model())
     lib = LibstempoEngine(
         engine=type("E", (), {"delta_residuals": lambda self, d: np.zeros(2)})(),
         linear_model=_model(),
@@ -127,4 +91,5 @@ def test_composite_or_gauge_applied():
             PtaContribution(name="ppta", row_indices=np.array([2, 3]), engine=lib),
         ],
     )
-    assert engine.gauge_applied is True
+    assert set(engine.residual_centering) == {"epta", "ppta"}
+    assert engine.residual_centering["ppta"] == TEMPO2_FAMILY

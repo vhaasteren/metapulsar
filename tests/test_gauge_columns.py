@@ -141,15 +141,8 @@ def test_faked_gauge_columns_are_caught():
     design[:, columns] = np.linspace(0.5, 1.5, design.shape[0])[:, None]
 
     class _Leaf:
-        gauge_applied = False
-
         def __init__(self, record):
             self.gauge_direction = record._leg.engine.gauge_direction
-
-        def gauge_provenance(self):
-            from nltiming.protocols import GaugeProvenance
-
-            return GaugeProvenance(export="none", reference_mode="none")
 
     class _Contribution:
         def __init__(self, name, rows, record):

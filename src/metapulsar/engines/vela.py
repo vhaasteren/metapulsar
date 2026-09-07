@@ -24,9 +24,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from nltiming.protocols import GaugeProvenance
-
 from nltiming.engine_support import LinearModel, is_exact_linear_param
+
+from .centering import PINT_FAMILY, as_mapping
 
 from ..parfile_lines import is_noise_line
 from .delta import _is_zero_delta
@@ -307,6 +307,7 @@ class VelaEngine:
         self._param_mapping = dict(param_mapping or {})
         self.fitpars = tuple(linear_model.fitpars)
         self.native_units = dict(linear_model.native_units)
+        self.residual_centering = as_mapping(PINT_FAMILY)
         self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
         # A stamped mode always implies its partition, even for a direct
         # construction that passed no explicit native/exact-linear lists.
@@ -456,15 +457,3 @@ class VelaEngine:
             self._model.design[:, list(self._exact_linear_indices)], dtype=float
         )
         return -(columns @ delta[np.asarray(self._exact_linear_indices, dtype=int)])
-
-    def gauge_provenance(self) -> GaugeProvenance:
-        return GaugeProvenance(
-            export="none",
-            reference_mode="none",
-            reporting_mode="mean",
-            reporting_weighted=True,
-        )
-
-    @property
-    def gauge_applied(self) -> bool:
-        return self.gauge_provenance().export != "none"

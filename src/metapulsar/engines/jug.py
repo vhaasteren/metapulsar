@@ -7,15 +7,15 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from nltiming.protocols import GaugeProvenance
-
-from .delta import infer_jug_param_mapping
-from nltiming.hybrid import hybrid_linearized_fitpars
 from nltiming.engine_support import (
     LinearModel,
-    LinearTimingEngine,
+    LinearModelEngine,
     is_exact_linear_param,
 )
+from nltiming.hybrid import hybrid_linearized_fitpars
+
+from .centering import as_mapping, for_compatibility, from_jug_state
+from .delta import infer_jug_param_mapping
 
 _ECLIPTIC_FITPARS = frozenset(
     {
@@ -50,37 +50,6 @@ def _resolve_binary_facts(session: Any, fit_params: tuple[str, ...]):
             exc_info=True,
         )
         return None
-
-
-def _reporting_from_compatibility(compatibility: str) -> tuple[str, bool | None]:
-    """Host reporting convention (engine_conventions.py:303)."""
-    if str(compatibility).lower().startswith("tempo2"):
-        return "mean", False
-    return "mean", True
-
-
-def _provenance_from_frozen_model(state: Any) -> GaugeProvenance:
-    """Translate JUG ``ReferenceGauge`` into backend-neutral provenance."""
-    reference_gauge = getattr(state, "reference_gauge", None)
-    compatibility = str(getattr(state, "compatibility", "pint"))
-    reporting_mode, reporting_weighted = _reporting_from_compatibility(compatibility)
-    if reference_gauge is None:
-        return GaugeProvenance(
-            export="none",
-            reference_mode="none",
-            reporting_mode=reporting_mode,
-            reporting_weighted=reporting_weighted,
-        )
-    mode = str(getattr(reference_gauge, "mode", "none"))
-    weights = getattr(reference_gauge, "weights", None)
-    reference_weighted = None if mode != "mean" else (weights is not None)
-    return GaugeProvenance(
-        export="none",
-        reference_mode=mode,  # type: ignore[arg-type]
-        reference_weighted=reference_weighted,
-        reporting_mode=reporting_mode,
-        reporting_weighted=reporting_weighted,
-    )
 
 
 class JugEngine:
@@ -133,6 +102,7 @@ class JugEngine:
         # construction (→ candidacy fallback).
         self._binary_facts: Any = None
         self.compatibility = str(getattr(state, "compatibility", "auto"))
+        self.residual_centering = as_mapping(from_jug_state(state))
 
     @classmethod
     def from_contribution(
@@ -365,13 +335,6 @@ class JugEngine:
     def precision_critical_fitpars(self) -> frozenset[str]:
         return self._precision_critical
 
-    def gauge_provenance(self) -> GaugeProvenance:
-        return _provenance_from_frozen_model(self._state)
-
-    @property
-    def gauge_applied(self) -> bool:
-        return self.gauge_provenance().export != "none"
-
     def verify_native_chain(self) -> None:
         fn = getattr(self._state, "verify_native_chain", None)
         if callable(fn):
@@ -428,7 +391,7 @@ def verify_jug_native_chain(engine: object) -> None:
             leaf_verify()
 
 
-class LinearizedJugEngine(LinearTimingEngine):
+class LinearizedJugEngine(LinearModelEngine):
     """Explicit linearized JUG test double with JAX-capable surface."""
 
     engine_name = "jug"
@@ -437,11 +400,13 @@ class LinearizedJugEngine(LinearTimingEngine):
         self,
         model: LinearModel,
         *,
-        gauge_provenance: GaugeProvenance,
+        residual_centering=None,
         compatibility: str = "auto",
         precision_critical: frozenset[str] | set[str] = frozenset(),
     ):
-        super().__init__(model, gauge_provenance=gauge_provenance)
+        if residual_centering is None:
+            residual_centering = for_compatibility(compatibility)
+        super().__init__(model, residual_centering=residual_centering)
         self.compatibility = compatibility
         self._precision_critical = frozenset(precision_critical)
 
@@ -450,25 +415,14 @@ class LinearizedJugEngine(LinearTimingEngine):
         cls,
         model: LinearModel,
         *,
-        gauge_provenance: GaugeProvenance | None = None,
+        residual_centering=None,
         compatibility: str = "auto",
         precision_critical: frozenset[str] | set[str] = frozenset(),
+        **_ignored,
     ) -> "LinearizedJugEngine":
-        if gauge_provenance is None:
-            reporting_mode, reporting_weighted = _reporting_from_compatibility(
-                compatibility
-            )
-            # Export is gauge-free; reference gauge of the host path is unknown
-            # for a bare LinearModel (do not claim reference_mode="none").
-            gauge_provenance = GaugeProvenance(
-                export="none",
-                reference_mode="unknown",
-                reporting_mode=reporting_mode,
-                reporting_weighted=reporting_weighted,
-            )
         return cls(
             model,
-            gauge_provenance=gauge_provenance,
+            residual_centering=residual_centering,
             compatibility=compatibility,
             precision_critical=precision_critical,
         )

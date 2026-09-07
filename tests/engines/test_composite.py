@@ -13,18 +13,6 @@ from metapulsar.engines.composite import (
 )
 from metapulsar.engines.jug import LinearizedJugEngine
 from metapulsar.engines.pint import LinearizedPintEngine
-from nltiming.protocols import GaugeProvenance
-
-
-def _gf(**kwargs) -> GaugeProvenance:
-    base = dict(
-        export="none",
-        reference_mode="none",
-        reporting_mode="mean",
-        reporting_weighted=True,
-    )
-    base.update(kwargs)
-    return GaugeProvenance(**base)
 
 
 def test_host_only_exact_linear_uses_negative_design_column():
@@ -38,7 +26,6 @@ def test_host_only_exact_linear_uses_negative_design_column():
                 design=np.array([[1.0], [1.0]], dtype=float),
                 theta_exact={"F0": "1.0"},
             ),
-            gauge_provenance=_gf(),
         ),
         exact_linear_fitpars=frozenset({"A1"}),
         fallback_reference_exact={"A1": "2.0"},
@@ -62,7 +49,7 @@ def test_leaf_owned_exact_linear_not_double_counted():
         design=np.array([[2.0, 10.0], [3.0, 11.0]], dtype=float),
         theta_exact={"PB": "1.0", "JUMP": "0.0"},
     )
-    leaf = LinearizedJugEngine.from_linear_model(model, gauge_provenance=_gf())
+    leaf = LinearizedJugEngine.from_linear_model(model)
     engine = build_composite_engine(
         fitpars=model.fitpars,
         nrows=2,
@@ -91,7 +78,6 @@ def test_numpy_and_jax_host_only_fallback_errors_match():
                 design=np.array([[1.0], [1.0]], dtype=float),
                 theta_exact={"F0": "1.0"},
             ),
-            gauge_provenance=_gf(),
         ),
         exact_linear_fitpars=frozenset({"A1"}),
         fallback_reference_exact={"A1": "0.0"},
@@ -122,7 +108,6 @@ def test_pulsar_jax_engine_exposes_residual_jacobian():
             design=np.array([[1.0, 1.0], [2.0, 1.0]], dtype=float),
             theta_exact={"F0": "1.0", "Offset": "0.0"},
         ),
-        gauge_provenance=_gf(),
     )
     engine = build_composite_engine(
         fitpars=("F0", "Offset"),
