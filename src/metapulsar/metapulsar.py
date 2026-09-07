@@ -593,12 +593,15 @@ class MetaPulsar:
             def __init__(self, record):
                 leg = getattr(record, "_leg", None)
                 if leg is not None:
-                    # A vela-jax leg's residual is a phase residual over the
-                    # *instantaneous* doppler-shifted spin frequency, so its
-                    # gauge column is 1/F_i, not the constant vector a
-                    # constant-F0 engine gives. Declaring it is what lets the
-                    # check stay exact instead of being widened to a part in
-                    # 1e4 to accommodate both.
+                    # A vela-jax leg divides its phase residual by the
+                    # pulsar-frame spin Taylor series F(t), the same divisor
+                    # PINT and tempo2 use, and its design matrix is -J of that
+                    # residual, so its PHOFF column is 1/F(t_i): constant to
+                    # F1*T/F0, which is ~2e-9 on J0613 and ~4e-8 on B1937 over
+                    # twenty years, straddling nltiming's 1e-8 tolerance. A
+                    # PINT or tempo2 Offset column is exactly constant because
+                    # those matrices divide by the constant F0. Declaring the
+                    # direction lets the check stay exact for both.
                     self.gauge_direction = leg.engine.gauge_direction
 
             def gauge_provenance(self):
@@ -1165,16 +1168,19 @@ class MetaPulsar:
             out[name] = unit
         return out
 
-    def _leg_gauge_provenance(self, pta) -> dict:
+    def _leg_gauge_provenance(self, pta):
+        """This leg's gauge provenance, the psrdata type the record stores."""
+        from psrdata import GaugeProvenance
+
         leg = getattr(self._pta_data[pta], "_leg", None)
         if leg is not None:
-            return vars(leg.engine.gauge_provenance()).copy()
-        return {
-            "export": "none",
-            "reference_mode": "none",
-            "reporting_mode": "mean",
-            "reporting_weighted": True,
-        }
+            return GaugeProvenance.from_mapping(leg.engine.gauge_provenance())
+        return GaugeProvenance(
+            export="none",
+            reference_mode="none",
+            reporting_mode="mean",
+            reporting_weighted=True,
+        )
 
     def timing_parameter_mapping(self) -> dict[str, dict[str, str]]:
         """Return canonical fitpars mapped to their per-PTA retained-par spellings.

@@ -232,3 +232,110 @@ def test_the_composite_round_trips_through_psrdata(tmp_path):
     discovery = pytest.importorskip("discovery")
     read = discovery.Pulsar.read_feather(str(path))
     assert np.array_equal(np.asarray(read.residuals), back.residuals)
+
+
+def _assert_same_to_rounding(ours, theirs):
+    """Equal up to float64 summation order (the tolerance the linearized test uses)."""
+    ours = np.asarray(ours, dtype=float)
+    theirs = np.asarray(theirs, dtype=float)
+    assert np.max(np.abs(ours - theirs)) <= 1e-14 * np.max(np.abs(theirs))
+
+
+def test_the_file_alone_rebuilds_the_composite_linear_engine(tmp_path):
+    """The feather is the composite's T0 object: ``-M delta`` over its own M.
+
+    Nothing about the legs is declared beyond the per-leg gauge provenance:
+    each leg's rows are the support of its ``PHOFF_<pta>`` column and the
+    parameters it owns are the columns nonzero there. The result matches
+    the live ``timing_engine(linearized=True)`` exactly, passes nltiming's
+    gauge check, and reports one gauge provenance per leg.
+    """
+    pytest.importorskip("vela_jax")
+    if not vela_jax_tempo2_host():
+        pytest.skip("needs libstempo with the siteVel/clock properties")
+    from nltiming.engine_support import LinearTimingEngine
+    from nltiming.nonlinear_timing_model import (
+        _normalize_gauge_provenance,
+        assert_gauge_column_present,
+    )
+
+    pulsar = _build(tuple(sorted(LEGS)), "per_pta")
+    path = tmp_path / f"{pulsar.name}.feather"
+    pulsar.to_feather(path)
+
+    from_file = LinearTimingEngine.from_feather(path)
+    live = pulsar.timing_engine("vela_jax", linearized=True)
+
+    rng = np.random.default_rng(0)
+    delta = rng.normal(size=len(pulsar.fitpars)) * 1e-9
+    # The live composite adds its exact-linear columns as a separate term, so
+    # the summation order differs from one ``M @ delta`` at the last bit.
+    _assert_same_to_rounding(
+        from_file.residual_delta(delta), live.residual_delta(delta)
+    )
+
+    slices = pulsar._get_pta_slices()
+    by_name = {c.name: c for c in from_file.contributions}
+    assert set(by_name) == set(slices)
+    for pta, slc in slices.items():
+        assert np.array_equal(
+            by_name[pta].row_indices, np.arange(slc.start, slc.stop, dtype=int)
+        )
+        owned = tuple(
+            name
+            for name in pulsar.fitpars
+            if pta in pulsar._fitparameters.get(name, {})
+        )
+        assert set(by_name[pta].engine.fitpars) <= set(owned)
+
+    from psrdata import PulsarData
+
+    back = PulsarData.from_feather(path)
+    assert_gauge_column_present(back, from_file, np.asarray(back.Mmat))
+    provenance = dict(_normalize_gauge_provenance(back, from_file))
+    assert set(provenance) == set(slices)
+    for pta in slices:
+        theirs = vars(pulsar._pta_data[pta]._leg.engine.gauge_provenance())
+        assert vars(provenance[pta]) == theirs
+
+
+def test_the_file_alone_rebuilds_a_single_leg_linear_engine(tmp_path):
+    """One PINT-host leg, so it runs without the tempo2 host.
+
+    A one-PTA MetaPulsar still writes a composite record -- one leg, its
+    gauge column suffixed -- so the file engine has one contribution. That
+    leg's ``PHOFF`` column is vela-jax's own ``1/F(t)``, and the leaf declares
+    the column as its gauge direction, so nltiming's check holds it to the
+    record rather than to the constant vector.
+    """
+    pytest.importorskip("vela_jax")
+    from nltiming.engine_support import LinearTimingEngine, RecordLinearTimingEngine
+    from nltiming.nonlinear_timing_model import assert_gauge_column_present
+    from psrdata import PulsarData
+
+    pulsar = _build(("nanograv_9y",), "per_pta")
+    path = tmp_path / f"{pulsar.name}.feather"
+    pulsar.to_feather(path)
+
+    back = PulsarData.from_feather(path)
+    from_file = LinearTimingEngine.from_feather(path)
+    live = pulsar.timing_engine("vela_jax", linearized=True)
+
+    delta = np.random.default_rng(0).normal(size=len(pulsar.fitpars)) * 1e-9
+    _assert_same_to_rounding(
+        from_file.residual_delta(delta), live.residual_delta(delta)
+    )
+
+    (contribution,) = from_file.contributions
+    assert contribution.name == "nanograv_9y"
+    assert np.array_equal(contribution.row_indices, np.arange(len(back)))
+    leaf = contribution.engine
+    assert isinstance(leaf, RecordLinearTimingEngine)
+    assert leaf.gauge_column == "PHOFF_nanograv_9y"
+    column = leaf.gauge_direction()
+    assert np.array_equal(
+        column, np.asarray(back.Mmat)[:, list(back.fitpars).index(leaf.gauge_column)]
+    )
+    leg = pulsar._pta_data["nanograv_9y"]._leg
+    assert np.array_equal(column, np.asarray(leg.engine.gauge_direction()))
+    assert_gauge_column_present(back, from_file, np.asarray(back.Mmat))

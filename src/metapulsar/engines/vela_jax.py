@@ -21,11 +21,12 @@ vela-jax is delay-only, stripped by the same classifier
 from __future__ import annotations
 
 from decimal import Decimal, localcontext
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Mapping
 
 import numpy as np
 from nltiming.engine_support import LinearModel, is_exact_linear_param
 from nltiming.protocols import GaugeProvenance
+from psrdata import TOARows  # noqa: F401  (re-exported; tests import it from here)
 
 from nltiming.hybrid import (
     is_hybrid_engine_axis,
@@ -47,14 +48,6 @@ ROW_ERR_RTOL = 1e-9
 #: orders while leaving room for the last digits of two independent TCB->TDB
 #: conversions to differ.
 REFERENCE_RTOL = Decimal("1e-12")
-
-
-class TOARows(NamedTuple):
-    """The three columns that identify a row; ``psrdata`` will own this type."""
-
-    stoas: np.ndarray
-    freqs: np.ndarray
-    toaerrs: np.ndarray
 
 
 def check_row_alignment(engine: Any, rows: TOARows | None) -> None:
