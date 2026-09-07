@@ -151,8 +151,7 @@ def _prepare_par_for_spnta(par_file, tim_file, *, mask_reference=None) -> Path:
     strips WN/RN hyperparameter lines (same classifier as combination_writer)
     so PINT never builds ``EcorrNoise`` and pyvela never ``ecorr_sort``s TOAs.
     The caller's engine/retained par is not rewritten; only a temp ingest
-    file is. Wideband-only DM-measurement lines (``DMJUMP``, ``DMEFAC``,
-    ``DMEQUAD``) are unused on MetaPulsar's narrowband path and go with them.
+    file is.
 
     Additional no-op-for-residuals patches, already required by pyvela:
 

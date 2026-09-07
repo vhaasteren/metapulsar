@@ -256,7 +256,7 @@ def test_noise_line_detection():
     assert _is_noise_line("RNAMP -14")
     assert _is_noise_line("ECORR -f Rcvr1_2_GUPPI 0.03861")
     assert _is_noise_line("TNECORR -f L-wide_PUPPI 0.03")
-    assert _is_noise_line("DMJUMP -fe Rcvr 0.01")
+    assert not _is_noise_line("DMJUMP -fe Rcvr 0.01")
     assert not _is_noise_line("TRACK -2")
     assert not _is_noise_line("TIMEEPH FB90")
     assert not _is_noise_line("T2CMETHOD IAU2000B")
