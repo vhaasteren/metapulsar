@@ -94,6 +94,9 @@ class FakeTimingEngine:
         self.fitpars = tuple(fitpars)
         self.native_units = {name: "native" for name in self.fitpars}
         self._theta_exact = {name: "0.0" for name in self.fitpars}
+        from psrdata import ResidualCentering
+
+        self.residual_centering = {"single": ResidualCentering("unknown")}
 
     def reference_theta(self) -> np.ndarray:
         return np.zeros(len(self.fitpars), dtype=float)

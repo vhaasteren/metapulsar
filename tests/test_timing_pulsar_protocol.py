@@ -13,6 +13,7 @@ from nltiming.engine_support import (
     validate_pulsar_surface,
 )
 from nltiming.protocols import EnterprisePulsarLike, TimingPulsar
+from psrdata import ResidualCentering
 
 
 def test_fake_pulsar_satisfies_protocol_and_shape_validators(fake_timing_pulsar):
@@ -88,6 +89,7 @@ def test_non_metapulsar_pulsar_can_conform():
     class LocalBackend:
         fitpars = ("F0", "F1")
         native_units = {"F0": "native", "F1": "native"}
+        residual_centering = {"single": ResidualCentering("unknown")}
 
         def reference_theta(self):
             return np.zeros(2, dtype=float)
@@ -112,6 +114,7 @@ def test_engine_validator_rejects_design_row_mismatch(fake_timing_pulsar):
     class BadBackend:
         fitpars = tuple(fake_timing_pulsar.fitpars)
         native_units = {name: "native" for name in fitpars}
+        residual_centering = {"single": ResidualCentering("unknown")}
 
         def reference_theta(self):
             return np.zeros(len(self.fitpars), dtype=float)
