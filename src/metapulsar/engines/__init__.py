@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nltiming.engine_config import (
+    DEFAULT_ENGINE,
     _ENGINE_CHOICES,
     _IMPL_FAMILY,
     normalize_engines,
@@ -47,6 +48,7 @@ def build_engine(*, fitpars, nrows, contributions, design_matrix=None):
 
 __all__ = [
     "validate_composite_against_pulsar",
+    "DEFAULT_ENGINE",
     "_ENGINE_CHOICES",
     "_IMPL_FAMILY",
     "normalize_engines",

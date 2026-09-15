@@ -77,10 +77,10 @@ def test_non_metapulsar_pulsar_can_conform():
         def pint_model(self):
             return None
 
-        def timing_engine(self, engines="jug"):
+        def timing_engine(self, engines="vela_jax"):
             return fake_timing_pulsar_backend
 
-        def can_use_engines(self, engines="jug"):
+        def can_use_engines(self, engines="vela_jax"):
             return True
 
         def state_id(self):

@@ -1274,7 +1274,7 @@ class MetaPulsar:
             for name in self.fitpars
         }
 
-    def timing(self, engines="jug", **engine_kwargs):
+    def timing(self, engines="vela_jax", **engine_kwargs):
         """Open an immutable, engine-independent timing evaluator.
 
         This is a convenience wrapper over :class:`nltiming.TimingEvaluator`;
@@ -1288,7 +1288,7 @@ class MetaPulsar:
             **engine_kwargs,
         )
 
-    def can_use_engines(self, engines="jug", *, linearized: bool = False) -> bool:
+    def can_use_engines(self, engines="vela_jax", *, linearized: bool = False) -> bool:
         """Return whether every PTA can honor the engine selection."""
         if getattr(self, "_timing_rows_filtered", False):
             return False
@@ -1472,7 +1472,7 @@ class MetaPulsar:
             native = self._native_compat(pta_name)
             if not str(native).lower().startswith("tempo2"):
                 continue
-            if _IMPL_FAMILY.get(engines.get(native, "jug")) != "jug":
+            if _IMPL_FAMILY.get(engines.get(native)) != "jug":
                 continue
             session = self._build_jug_session(
                 pta_name,
@@ -1497,7 +1497,7 @@ class MetaPulsar:
 
     def timing_engine(
         self,
-        engines="jug",
+        engines="vela_jax",
         *,
         linearized: bool = False,
         derivative_method: str = "analytic",
@@ -1510,12 +1510,15 @@ class MetaPulsar:
     ):
         """Return a TimingEngine in canonical pulsar row order.
 
+        ``engines`` defaults to ``"vela_jax"`` (nltiming's default JAX kernel).
+        JUG remains available as ``engines="jug"``.
+
         ``nonlinear_params`` (``None`` | ``"binary"`` | ``"binary+"``) is the
         hybrid residual-linearization mode and is honoured by every engine
-        family: JUG executes it inside its residual graph; the libstempo, Vela
-        and PINT adapters keep only the binary axes (plus ``PX`` for
-        ``"binary+"``) on their native path and evaluate every other fitpar
-        through its design-matrix column (see ``nltiming.hybrid``). The
+        family: vela-jax and JUG execute it inside their residual graphs; the
+        libstempo, Vela and PINT adapters keep only the binary axes (plus
+        ``PX`` for ``"binary+"``) on their native path and evaluate every other
+        fitpar through its design-matrix column (see ``nltiming.hybrid``). The
         returned composite engine reports the mode it executes as
         ``engine.nonlinear_params``.
         """
@@ -1534,8 +1537,9 @@ class MetaPulsar:
             )
         from nltiming.hybrid import validate_nonlinear_params
 
-        # Validate once here so every family (JUG, libstempo, Vela, PINT) sees
-        # the same normalized closed-set mode; each leaf executes it itself.
+        # Validate once here so every family (vela-jax, JUG, libstempo, Vela,
+        # PINT) sees the same normalized closed-set mode; each leaf executes
+        # it itself.
         nonlinear_params = validate_nonlinear_params(nonlinear_params)
         if linearized and nonlinear_params is not None:
             raise ValueError(
