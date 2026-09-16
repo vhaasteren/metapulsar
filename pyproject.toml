@@ -41,7 +41,7 @@ dependencies = [
     "pyarrow>=14.0.0",
     # The pulsar record, the feather schema and the par-text rules,
     # shared with vela-jax and nltiming.
-    "psrdata @ git+https://github.com/vhaasteren/psrdata.git@main",
+    "psrdata @ git+https://github.com/nanograv/psrdata.git@main",
 ]
 
 [project.optional-dependencies]
