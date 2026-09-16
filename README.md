@@ -11,8 +11,9 @@
 
 A framework for combining pulsar timing data from multiple PTA collaborations into unified "metapulsar" objects for gravitational wave detection analysis.
 
-This tree is **alpha**: install from GitHub. A PyPI v1.0 is a later story — two
-runtime dependencies are still git pins (see [Installation](#installation)).
+This tree is **git-only alpha**, not a PyPI 0.10. The last closed released-dep
+set is [PyPI 0.9.6](https://pypi.org/project/metapulsar/) (combination only, no
+nltiming). See [Installation](#installation) for the tagged git pins.
 
 ## Features
 
@@ -42,14 +43,15 @@ cd metapulsar
 pip install -e ".[dev]"
 ```
 
-That install currently pulls two git dependencies:
+That install currently pulls two tagged git dependencies and released PINT:
 
 | Pin | Why |
 |---|---|
-| `pint-pulsar` from `vhaasteren/PINT@metapulsar` | [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` → free `FB0`). Unpin to a PINT release once that lands. |
-| `nltiming` from `vhaasteren/nltiming@main` | Not on PyPI. Protocols and nonlinear timing math. |
+| `pint-pulsar>=1.1.7` (PyPI) | Default timing package. Overlay `vhaasteren/PINT@metapulsar` yourself for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH). |
+| `nltiming` from `vhaasteren/nltiming@v0.1.0` | Not on PyPI. Protocols and nonlinear timing math. |
+| `psrdata` from `nanograv/psrdata@v0.1.0` | Not on PyPI. Frozen pulsar record and feather schema. |
 
-Prefer an editable local checkout of either when developing (`pip install -e . --no-deps` from that tree). Diagnose PINT with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
+Prefer an editable local checkout when developing (`pip install -e . --no-deps` from that tree). Diagnose PINT with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
 
 ### Basic Usage
 
@@ -342,8 +344,9 @@ Long-term plan:
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
 - **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
-- **pint-pulsar** from `vhaasteren/PINT@metapulsar` until [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) is in a release. Prefer an editable local checkout (`pip install -e . --no-deps` from that tree). Diagnose with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
-- **nltiming** from `vhaasteren/nltiming@main` (not on PyPI; protocols and nonlinear timing math)
+- **pint-pulsar** ≥ 1.1.7 from PyPI. Overlay `vhaasteren/PINT@metapulsar` for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH). Diagnose with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
+- **nltiming** from `vhaasteren/nltiming@v0.1.0` (not on PyPI; protocols and nonlinear timing math)
+- **psrdata** from `nanograv/psrdata@v0.1.0` (not on PyPI; frozen pulsar record)
 
 Optional extras:
 

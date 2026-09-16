@@ -31,17 +31,18 @@ dependencies = [
     "numpy>=1.20.0",
     "astropy>=5.0.0",
     "scipy>=1.7.0",
-    # Alpha GitHub install, not a PyPI-publishable pin set. Two deps are still
-    # git: PINT#2023 (hybrid PB+FBn -> free FB0) on vhaasteren/PINT@metapulsar,
-    # and nltiming (not on PyPI). Unpin both to releases for a v1.0 sdist.
-    "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar",
+    # This tree is git-only alpha, not a PyPI 0.10. The last closed
+    # released-dep set is PyPI 0.9.6 (combination only, no nltiming).
+    # Hybrid PB+FBn / signed-H3 DDH still need nanograv/PINT#2023; overlay
+    # vhaasteren/PINT@metapulsar yourself if you load those published pars.
+    "pint-pulsar>=1.1.7",
     "ephem>=4.1",
     "loguru>=0.7.3",
-    "nltiming @ git+https://github.com/vhaasteren/nltiming.git@main",
+    "nltiming @ git+https://github.com/vhaasteren/nltiming.git@v0.1.0",
     "pyarrow>=14.0.0",
     # The pulsar record, the feather schema and the par-text rules,
     # shared with vela-jax and nltiming.
-    "psrdata @ git+https://github.com/nanograv/psrdata.git@main",
+    "psrdata @ git+https://github.com/nanograv/psrdata.git@v0.1.0",
 ]
 
 [project.optional-dependencies]

@@ -21,10 +21,12 @@ This file tracks user-facing changes; it is not a substitute for the tag.
   scripts end to end in the devcontainer (skips when the checkout or engines
   are absent).
 
-The `feat/nlt` line landing on `main`. Alpha: install from GitHub. Runtime still
-pins git PINT (`vhaasteren/PINT@metapulsar`, [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023))
-and git [nltiming](https://github.com/vhaasteren/nltiming). That is not a PyPI
-v1.0 dependency set.
+The `feat/nlt` line landing on `main`. Git-only alpha, not a PyPI 0.10.
+PyPI [0.9.6](https://pypi.org/project/metapulsar/) remains the last closed
+released-dep set (combination only). This tree pins `pint-pulsar>=1.1.7`,
+`nltiming@v0.1.0`, and `psrdata@v0.1.0`. Overlay
+`vhaasteren/PINT@metapulsar` for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023)
+(hybrid `PB+FBn` / signed-H3 DDH).
 
 ### Added
 - Standalone **nltiming** client: MetaPulsar implements `TimingPulsar`; sampler

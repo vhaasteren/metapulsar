@@ -2,11 +2,11 @@
 numpy>=1.20.0
 astropy>=5.0.0
 scipy>=1.7.0
-# Alpha GitHub pins — same as pyproject.toml. Unpin both for a PyPI v1.0.
-# nanograv/PINT#2023 (hybrid PB+FBn -> free FB0) on vhaasteren/PINT@metapulsar.
-pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar
+# Git-only alpha — same as pyproject.toml. PyPI 0.9.6 is the last closed
+# released-dep set. Overlay vhaasteren/PINT@metapulsar for PINT#2023 pars.
+pint-pulsar>=1.1.7
 ephem>=4.1
-nltiming @ git+https://github.com/vhaasteren/nltiming.git@main
+nltiming @ git+https://github.com/vhaasteren/nltiming.git@v0.1.0
 pyarrow>=14.0.0
 
 # Optional dependencies (uncomment as needed)
@@ -17,4 +17,4 @@ pyarrow>=14.0.0
 # la-forge>=0.1.0
 # seaborn>=0.11.0
 # The pulsar record, the feather schema and the par-text rules.
-psrdata @ git+https://github.com/nanograv/psrdata.git@main
+psrdata @ git+https://github.com/nanograv/psrdata.git@v0.1.0
