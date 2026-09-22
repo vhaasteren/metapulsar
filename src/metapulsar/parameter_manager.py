@@ -35,7 +35,8 @@ from .pint_helpers import (
     check_component_available_in_model,
     get_parameter_identifiability_from_model,
     dict_to_parfile_string,
-    stamp_resolved_binary_keyword,
+    unwrap_t2_binary,
+    assert_concrete_binary,
     dedupe_nonrepeatable_par_lines,
     parse_par_token,
     si_from_par,
@@ -506,6 +507,10 @@ class ParameterManager:
         # Cache for PINT models
         self._pint_models_cache: Optional[Dict[str, TimingModel]] = None
         self.last_binary_conversion_report = None
+        #: pta -> component a ``BINARY T2`` wrapper was unwrapped to during the
+        #: last run (``{}`` when no leg was a T2 par). Provenance only: the
+        #: dicts themselves carry the concrete label from here on.
+        self.unwrapped_t2_binaries: Dict[str, str] = {}
 
     def _force_full_convention_profile(self) -> bool:
         return self.alignment_policy.convention_profile == "always"
@@ -599,6 +604,7 @@ class ParameterManager:
         The remaining ordering is fixed:
 
         1. align the orbital chart and parse with PINT;
+        1b. unwrap ``BINARY T2`` (label + Kopeikin convention);
         2. expand aggregate ``TEMPO1``;
         3. strip (or reject) unsupported deterministic families so later PINT
            model creation is safe;
@@ -619,6 +625,7 @@ class ParameterManager:
         self._clear_pint_models_cache()
         # A1: never let a stale conversion report survive manager reuse.
         self.last_binary_conversion_report = None
+        self.unwrapped_t2_binaries = {}
 
         if self._force_full_convention_profile():
             packages = sorted(self._normalized_timing_packages())
@@ -734,6 +741,26 @@ class ParameterManager:
 
     # ===== COMMON-SURFACE PREPARATION =====
 
+    def _unwrap_t2_binaries(
+        self, parfile_dicts: Dict[str, Dict[str, List[str]]]
+    ) -> None:
+        """Fix every par's binary label and Kopeikin convention up front.
+
+        Runs before any PINT model is built from these dicts, so PINT's
+        implicit ``T2`` ingest conversion can never leak back into a dict
+        through a value copy (the ``KOM`` copy in the ecliptic transform was
+        exactly such a leak). Idempotent; single-PTA stacks are covered too.
+        """
+        for pta_name, par in parfile_dicts.items():
+            resolved = unwrap_t2_binary(par)
+            if resolved is None:
+                continue
+            self.unwrapped_t2_binaries[pta_name] = resolved
+            self.logger.info(
+                f"PTA {pta_name}: BINARY T2 unwrapped to {resolved}"
+                + (" (KIN/KOM mapped IAU -> DT92)" if resolved == "DDK" else "")
+            )
+
     def _prepare_common_surface(
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> None:
@@ -749,6 +776,7 @@ class ParameterManager:
         """
         for pta_name, par in parfile_dicts.items():
             self._reject_orthometric_conflict(pta_name, par)
+        self._unwrap_t2_binaries(parfile_dicts)
 
         force = self._force_full_convention_profile()
         if len(parfile_dicts) < 2 and not force:
@@ -1573,6 +1601,11 @@ class ParameterManager:
     ) -> None:
         """Rotate one PTA's ecliptic astrometry onto ``target_ecl`` using PINT."""
         source_ecl = self._parse_ecl_value(par)
+        # The copy below takes KOM from a live PINT model. That is only sound
+        # when the dict's label already fixes the convention; a T2 wrapper
+        # would make PINT convert KIN/KOM on ingest and the copied KOM would
+        # come back in a different convention from KIN.
+        assert_concrete_binary(par, context=f"PTA {pta_name} ecliptic transform")
 
         try:
             model = self._create_model_from_dict(par)
@@ -1583,9 +1616,11 @@ class ParameterManager:
                 for component in converted.components.values()
                 if component.category == "astrometry"
             )
-            # ECL is an explicit MetaPulsar frame-policy field, and KOM is
-            # retained for orientation-dependent DDK models. Current PINT also
-            # includes ECL in AstrometryEcliptic.params.
+            # ECL is an explicit MetaPulsar frame-policy field. KOM is a sky
+            # position angle, so PINT rotates it with the astrometry
+            # (TimingModel.as_ICRS / as_ECL) and it is copied back with it;
+            # KIN is frame-independent and stays. Both are DT92 here because
+            # the label is concrete (assert above).
             canonical_copy_names = list(
                 dict.fromkeys([*astrometry.params, "ECL", "KOM"])
             )
@@ -1788,6 +1823,7 @@ class ParameterManager:
         This function really is the workhorse of the MetaPulsar procedure to
         make par models consistent across PTAs. Method:
 
+        - Unwrap ``BINARY T2`` (label and, for DDK, both Kopeikin angles)
         - Start with parfiles that have been unit-converted (done)
         - Numerically transform ecliptic astrometry onto one obliquity
           convention (a coordinate rotation, never a relabel)
@@ -1831,6 +1867,10 @@ class ParameterManager:
 
         # Get reference PTA parameters (mutated in place by the steps below)
         reference_dict = parfile_dicts[self.reference_pta]
+
+        # Label and Kopeikin convention are fixed before any PINT model is
+        # built from these dicts (see _unwrap_t2_binaries).
+        self._unwrap_t2_binaries(parfile_dicts)
 
         # Numerically transform ecliptic astrometry onto one obliquity convention.
         try:
@@ -1913,7 +1953,13 @@ class ParameterManager:
     def _maybe_convert_shared_binary(
         self, parfile_dicts: Dict[str, Dict[str, List[str]]]
     ) -> None:
-        """Orchestrate gated binary-family conversion."""
+        """Orchestrate gated binary-family conversion.
+
+        This is no longer a complete ``T2`` unwrap. A direct caller that
+        skips ``_unwrap_t2_binaries`` and hits the ``skip`` outcome keeps
+        ``BINARY T2``. Production always unwraps first
+        (``_prepare_common_surface`` and ``_make_parameters_shared``).
+        """
         from .binary_family_convert import (
             BinaryConversionError,
             BinaryConversionReport,
@@ -2058,9 +2104,6 @@ class ParameterManager:
                 None if scale is None else f"{scale.scale_s:.6e}",
                 f"{fid.total_max_abs_s:.6e}",
             )
-
-        for par in parfile_dicts.values():
-            stamp_resolved_binary_keyword(par)
 
     def _make_component_parameters_shared(
         self,

@@ -391,7 +391,9 @@ def _format_line(
 
 #: PINT binary component → MetaPulsar family label, for a ``BINARY T2``
 #: par resolved through PINT. ``ELL1`` keeps the ``T2-EPS`` label so the source
-#: spelling stays visible downstream. Every other component PINT can build
+#: spelling stays visible downstream. On the shared path dicts are unwrapped
+#: before classification, so this label only appears for direct callers.
+#: Every other component PINT can build
 #: (``DD``, ``DDK``, ``DDGR``, ``DDS``, ``DDH``, ``BT``, ``Isolated``) is absent
 #: on purpose: those are not ELL1-family, the gate must not fire on them, and
 #: the orthometric map has no Laplace coordinates to transfer.

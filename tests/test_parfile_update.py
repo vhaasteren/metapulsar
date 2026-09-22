@@ -16,6 +16,7 @@ from metapulsar.parfile_update import (
     revert_until_pint_valid,
     transplant_param_values,
 )
+from tests.helpers import T2_DDK_BODY
 
 # --- Fixtures -------------------------------------------------------------- #
 
@@ -487,6 +488,20 @@ def test_optimized_par_is_readable_by_tempo2(tmp_path):
     names = [p for p in psr.pars(which="all") if p.upper().startswith("FDJUMP")]
     assert "FDJUMP1" in names, f"tempo2 did not parse FDJUMP1 (saw {names})"
     assert psr["FDJUMP1"].val == pytest.approx(float(changed["FD1JUMP1"]))
+
+
+def test_transplant_refuses_t2_source_for_ddk_model():
+    from metapulsar.parfile_update import ParTransplantError, transplant_param_values
+    from metapulsar.pint_helpers import create_pint_model
+
+    source = T2_DDK_BODY + "ECL IERS2003\nUNITS TDB\n"
+    model = create_pint_model(source)  # PINT ingests T2 -> DDK in DT92
+    with pytest.raises(ParTransplantError, match="BINARY T2"):
+        transplant_param_values(source, model, ["KIN"])
+    # The refusal is scoped to the Kopeikin angles: other splices still work.
+    model.F0.quantity = model.F0.quantity + 1e-9 * model.F0.units
+    text, changed = transplant_param_values(source, model, ["F0"])
+    assert "F0" in changed and "BINARY T2" in text
 
 
 def test_write_combination_par_includes_metapulsar_header(tmp_path):

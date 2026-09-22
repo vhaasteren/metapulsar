@@ -331,6 +331,26 @@ def _value_token(param: Any) -> str:
     return str(param.str_quantity(param.quantity)).strip()
 
 
+#: Kopeikin angles whose convention is fixed by the ``BINARY`` label.
+_DDK_ANGLES = frozenset({"KIN", "KOM"})
+
+
+def _reject_t2_source(par_text: str) -> None:
+    """A DDK model's KIN/KOM (DT92) cannot be spliced under a ``BINARY T2`` label."""
+    for _, line in iter_active_par_lines(par_text):
+        tokens = line.split()
+        if (
+            tokens[0].upper() == "BINARY"
+            and len(tokens) > 1
+            and tokens[1].upper() == "T2"
+        ):
+            raise ParTransplantError(
+                "source par says BINARY T2: its KIN/KOM are IAU, the model's are "
+                "DT92. Normalize the source with metapulsar.pint_helpers."
+                "unwrap_t2_binary (via ParameterManager) before transplanting."
+            )
+
+
 def transplant_param_values(
     par_text: str,
     model: Any,
@@ -358,6 +378,10 @@ def transplant_param_values(
     Returns ``(text, changed)`` where ``changed`` maps parameter name to
     ``(old_token, new_token)``.
     """
+    names = [str(name) for name in names]
+    if any(name.upper() in _DDK_ANGLES for name in names):
+        _reject_t2_source(par_text)
+
     lines = par_text.splitlines()
     changed: dict[str, tuple[str, str]] = {}
     for name in names:

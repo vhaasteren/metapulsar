@@ -139,7 +139,8 @@ Terminology: in MetaPulsar we use the word consistent to describe model componen
 
 Still inside `_make_parameters_shared`, MetaPulsar calls
 `_apply_shared_convention_rules` before the shared `.par` strings are written.
-The ordering is fixed: numerically transform ecliptic astrometry, align the
+The ordering is fixed: unwrap `BINARY T2` (the label and, for DDK, both
+Kopeikin angles), numerically transform ecliptic astrometry, align the
 solar wind, resolve and apply the reference conventions, apply the explicit
 profile, and only then merge astrophysical components (Step 2) and clean up
 dispersion. Multi‑PTA alignment is skipped when there is only one PTA;
@@ -161,9 +162,10 @@ For a **single‑PTA pulsar**, the par/tim rewrite path is still used when neede
 When ecliptic frames have to change, MetaPulsar performs a **numeric coordinate
 transformation** through PINT (`as_ICRS().as_ECL(ecl=...)`), copying back only
 the transformed astrometry fields (`ELONG`, `ELAT`, `PMELONG`, `PMELAT`,
-`POSEPOCH`, `ECL`, and `KOM` for DDK). The physical sky direction and its
-proper‑motion propagation are preserved; only the frame the numbers are
-expressed in changes. Rewriting the `ECL` label alone would move the implied
+`POSEPOCH`, `ECL`, and `KOM` for DDK). The copy is taken from a dict whose
+`BINARY` label is already concrete, so `KOM` is DT92 in and DT92 out. The
+physical sky direction and its proper‑motion propagation are preserved; only
+the frame the numbers are expressed in changes. Rewriting the `ECL` label alone would move the implied
 direction by ~10⁻⁴ arcsec between `IERS2003` and `IERS2010`, which is why it is
 not done.
 
@@ -284,15 +286,17 @@ conversion report / `MetaPulsar.conversion_metadata()`), never a measurement.
 nltiming may then recondition fully delta-flat Kepler triples via
 `MarginalBasisFrame` and enforce the STIGMA sampling contract.
 
-Family classification resolves `BINARY T2` through PINT's model builder
-(`guess_binary_model`), the same machinery every MetaPulsar model load uses via
-`allow_T2=True`, rather than through a local keyword heuristic. Tempo2's T2 is a
-wrapper, so the gate only fires when PINT would build a Laplace-Lagrange
-component (`ELL1` or `ELL1H`); a T2 par that PINT resolves to `DD`, `DDK`, `DDH`,
-`DDS`, `DDGR` or `BT` is not ELL1-family and is skipped. The resolved component
-is recorded on the conversion report as
-`BinaryConversionDecision.resolved_binary_model`, which is what identifies, for
-example, an equatorial Kopeikin (`DDK`) stack behind a `BINARY T2` line.
+On the shared path every par is unwrapped before classification.
+`unwrap_t2_binary` replaces `BINARY T2` with the component PINT would build,
+and for `DDK` maps both Kopeikin angles IAU → DT92 (`KIN → 180° − KIN`,
+`KOM → 90° − KOM`) and drops `SINI`. The gate therefore sees a declared
+model. It fires only for a Laplace-Lagrange component (`ELL1` or `ELL1H`);
+`DD`, `DDK`, `DDH`, `DDS`, `DDGR` and `BT` are not ELL1-family and are
+skipped. The resolved component is recorded on the conversion report as
+`BinaryConversionDecision.resolved_binary_model`. The `T2-EPS` family label
+appears only for direct `decide_binary_conversion` callers that still pass a
+raw `BINARY T2` dict; `guess_binary_model` with `allow_T2=True` remains how
+that direct path, and every model load, resolves the wrapper.
 
 For cross-engine parity motivation and validation context, see Luo et al. 2021,
 *ApJ* 911, 45, [doi:10.3847/1538-4357/abe62f](https://doi.org/10.3847/1538-4357/abe62f).
@@ -387,7 +391,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 ### Implementation details (reproducibility pointers)
 
-* **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **shared** strategy) calls `ParameterManager.make_parfiles_shared()` to emit shared `.par` files (optionally to disk). That method runs: parse → unit convert → `_make_parameters_shared` (component merge, then shared convention rules) → write.
+* **Factory and orchestration.** `MetaPulsarFactory.create_metapulsar(...)` loads `.par` content, validates the single‑pulsar grouping by coordinates, selects/accepts the reference PTA, and (for the **shared** strategy) calls `ParameterManager.make_parfiles_shared()` to emit shared `.par` files (optionally to disk). That method runs: parse → unwrap `BINARY T2` (label + Kopeikin convention) → unit convert → `_make_parameters_shared` (component merge, then shared convention rules) → write.
 * **Parameter discovery and aliasing.** `ParameterManager` uses PINT’s model metadata plus a lightweight alias resolver to collect the parameter sets by *component type* and to resolve name differences between PINT and Tempo2.
 * **Design‑matrix assembly.** `MetaPulsar` implements the Enterprise/Discovery pulsar surface by duck typing. It builds `fitparameters`/`setparameters` from the mapping, concatenates the per‑PTA arrays, and assembles the combined `designmatrix` column‑by‑column—applying explicit unit corrections for astrometric columns where PINT and Tempo2 differ. A zero‑information column cull prevents singularities.
 * **Flags and metadata.** With `canonicalize_tim=True`, `metapulsar.tim_canonical.write_canonical_tim(...)` stamps `pta`, `pta_dataset`, and `timing_package` into the `.tim` each engine loads, and `-mjd_jump_pta` on TOAs selected by release `JUMP MJD` windows, so the combined flags are read back from the data. `MetaPulsar._combine_flags()` fills the PTA metadata flags in only for legs that lack them (`canonicalize_tim=False`, or a MetaPulsar built directly from pulsar objects). Planetary and positional arrays are copied row‑wise from the materialized PTA timing records.
@@ -413,7 +417,7 @@ Any re‑timing that yields the **same column space** of ( **M** ) produces the 
 
 ### Minimal algorithm (for reference)
 
-1. **Align the orbital chart** and **parse** all PTAs with PINT; for multi‑PTA combinations **expand `TEMPO1`** and **strip (or reject) unsupported deterministic families**.
+1. **Align the orbital chart** and **parse** all PTAs with PINT; **unwrap `BINARY T2`** (label and, for DDK, both Kopeikin angles); for multi‑PTA combinations **expand `TEMPO1`** and **strip (or reject) unsupported deterministic families**.
 2. **Normalize units**: every par is written with an explicit `UNITS TDB`; TCB inputs are converted by their own timing package.
 3. **Transform ecliptic astrometry** numerically onto one obliquity convention (never a relabel).
 4. **Apply shared convention rules**: for single‑PTA pulsars, skip multi‑PTA alignment; for multi‑PTA pulsars, align `NE_SW`, the resolved `EPHEM` and dated clock, then the engine‑gated rules — the full explicit profile when both PINT and tempo2 are present, otherwise only heterogeneous single‑engine conventions.

@@ -27,6 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 import tempfile
 import subprocess
+from decimal import Decimal, InvalidOperation
 from io import StringIO
 import re
 import numpy as np
@@ -412,10 +413,12 @@ def resolve_binary_model(parfile_dict: Mapping[str, Any]) -> Optional[str]:
     Tempo2's ``BINARY T2`` is a wrapper, not a model: PINT resolves it to a
     concrete component from the parameters present
     (``ModelBuilder.choose_binary_model`` with ``allow_T2=True``, which is how
-    MetaPulsar builds every model). So ``T2`` may mean ``ELL1``, ``ELL1H``,
+    ``create_pint_model`` reads a par). So ``T2`` may mean ``ELL1``, ``ELL1H``,
     ``DD``, ``DDK``, ``DDH`` and so on, and only PINT's own
     ``guess_binary_model`` knows which. Any explicitly declared model is
     returned as written, because PINT overrides ``BINARY`` for ``T2`` only.
+    On the shared path the dict is unwrapped (``unwrap_t2_binary``) before any
+    model is built from it.
 
     Returns None when the par has no ``BINARY`` line, or when no single PINT
     component covers every binary parameter present, which is the case PINT
@@ -436,29 +439,114 @@ def resolve_binary_model(parfile_dict: Mapping[str, Any]) -> Optional[str]:
     return guesses[0] if guesses else None
 
 
-def stamp_resolved_binary_keyword(parfile_dict: dict[str, Any]) -> bool:
-    """Replace ``BINARY T2`` with the component PINT will build.
+#: Pivot of the IAU <-> DT92 involution for each Kopeikin angle
+#: (``pint.models.binary_ddk._convert_kin`` / ``_convert_kom``).
+_DDK_ANGLE_PIVOT_DEG: dict[str, Decimal] = {"KIN": Decimal(180), "KOM": Decimal(90)}
 
-    No-op when there is no ``BINARY`` line, when the declared model is already
-    a concrete name, or when PINT cannot resolve the wrapper. Returns True
-    iff the token was rewritten.
+
+def involute_ddk_angle_token(name: str, raw: str) -> str:
+    """Map one ``KIN``/``KOM`` par entry through the IAU <-> DT92 involution.
+
+    ``raw`` is a par value entry as ``parse_parfile`` stores it
+    (``"73.211232267207078495 1 0.739"``): only the value token changes, the
+    fit flag and uncertainty are kept verbatim. The arithmetic is exact
+    decimal so the release digits survive; a token that is not a number is
+    a bug in the caller and raises ``ValueError``.
+    """
+    pivot = _DDK_ANGLE_PIVOT_DEG[name.upper()]
+    parts = str(raw).split()
+    if not parts:
+        raise ValueError(f"{name}: empty par entry")
+    try:
+        value = Decimal(parts[0].replace("D", "E").replace("d", "E"))
+    except InvalidOperation as exc:
+        raise ValueError(f"{name}: value token {parts[0]!r} is not numeric") from exc
+    parts[0] = f"{pivot - value:f}"
+    return " ".join(parts)
+
+
+def unwrap_t2_binary(parfile_dict: dict[str, Any]) -> Optional[str]:
+    """Replace ``BINARY T2`` with the component PINT builds, angles included.
+
+    tempo2's ``T2`` is a wrapper, not a model; PINT resolves it from the
+    parameters present (see ``resolve_binary_model``). The wrapper also fixes
+    a convention: a ``T2`` par carries ``KIN``/``KOM`` in the IAU convention,
+    whereas every ``DDK`` reader -- PINT, tempo2's own ``DDKmodel.C`` and
+    Vela -- uses DT92. So ``T2 -> DDK`` is a physics change unless both angles
+    go through ``KIN -> 180 - KIN``, ``KOM -> 90 - KOM`` with it. This is
+    PINT's ingest rule (``model_builder.convert_binary_params_dict``) applied
+    to the dict, exact-decimal instead of ``float``.
+
+    ``SINI`` is dropped for ``DDK``: tempo2 links it as ``SINI KIN`` and
+    PINT's ``BinaryDDK`` derives it from ``KIN``.
+
+    Returns the resolved component name when the token was rewritten, else
+    ``None`` (no ``BINARY`` line, already concrete, or unresolvable). The
+    operation is idempotent.
     """
     key = _find_parfile_key(parfile_dict, "BINARY")
     if key is None:
-        return False
-    resolved = resolve_binary_model(parfile_dict)
+        return None
     entries = parfile_dict[key]
     raw = entries[0] if isinstance(entries, (list, tuple)) else entries
     tokens = str(raw).split()
-    if not tokens or tokens[0].upper() != "T2" or resolved is None:
-        return False
+    if not tokens or tokens[0].upper() != "T2":
+        return None
+    resolved = resolve_binary_model(parfile_dict)
+    if resolved is None:
+        return None
+
+    if resolved == "DDK":
+        for name in _DDK_ANGLE_PIVOT_DEG:
+            angle_key = _find_parfile_key(parfile_dict, name)
+            if angle_key is None:
+                continue
+            angle_entries = parfile_dict[angle_key]
+            first = (
+                angle_entries[0]
+                if isinstance(angle_entries, (list, tuple))
+                else angle_entries
+            )
+            converted = involute_ddk_angle_token(name, first)
+            parfile_dict[angle_key] = (
+                [converted, *list(angle_entries)[1:]]
+                if isinstance(angle_entries, (list, tuple))
+                else converted
+            )
+        sini_key = _find_parfile_key(parfile_dict, "SINI")
+        if sini_key is not None:
+            parfile_dict.pop(sini_key)
+
     tokens[0] = resolved
     rewritten = " ".join(tokens)
-    if isinstance(entries, (list, tuple)):
-        parfile_dict[key] = [rewritten, *list(entries)[1:]]
-    else:
-        parfile_dict[key] = rewritten
-    return True
+    parfile_dict[key] = (
+        [rewritten, *list(entries)[1:]]
+        if isinstance(entries, (list, tuple))
+        else rewritten
+    )
+    return resolved
+
+
+def assert_concrete_binary(parfile_dict: Mapping[str, Any], *, context: str) -> None:
+    """Raise if ``parfile_dict`` still says ``BINARY T2`` next to ``KIN``/``KOM``.
+
+    Guard for code that copies values out of a live PINT model or serializes
+    the dict: at that point the convention must already be fixed by
+    ``unwrap_t2_binary``.
+    """
+    key = _find_parfile_key(parfile_dict, "BINARY")
+    if key is None:
+        return
+    entries = parfile_dict[key]
+    raw = entries[0] if isinstance(entries, (list, tuple)) else entries
+    tokens = str(raw).split()
+    if not tokens or tokens[0].upper() != "T2":
+        return
+    if any(_find_parfile_key(parfile_dict, name) for name in _DDK_ANGLE_PIVOT_DEG):
+        raise ValueError(
+            f"{context}: BINARY T2 with KIN/KOM has no fixed convention; "
+            "run unwrap_t2_binary first"
+        )
 
 
 def _find_parfile_key(parfile_dict: Mapping[str, Any], name: str) -> Optional[str]:
@@ -544,6 +632,7 @@ def dict_to_parfile_string(parfile_dict: Dict, format: str = "pint") -> str:
     Returns:
         Formatted parfile string using PINT's exact formatting
     """
+    assert_concrete_binary(parfile_dict, context="dict_to_parfile_string")
     from .parfile_header import format_metapulsar_par_header
 
     result = ""
