@@ -43,11 +43,11 @@ cd metapulsar
 pip install -e ".[dev]"
 ```
 
-That install currently pulls two tagged git dependencies and released PINT:
+That install currently pulls three git dependencies:
 
 | Pin | Why |
 |---|---|
-| `pint-pulsar>=1.1.7` (PyPI) | Default timing package. Overlay `vhaasteren/PINT@metapulsar` yourself for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH). |
+| `pint-pulsar` from `vhaasteren/PINT@metapulsar` | Timing package, including [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH) until that pull request is in a release. |
 | `nltiming` from `vhaasteren/nltiming@v0.1.0` | Not on PyPI. Protocols and nonlinear timing math. |
 | `psrdata` from `nanograv/psrdata@v0.1.0` | Not on PyPI. Frozen pulsar record and feather schema. |
 
@@ -344,7 +344,7 @@ Long-term plan:
 - **astropy** ≥ 5.0.0
 - **scipy** ≥ 1.7.0
 - **ephem** ≥ 4.1 (Enterprise-compatible ecliptic→ICRS conversion)
-- **pint-pulsar** ≥ 1.1.7 from PyPI. Overlay `vhaasteren/PINT@metapulsar` for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH). Diagnose with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
+- **pint-pulsar** from `vhaasteren/PINT@metapulsar`, until [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023) (hybrid `PB+FBn` / signed-H3 DDH) is in a release. Diagnose with `pathlib.Path(pint.__file__).resolve()` — never `pip show` alone.
 - **nltiming** from `vhaasteren/nltiming@v0.1.0` (not on PyPI; protocols and nonlinear timing math)
 - **psrdata** from `nanograv/psrdata@v0.1.0` (not on PyPI; frozen pulsar record)
 

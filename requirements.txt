@@ -3,8 +3,9 @@ numpy>=1.20.0
 astropy>=5.0.0
 scipy>=1.7.0
 # Git-only alpha — same as pyproject.toml. PyPI 0.9.6 is the last closed
-# released-dep set. Overlay vhaasteren/PINT@metapulsar for PINT#2023 pars.
-pint-pulsar>=1.1.7
+# released-dep set. This branch is vhaasteren/PINT@metapulsar until
+# nanograv/PINT#2023 is in a release; then switch back to pint-pulsar>=1.1.7.
+pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar
 ephem>=4.1
 nltiming @ git+https://github.com/vhaasteren/nltiming.git@v0.1.0
 pyarrow>=14.0.0
