@@ -23,10 +23,10 @@ This file tracks user-facing changes; it is not a substitute for the tag.
 
 The `feat/nlt` line landing on `main`. Git-only alpha, not a PyPI 0.10.
 PyPI [0.9.6](https://pypi.org/project/metapulsar/) remains the last closed
-released-dep set (combination only). This tree pins `pint-pulsar>=1.1.7`,
-`nltiming@v0.1.0`, and `psrdata@v0.1.0`. Overlay
-`vhaasteren/PINT@metapulsar` for [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023)
-(hybrid `PB+FBn` / signed-H3 DDH).
+released-dep set (combination only). This tree pins `pint-pulsar` from
+`vhaasteren/PINT@metapulsar` until [nanograv/PINT#2023](https://github.com/nanograv/PINT/pull/2023)
+(hybrid `PB+FBn` / signed-H3 DDH) is in a release, plus `nltiming@v0.1.0` and
+`psrdata@v0.1.0`.
 
 ### Added
 - Standalone **nltiming** client: MetaPulsar implements `TimingPulsar`; sampler

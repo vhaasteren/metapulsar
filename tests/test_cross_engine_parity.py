@@ -29,12 +29,15 @@ from __future__ import annotations
 
 import re
 import shutil
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
 import pytest
+from pint.models.model_builder import parse_parfile
 
 from metapulsar.parameter_manager import AlignmentPolicy, ParameterManager
+from metapulsar.pint_helpers import dict_to_parfile_string, unwrap_t2_binary
 
 libstempo = pytest.importorskip("libstempo")
 
@@ -76,25 +79,54 @@ CONTROL_PAR = COMMON_BODY + "BINARY ELL1\n" + KEPLERIAN
 H3_STIG_PAR = COMMON_BODY + "BINARY ELL1H\n" + KEPLERIAN + "H3 1.2e-07 1\nSTIG 0.72 1\n"
 H3_H4_PAR = COMMON_BODY + "BINARY ELL1H\n" + KEPLERIAN + "H3 1.2e-07 1\nH4 6.0e-08 1\n"
 
+KOPEIKIN_T2 = (
+    COMMON_BODY
+    + """PMELONG 5.26 1
+PMELAT -3.44 1
+PX 0.88 1
+BINARY T2
+PB 67.825 1
+A1 32.342 1
+T0 55000.0 1
+ECC 7.49e-5 1
+OM 176.2 1
+M2 0.29 1
+SINI KIN
+KIN 73.211 1
+KOM 78.825 1
+"""
+)
 
-def tempo2_rms_ns(par_path: Path, tmp_path: Path, ell1h_shapiro: str) -> float:
-    """Idealize TOAs with PINT, then measure Tempo2's residual RMS in ns."""
+
+def idealized_tim(par_path, tmp_path, *, start_mjd, end_mjd, ell1h_shapiro="full"):
     import astropy.units as u
     from pint.models import get_model
     from pint.simulation import make_fake_toas_uniform
 
     model = get_model(str(par_path), allow_T2=True, ell1h_shapiro=ell1h_shapiro)
     toas = make_fake_toas_uniform(
-        54500,
-        56500,
+        start_mjd,
+        end_mjd,
         400,
         model,
         freq=1400 * u.MHz,
         obs="ssb",
         add_noise=False,
     )
-    tim_path = tmp_path / f"{par_path.stem}_{ell1h_shapiro}.tim"
+    tim_path = tmp_path / f"{par_path.stem}_{ell1h_shapiro}_{start_mjd}_{end_mjd}.tim"
     toas.write_TOA_file(str(tim_path), format="tempo2")
+    return tim_path
+
+
+def tempo2_rms_ns(par_path: Path, tmp_path: Path, ell1h_shapiro: str) -> float:
+    """Idealize TOAs with PINT, then measure Tempo2's residual RMS in ns."""
+    tim_path = idealized_tim(
+        par_path,
+        tmp_path,
+        start_mjd=54500,
+        end_mjd=56500,
+        ell1h_shapiro=ell1h_shapiro,
+    )
 
     psr = libstempo.tempopulsar(
         parfile=str(par_path), timfile=str(tim_path), dofit=False
@@ -401,3 +433,57 @@ class TestBinaryFamilyConversionParity:
         assert mode == "absorbed"
         rms = tempo2_rms_ns(aligned, tmp_path, mode)
         assert rms == pytest.approx(control_rms, abs=1.0)
+
+
+def tempo2_residuals(par: Path, tim: Path) -> np.ndarray:
+    psr = libstempo.tempopulsar(parfile=str(par), timfile=str(tim), dofit=False)
+    return np.asarray(psr.residuals(), dtype=float)
+
+
+def test_unwrap_t2_binary_keeps_tempo2_physics(tmp_path):
+    """The involution alone: tempo2(release T2) == tempo2(unwrapped DDK).
+
+    Nothing but ``unwrap_t2_binary`` touches the par here, so a failure is
+    the Kopeikin convention and not a mixed-engine switch.
+    """
+    release = write_par(tmp_path, "release_t2", KOPEIKIN_T2)
+    par = parse_parfile(StringIO(KOPEIKIN_T2))
+    assert unwrap_t2_binary(par) == "DDK"
+    product = write_par(
+        tmp_path, "unwrapped_ddk", dict_to_parfile_string(par, format="pint")
+    )
+
+    # >= 10 yr around T0 so the proper-motion Kopeikin terms are µs-sized and
+    # the involuted geometry misses the bound by orders of magnitude.
+    tim = idealized_tim(release, tmp_path, start_mjd=52000, end_mjd=56000)
+    diff = tempo2_residuals(release, tim) - tempo2_residuals(product, tim)
+    assert np.std(diff) * 1e9 < 5.0
+
+
+def test_shared_products_agree_whatever_the_input_dialect(tmp_path):
+    """Pipeline coverage, apples to apples: two *shared* products, one built
+    from the T2 par and one from its already-DT92 DDK twin, are the same file
+    for tempo2."""
+    policy = AlignmentPolicy(ne_sw=0.0, binary_conversion="off")  # as align_mixed
+    ddk_twin = parse_parfile(StringIO(KOPEIKIN_T2))
+    unwrap_t2_binary(ddk_twin)
+    ddk_text = dict_to_parfile_string(ddk_twin, format="pint")
+
+    def shared_epta(par_text: str) -> Path:
+        pm = ParameterManager(
+            file_data={
+                "EPTA": {"timing_package": "tempo2", "par_content": par_text},
+                "NG": {"timing_package": "pint", "par_content": par_text},
+            },
+            output_dir=tmp_path / str(abs(hash(par_text))),
+            alignment_policy=policy,
+        )
+        return Path(pm.make_parfiles_shared()["EPTA"])
+
+    from_t2 = shared_epta(KOPEIKIN_T2)
+    from_ddk = shared_epta(ddk_text)
+    assert re.search(r"^BINARY\s+DDK", from_t2.read_text(), re.M)
+
+    tim = idealized_tim(from_ddk, tmp_path, start_mjd=52000, end_mjd=56000)
+    diff = tempo2_residuals(from_t2, tim) - tempo2_residuals(from_ddk, tim)
+    assert np.std(diff) * 1e9 < 5.0

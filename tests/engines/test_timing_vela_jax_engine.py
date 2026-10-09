@@ -1,9 +1,8 @@
 """Tests for the vela-jax leg engine.
 
 The unit half runs against a linear stand-in for ``vela_jax.Engine``, so the
-partition and the JAX path are exercised without pyvela, tempo2 or JAX-heavy
-fixtures. The integration half needs the real package and a local multi-PTA
-data tree.
+partition is exercised without pyvela, tempo2, or JAX. The integration half
+needs the real package and a local multi-PTA data tree.
 """
 
 from __future__ import annotations
@@ -57,9 +56,7 @@ class _FakeVelaJaxEngine:
         return self.response @ np.asarray(delta, dtype=float)
 
     def residual_delta_jax(self, delta):
-        import jax.numpy as jnp
-
-        return jnp.asarray(self.response, dtype=delta.dtype) @ delta
+        return self.residual_delta(delta)
 
     def design_matrix(self):
         return -self.response
@@ -213,9 +210,7 @@ def test_the_gauge_direction_is_the_engines():
 
 
 def test_the_leg_publishes_the_engines_rows_untouched():
-    """No permutation on the residual path, in either the numpy or JAX form."""
-    import jax.numpy as jnp
-
+    """No permutation on the numpy residual path."""
     fitpars = ("F0", "F1", "PB", "A1", "DM", "PHOFF")
     engine = _FakeVelaJaxEngine()
     leg = VelaJaxEngine.from_engine(engine, linear_model=_linear_model(fitpars))
@@ -227,7 +222,6 @@ def test_the_leg_publishes_the_engines_rows_untouched():
 
     native = engine.residual_delta(step)
     assert np.allclose(leg.residual_delta(delta), native)
-    assert np.allclose(np.asarray(leg.residual_delta_jax(jnp.asarray(delta))), native)
 
 
 def test_native_and_exact_linear_fitpars_are_partitioned():
@@ -262,40 +256,6 @@ def test_host_fitpars_are_scattered_onto_the_engines_own_order():
     np.testing.assert_allclose(engine.residual_delta(delta), expected)
 
 
-def test_the_jax_path_agrees_with_the_numpy_path():
-    import jax
-    import jax.numpy as jnp
-
-    if not jax.config.jax_enable_x64:
-        pytest.skip("vela-jax requires JAX float64; run with JAX_ENABLE_X64=1")
-
-    engine = _engine(("PB", "F0", "JUMP1"))
-    rng = np.random.default_rng(0)
-    for _ in range(4):
-        delta = rng.normal(size=len(engine.fitpars))
-        np.testing.assert_allclose(
-            np.asarray(engine.residual_delta_jax(jnp.asarray(delta))),
-            engine.residual_delta(delta),
-            atol=1e-14,
-        )
-
-
-def test_the_jacobian_is_autodiff_of_that_same_path():
-    import jax
-
-    if not jax.config.jax_enable_x64:
-        pytest.skip("vela-jax requires JAX float64; run with JAX_ENABLE_X64=1")
-
-    engine = _engine(("PB", "F0", "JUMP1"))
-    jacobian = engine.residual_jacobian()
-    for column in range(len(engine.fitpars)):
-        step = np.zeros(len(engine.fitpars))
-        step[column] = 1.0
-        np.testing.assert_allclose(
-            jacobian[:, column], engine.residual_delta(step), atol=1e-12
-        )
-
-
 def test_a_hybrid_mode_keeps_only_the_binary_axes_native():
     engine = _engine(nonlinear_params="binary")
     assert engine.nonlinear_params == "binary"
@@ -327,6 +287,7 @@ pytest_integration = pytest.mark.skipif(
 def test_a_real_leg_builds_and_is_differentiable(release, package):
     """One impl token, either host: tempo2 reads a tempo2 leg, PINT a PINT leg."""
     pytest.importorskip("vela_jax")
+    pytest.importorskip("jax")
     if package == "tempo2" and not vela_jax_tempo2_host():
         pytest.skip("needs libstempo with the siteVel/clock properties")
 

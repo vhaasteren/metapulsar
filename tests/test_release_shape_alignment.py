@@ -485,7 +485,7 @@ class TestBinaryFamilyConversionShapes:
         assert "tail_bound_s=" in str(excinfo.value)
 
         # "keep" downgrades it to a warning and leaves the aligned orthometric
-        # block intact. stamp_resolved_binary_keyword unwraps the EPTA T2
+        # block intact. unwrap_t2_binary unwraps the EPTA T2
         # wrapper to the component PINT builds (ELL1H), harmonic spellings and
         # all — same token test_binary_family_names_are_not_rewritten pins.
         parsed, _ = align(

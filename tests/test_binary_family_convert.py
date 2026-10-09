@@ -447,8 +447,8 @@ def test_t2_uncoverable_parameter_set_is_not_ell1_family():
     assert decision.reason == "not_ell1_family"
 
 
-def test_manager_skip_stamps_t2_to_resolved_model():
-    """Shared-path skip still unwraps ``BINARY T2`` to the engine model name."""
+def test_manager_skip_after_unwrap_keeps_the_resolved_model():
+    """Skip does not relabel. Unwrap (what production does) fixes the triple."""
     kepler = _ell1_dict(a1=10.0, eps1=1.4e-5, eps2=0.0, binary="T2")
     for key in ("EPS1", "EPS2", "TASC"):
         kepler.pop(key, None)
@@ -457,6 +457,7 @@ def test_manager_skip_stamps_t2_to_resolved_model():
             "ECC": ["1e-5 1"],
             "OM": ["10 1"],
             "T0": ["55000 1"],
+            "SINI": ["KIN"],
             "KIN": ["80 1"],
             "KOM": ["60 1"],
         }
@@ -471,12 +472,23 @@ def test_manager_skip_stamps_t2_to_resolved_model():
         pulsar_name="J1713+0747",
         alignment_policy=AlignmentPolicy(),
     )
+    pm._unwrap_t2_binaries(dicts)
+    for par in dicts.values():
+        assert par["BINARY"] == ["DDK"]
+        assert "SINI" not in par
+        assert float(par["KIN"][0].split()[0]) == pytest.approx(100.0)
+        assert float(par["KOM"][0].split()[0]) == pytest.approx(30.0)
     pm._maybe_convert_shared_binary(dicts)
     assert pm.last_binary_conversion_report.decision.reason == "not_ell1_family"
     assert all(par["BINARY"] == ["DDK"] for par in dicts.values())
+    assert all(
+        float(par["KIN"][0].split()[0]) == pytest.approx(100.0)
+        for par in dicts.values()
+    )
 
     plain = _ell1_dict(a1=0.1, eps1=1e-6, eps2=0.0, binary="T2")
     dicts, _ = _two_pta(plain)
+    pm._unwrap_t2_binaries(dicts)
     pm._maybe_convert_shared_binary(dicts)
     assert pm.last_binary_conversion_report.decision.reason == "below_threshold"
     assert all(par["BINARY"] == ["ELL1"] for par in dicts.values())
