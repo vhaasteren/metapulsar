@@ -1006,8 +1006,37 @@ class TestResolverInputContract:
                 fn("F0")
 
 
-def test_stamp_resolved_binary_keyword_unwraps_t2():
-    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+def test_unwrap_t2_binary_maps_ddk_angles_and_drops_sini():
+    from decimal import Decimal
+
+    from metapulsar.pint_helpers import unwrap_t2_binary
+
+    ddk = {
+        "BINARY": ["T2"],
+        "PB": ["67.8 1"],
+        "A1": ["32.3 1"],
+        "T0": ["55000 1"],
+        "ECC": ["7.5e-5 1"],
+        "OM": ["176.2 1"],
+        "SINI": ["KIN"],
+        "KIN": ["73.211232267207078495 1 0.73905916399216620150"],
+        "KOM": ["78.824614274507240827 1 2.65866043660697348727"],
+    }
+    assert unwrap_t2_binary(ddk) == "DDK"
+    assert ddk["BINARY"] == ["DDK"]
+    kin = Decimal(180) - Decimal("73.211232267207078495")
+    kom = Decimal(90) - Decimal("78.824614274507240827")
+    assert ddk["KIN"] == [f"{kin:f} 1 0.73905916399216620150"]
+    assert ddk["KOM"] == [f"{kom:f} 1 2.65866043660697348727"]
+    assert "SINI" not in ddk
+    # Idempotent: a concrete label is never touched again.
+    snapshot = dict(ddk)
+    assert unwrap_t2_binary(ddk) is None
+    assert ddk == snapshot
+
+
+def test_unwrap_t2_binary_relabels_ell1_without_touching_values():
+    from metapulsar.pint_helpers import unwrap_t2_binary
 
     ell1 = {
         "BINARY": ["T2"],
@@ -1017,39 +1046,30 @@ def test_stamp_resolved_binary_keyword_unwraps_t2():
         "EPS1": ["1e-6 1"],
         "EPS2": ["2e-6 1"],
     }
-    assert stamp_resolved_binary_keyword(ell1) is True
+    before = {k: list(v) for k, v in ell1.items() if k != "BINARY"}
+    assert unwrap_t2_binary(ell1) == "ELL1"
     assert ell1["BINARY"] == ["ELL1"]
-
-    ddk = {
-        "BINARY": ["T2"],
-        "PB": ["67 1"],
-        "A1": ["32 1"],
-        "T0": ["55000 1"],
-        "ECC": ["7e-5 1"],
-        "OM": ["176 1"],
-        "KIN": ["73 1"],
-        "KOM": ["11 1"],
-    }
-    assert stamp_resolved_binary_keyword(ddk) is True
-    assert ddk["BINARY"] == ["DDK"]
+    assert {k: v for k, v in ell1.items() if k != "BINARY"} == before
 
 
-def test_stamp_resolved_binary_keyword_is_noop_unless_t2_resolves():
-    from metapulsar.pint_helpers import stamp_resolved_binary_keyword
+def test_unwrap_t2_binary_is_noop_unless_t2_resolves():
+    from metapulsar.pint_helpers import unwrap_t2_binary
 
     declared = {
-        "BINARY": ["ELL1"],
-        "PB": ["1.5 1"],
-        "A1": ["1.4 1"],
-        "TASC": ["55000 1"],
+        "BINARY": ["DDK"],
+        "KIN": ["73 1"],
+        "KOM": ["11 1"],
+        "PB": ["1 1"],
+        "A1": ["1 1"],
+        "T0": ["55000 1"],
+        "ECC": ["0 1"],
+        "OM": ["0 1"],
     }
     before = dict(declared)
-    assert stamp_resolved_binary_keyword(declared) is False
+    assert unwrap_t2_binary(declared) is None
     assert declared == before
 
-    isolated = {"F0": ["100 1"], "PEPOCH": ["55000"]}
-    assert stamp_resolved_binary_keyword(isolated) is False
-    assert "BINARY" not in isolated
+    assert unwrap_t2_binary({"F0": ["100 1"]}) is None
 
     uncoverable = {
         "BINARY": ["T2"],
@@ -1062,5 +1082,33 @@ def test_stamp_resolved_binary_keyword_is_noop_unless_t2_resolves():
         "OM": ["10 1"],
         "T0": ["55000 1"],
     }
-    assert stamp_resolved_binary_keyword(uncoverable) is False
+    assert unwrap_t2_binary(uncoverable) is None
     assert uncoverable["BINARY"] == ["T2"]
+
+
+def test_involute_ddk_angle_token_is_exact_decimal():
+    from decimal import Decimal
+
+    from metapulsar.pint_helpers import involute_ddk_angle_token
+
+    kin = Decimal(180) - Decimal("85.283328957457355951")
+    assert involute_ddk_angle_token("KIN", "85.283328957457355951 1 0.0974") == (
+        f"{kin:f} 1 0.0974"
+    )
+    assert involute_ddk_angle_token("KOM", "263") == f"{Decimal(90) - Decimal(263):f}"
+    with pytest.raises(ValueError):
+        involute_ddk_angle_token("KOM", "KIN")
+
+
+def test_dict_to_parfile_string_refuses_split_triple():
+    from metapulsar.pint_helpers import dict_to_parfile_string
+
+    with pytest.raises(ValueError, match="BINARY T2 with KIN/KOM"):
+        dict_to_parfile_string({"BINARY": ["T2"], "KIN": ["73 1"], "KOM": ["11 1"]})
+
+
+def test_dict_to_parfile_string_accepts_t2_wrapper_without_kopeikin_angles():
+    from metapulsar.pint_helpers import dict_to_parfile_string
+
+    text = dict_to_parfile_string({"BINARY": ["T2"], "PB": ["1.5 1"], "A1": ["1.4 1"]})
+    assert "BINARY" in text and "T2" in text

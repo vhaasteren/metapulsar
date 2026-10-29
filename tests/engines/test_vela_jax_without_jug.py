@@ -88,9 +88,7 @@ def _stand_in(pulsar, monkeypatch):
             return self.response @ np.asarray(delta, dtype=float)
 
         def residual_delta_jax(self, delta):
-            import jax.numpy as jnp
-
-            return jnp.asarray(self.response, dtype=delta.dtype) @ delta
+            return self.residual_delta(delta)
 
         def design_matrix(self):
             return -self.response

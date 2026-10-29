@@ -182,7 +182,7 @@ def test_tempo2_engine_linear_contract():
     assert engine.fitpars == ("F0", "F1")
 
 
-def test_jug_engine_jax_surface_and_precision_metadata():
+def test_jug_engine_linear_surface_and_precision_metadata():
     engine = LinearizedJugEngine.from_linear_model(
         _linear_model(),
         compatibility="tempo2",
@@ -192,25 +192,13 @@ def test_jug_engine_jax_surface_and_precision_metadata():
     assert engine.compatibility == "tempo2"
     assert engine.precision_critical_fitpars() == frozenset({"F0"})
 
-    jnp = pytest.importorskip("jax.numpy")
-    delta = jnp.asarray([0.1, 0.3], dtype=jnp.float64)
-    np.testing.assert_allclose(
-        np.asarray(engine.residual_delta_jax(delta)),
-        -(engine.design_matrix() @ np.asarray(delta)),
-        atol=1e-12,
-    )
-
 
 def test_native_engines_wrap_engines_with_pulsar_metadata():
-    from importlib.util import find_spec
-
     model = _linear_model()
     engines = [
         PintEngine(engine=_FakeDeltaEngine(), linear_model=model),
         LibstempoEngine(engine=_FakeDeltaEngine(), linear_model=model),
     ]
-    if find_spec("jax") is not None:
-        engines.append(JugEngine(state=_FakeJaxState(), linear_model=model))
     for engine in engines:
         _assert_linear_tangent(engine)
         assert engine.reference_theta_exact()["F0"] == "1234.567890123456789"

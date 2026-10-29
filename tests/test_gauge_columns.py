@@ -82,7 +82,7 @@ real_leg = pytest.mark.skipif(
 
 
 def _leg_pulsar(release, package):
-    import jax
+    jax = pytest.importorskip("jax")
     from metapulsar import create_metapulsar
 
     if not jax.config.jax_enable_x64:

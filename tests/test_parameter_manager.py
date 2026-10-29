@@ -23,11 +23,13 @@ from metapulsar.parameter_manager import (
 )
 from metapulsar.pint_helpers import (
     NativeParam,
+    create_pint_model,
+    dict_to_parfile_string,
     get_parameters_by_type_from_models,
     resolve_fit_column_name,
     resolve_parameter_alias,
 )
-from tests.helpers import make_tim_metadata
+from tests.helpers import T2_DDK_BODY, make_tim_metadata
 
 # Mark all tests as slow
 pytestmark = pytest.mark.slow
@@ -2611,12 +2613,134 @@ class TestEclipticTransformation:
         # Same physical orientation, expressed against the new ecliptic pole.
         assert kom == pytest.approx(76.0, abs=1e-2)
 
+    def test_t2_ddk_reference_is_unwrapped_before_the_kom_copy(self):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=T2_DDK_BODY,
+            )
+        )
+        parfile_dicts = _prepared_dicts(pm)  # runs _prepare_common_surface
+        for par in parfile_dicts.values():
+            assert par["BINARY"] == ["DDK"]
+            assert "SINI" not in par
+            assert float(par["KIN"][0].split()[0]) == pytest.approx(180.0 - 68.0)
+            assert float(par["KOM"][0].split()[0]) == pytest.approx(90.0 - 76.0)
+
+        pm._transform_ecliptic_for_all(parfile_dicts, parfile_dicts["EPTA"])
+        par = parfile_dicts["EPTA"]
+        assert par["ECL"] == ["IERS2003"]
+        assert par["BINARY"] == ["DDK"]
+        assert float(par["KIN"][0].split()[0]) == pytest.approx(112.0)
+        # Same physical node, DT92 throughout, re-expressed against IERS2003.
+        assert float(par["KOM"][0].split()[0]) == pytest.approx(14.0, abs=1e-2)
+
+    def test_ecliptic_transform_refuses_a_t2_wrapper(self):
+        pm = ParameterManager(file_data=_cross_engine_file_data())
+        par = parse_parfile(StringIO(T2_DDK_BODY + "UNITS TDB\n"))
+        with pytest.raises(ValueError, match="run unwrap_t2_binary first"):
+            pm._transform_ecliptic_astrometry("EPTA", par, "IERS2003")
+
     def test_conversion_failure_is_reported_with_the_pta_name(self):
         pm = ParameterManager(file_data=_cross_engine_file_data())
         with pytest.raises(ValueError, match="PTA EPTA: ecliptic astrometry"):
             pm._transform_ecliptic_astrometry(
                 "EPTA", {"ELONG": ["1"], "ELAT": ["2"]}, "IERS2003"
             )
+
+
+class TestT2DdkConvention:
+    """(BINARY, KIN, KOM) leave the shared pass as one DT92 triple."""
+
+    def _shared(self, pm):
+        contents = {pta: pm._get_parfile_content(pta) for pta in pm.file_data}
+        return {
+            pta: parse_parfile(StringIO(text))
+            for pta, text in pm._make_parameters_shared(contents).items()
+        }
+
+    def test_shared_pass_writes_one_convention_and_is_idempotent(self, tmp_path):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=T2_DDK_BODY,
+            ),
+            output_dir=tmp_path,
+        )
+        first = self._shared(pm)
+        for par in first.values():
+            assert par["BINARY"] == ["DDK"]
+            assert float(par["KIN"][0].split()[0]) == pytest.approx(112.0)
+            assert float(par["KOM"][0].split()[0]) == pytest.approx(14.0, abs=1e-2)
+
+        # Second pass over the written text: nothing moves.
+        again = ParameterManager(
+            file_data={
+                pta: {
+                    "timing_package": pm.file_data[pta]["timing_package"],
+                    "par_content": dict_to_parfile_string(par, format="pint"),
+                }
+                for pta, par in first.items()
+            },
+            output_dir=tmp_path,
+        )
+        second = self._shared(again)
+        for pta in first:
+            assert second[pta]["BINARY"][0] == first[pta]["BINARY"][0]
+            # KIN is not in the ecliptic copy set, so the token is exact.
+            assert second[pta]["KIN"][0].split()[0] == first[pta]["KIN"][0].split()[0]
+            # Mixed PINT+tempo2 always targets IERS2003, so a second pass
+            # re-runs as_ICRS().as_ECL() even when the frame is already
+            # IERS2003. KOM comes back from PINT's float writer: physics is
+            # unchanged, the printed token is not. An exact string compare
+            # fails on a correct fix.
+            assert float(second[pta]["KOM"][0].split()[0]) == pytest.approx(
+                float(first[pta]["KOM"][0].split()[0]), abs=1e-6
+            )
+
+    def test_make_parfiles_shared_unwraps_before_the_first_serialize(self, tmp_path):
+        """The public entry point: prepare -> serialize -> units -> share.
+
+        The first ``dict_to_parfile_string`` in ``make_parfiles_shared`` runs
+        on the prepared dicts; it refuses a split triple, so this passes only
+        when the prepare-site unwrap is in place (3.1 and 3.2 land together).
+        """
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                reference_extra="ECL IERS2010\n",
+                other_extra="ECL IERS2010\n",
+                body=T2_DDK_BODY,
+            ),
+            output_dir=tmp_path,
+        )
+        written = pm.make_parfiles_shared()
+        assert pm.unwrapped_t2_binaries == {"EPTA": "DDK", "NG": "DDK"}
+        for pta, path in written.items():
+            par = parse_parfile(StringIO(Path(path).read_text()))
+            assert par["BINARY"] == ["DDK"], pta
+            assert "SINI" not in par, pta
+            assert float(par["KIN"][0].split()[0]) == pytest.approx(112.0), pta
+            assert float(par["KOM"][0].split()[0]) == pytest.approx(14.0, abs=1e-2), pta
+
+    def test_written_par_reads_back_as_the_release_physics(self, tmp_path):
+        pm = ParameterManager(
+            file_data=_cross_engine_file_data(
+                body=T2_DDK_BODY + "ECL IERS2003\n",
+            ),
+            output_dir=tmp_path,
+        )
+        written = dict_to_parfile_string(self._shared(pm)["EPTA"], format="pint")
+        release = create_pint_model(pm._get_parfile_content("EPTA"))  # allow_T2 ingest
+        product = create_pint_model(written)
+        assert product.BINARY.value == "DDK"
+        # KIN is not copied by the ecliptic transform, so it stays at the
+        # Decimal unwrap. KOM has been through the identity IERS2003 round-trip
+        # (PINT float); 1e-9 deg is tighter than that path, 1e-6 still pins
+        # the convention (the wrong involution misses by tens of degrees).
+        assert product.KIN.value == pytest.approx(release.KIN.value, abs=1e-9)
+        assert product.KOM.value == pytest.approx(release.KOM.value, abs=1e-6)
 
 
 class TestReferenceConventionResolution:

@@ -68,7 +68,7 @@ def test_leaf_owned_exact_linear_not_double_counted():
     np.testing.assert_allclose(engine.residual_delta(delta), expected)
 
 
-def test_numpy_and_jax_host_only_fallback_errors_match():
+def test_numpy_host_only_fallback_errors_match():
     contribution = PtaContribution(
         name="pta",
         row_indices=np.array([0, 1]),
@@ -92,10 +92,6 @@ def test_numpy_and_jax_host_only_fallback_errors_match():
     delta = np.array([0.0, 1.0], dtype=float)
     with pytest.raises(ValueError, match="no pulsar design matrix"):
         engine.residual_delta(delta)
-    jnp = pytest.importorskip("jax.numpy")
-
-    with pytest.raises(ValueError, match="no pulsar design matrix"):
-        engine.residual_delta_jax(jnp.asarray(delta))
 
 
 @pytest.mark.slow

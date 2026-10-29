@@ -64,9 +64,7 @@ def test_jug_engine_centering_is_psrdata_type():
         param_mapping = ()
 
         def residual_delta_jax(self, delta):
-            import jax.numpy as jnp
-
-            return jnp.zeros((2,))
+            return np.zeros((2,))
 
     eng = JugEngine(state=_State(), linear_model=model)
     centering = eng.residual_centering[SINGLE_KEY]

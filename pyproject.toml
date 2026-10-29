@@ -33,9 +33,10 @@ dependencies = [
     "scipy>=1.7.0",
     # This tree is git-only alpha, not a PyPI 0.10. The last closed
     # released-dep set is PyPI 0.9.6 (combination only, no nltiming).
-    # Hybrid PB+FBn / signed-H3 DDH still need nanograv/PINT#2023; overlay
-    # vhaasteren/PINT@metapulsar yourself if you load those published pars.
-    "pint-pulsar>=1.1.7",
+    # Hybrid PB+FBn / signed-H3 DDH need nanograv/PINT#2023, which is not in a
+    # release yet. Track vhaasteren/PINT@metapulsar until it is, then switch
+    # back to a pint-pulsar>= pin.
+    "pint-pulsar @ git+https://github.com/vhaasteren/PINT.git@metapulsar",
     "ephem>=4.1",
     "loguru>=0.7.3",
     "nltiming @ git+https://github.com/vhaasteren/nltiming.git@v0.1.0",
